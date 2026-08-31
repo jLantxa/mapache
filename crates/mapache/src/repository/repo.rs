@@ -254,6 +254,7 @@ impl Repository {
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
         ecc_config: Option<EccConfig>,
+        calibrate_kdf: bool,
     ) -> Result<Manifest> {
         tracing::info!(target: "repo", "Checking for existing repository");
         if backend.path_exists(Path::new(MANIFEST_PATH)).await {
@@ -277,7 +278,7 @@ impl Repository {
         // Create new key
         tracing::info!(target: "repo", "Generating master key and keyfile");
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(auth, &master_key, repo_version)
+        let keyfile = KeyManager::generate_key_file(auth, &master_key, repo_version, calibrate_kdf)
             .inspect_err(|e| tracing::error!(target: "repo", "Key generation failed: {e}"))
             .map_err(|e| MapacheError::Crypto(format!("could not generate key: {e}")))?;
         tracing::info!(
@@ -1630,7 +1631,15 @@ mod tests {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
         let (_, _, lock_handle) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
@@ -1650,7 +1659,15 @@ mod tests {
         let auth = utils::get_auth(&Some(password_file_path))?.unwrap();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
         let (_, _, lock_handle) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
@@ -1664,7 +1681,15 @@ mod tests {
     async fn test_open_with_wrong_password_returns_auth_error() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
 
         let wrong_auth = Auth {
             username: "mapachito".to_string(),
@@ -1692,7 +1717,15 @@ mod tests {
     async fn test_blob_save_and_load_cycle() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
         let (repo, _ss) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
 
@@ -1733,7 +1766,15 @@ mod tests {
     async fn test_index_persistence_across_reopen() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
 
         // First session
         let (repo, _ss) =
@@ -1769,7 +1810,15 @@ mod tests {
 
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
         let (repo, _ss) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
 
@@ -1837,7 +1886,7 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 2)?;
+        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 2, false)?;
 
         let salt = utils::base64::decode(&keyfile.salt)?;
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
@@ -1862,7 +1911,7 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 1)?;
+        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 1, false)?;
 
         let salt = utils::base64::decode(&keyfile.salt)?;
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
@@ -1899,7 +1948,15 @@ mod tests {
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
@@ -1948,7 +2005,15 @@ mod tests {
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;

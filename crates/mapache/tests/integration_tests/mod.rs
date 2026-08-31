@@ -333,6 +333,7 @@ impl InitBuilder {
             args: cmd_init::CmdArgs {
                 format: mapache::repository::repo::THIS_REPOSITORY_VERSION,
                 ecc: None,
+                calibrate_kdf: false,
             },
         }
     }
@@ -984,6 +985,7 @@ async fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
         None,
         backend,
         None,
+        false,
     )
     .await
     .context("Failed to init repo")?;

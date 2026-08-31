@@ -63,6 +63,13 @@ pub struct CmdArgs {
     /// stored as `.ecc` sidecar files. Fixed K=100, P=overhead.
     #[clap(long, value_parser = clap::value_parser!(u32).range(0..=100))]
     pub ecc: Option<u32>,
+
+    /// Benchmark and tune Argon2id parameters for this hardware.
+    ///
+    /// WARNING: Run this only when the system is idle. High CPU load during
+    /// calibration will produce weaker parameters than intended.
+    #[clap(long)]
+    pub calibrate_kdf: bool,
 }
 
 const INIT_MSG: &str = "init";
@@ -121,6 +128,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
         global_args.key.as_ref(),
         backend.clone(),
         ecc_config,
+        args.calibrate_kdf,
     )
     .await
     .map_err(|e| {

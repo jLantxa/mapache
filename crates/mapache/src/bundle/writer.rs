@@ -6,7 +6,6 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use argon2::Params;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex as ParkMutex;
 
@@ -19,6 +18,7 @@ use crate::{
     common::{
         BlobType, ID, SaveID,
         error::{MapacheError, Result},
+        kdf,
         traits::BlobSaver,
     },
     ecc,
@@ -72,9 +72,14 @@ impl BundleWriter {
         compress: bool,
         format_version: u16,
         ecc_config: Option<EccConfig>,
+        calibrate_kdf: bool,
     ) -> Result<Self> {
         let salt = SecureStorage::generate_salt::<BUNDLE_SALT_LEN>();
-        let params = Params::default();
+        let params = if calibrate_kdf {
+            kdf::calibrate_params(kdf::CALIBRATE_TARGET, kdf::CALIBRATE_MEMORY_BOUNDS.1)
+        } else {
+            kdf::default_params()
+        };
         let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &salt, params.clone())?;
 
         let storage = if compress {

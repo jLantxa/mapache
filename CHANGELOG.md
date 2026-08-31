@@ -27,6 +27,8 @@
   snapshot, etc.) and repair them if ECC is enabled.
 - **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
   for commands that don't need the full index.
+- *KDF calibration*: Added `--calibrate-kdf` to allow calibrating the Argon2id
+  parameters for a target run time in the running hardware.
 
 ### Changed
 

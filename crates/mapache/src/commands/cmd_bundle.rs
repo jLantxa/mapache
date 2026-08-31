@@ -75,6 +75,41 @@ impl ToExitCode for BundleError {
     }
 }
 
+/// Opens a bundle reader with retry on wrong password.
+///
+/// When `password` is `None`, the user is prompted interactively and up to
+/// `MAX_PASSWORD_RETRIES` attempts are allowed.
+fn open_bundle_with_retry(
+    bundle: &Path,
+    password: &Option<String>,
+) -> Result<BundleReader, BundleError> {
+    const MAX_PASSWORD_RETRIES: u32 = 3;
+
+    if let Some(pw) = password {
+        let pw = zeroize::Zeroizing::new(pw.clone());
+        return BundleReader::open(bundle, &pw)
+            .map_err(|e| BundleError::BundleFailed(e.to_string()));
+    }
+
+    let mut password_try_count = 0;
+    loop {
+        let pw = cli::request_password("Enter bundle password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+
+        match BundleReader::open(bundle, &pw) {
+            Ok(reader) => return Ok(reader),
+            Err(e) => {
+                password_try_count += 1;
+                if password_try_count < MAX_PASSWORD_RETRIES {
+                    cli::log!("Incorrect password. Try again.");
+                    continue;
+                }
+                return Err(BundleError::BundleFailed(e.to_string()));
+            }
+        }
+    }
+}
+
 /// TODO(v1-removal): Remove this function when v1 support is dropped.
 fn warn_v1_bundle() {
     cli::warning!(
@@ -533,14 +568,7 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
     let bundle = &args.input[0];
     let destination = args.output.as_deref().unwrap_or(std::path::Path::new("."));
 
-    let password = match &args.internal_password {
-        Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_password("Enter bundle password")
-            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
-    };
-
-    let reader = BundleReader::open(bundle, &password)
-        .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+    let reader = open_bundle_with_retry(bundle, &args.internal_password)?;
     // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
     if reader.version < 2 {
         warn_v1_bundle();
@@ -898,19 +926,13 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
 async fn run_import_bundle(
     repo: &Arc<Repository>,
     bundle_path: &Path,
-    password: &zeroize::Zeroizing<String>,
+    internal_password: &Option<String>,
     global: &GlobalArgs,
     args: &CmdArgs,
 ) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Importing bundle: {}", bundle_path.display());
 
-    let reader = BundleReader::open(bundle_path, password).map_err(|e| {
-        BundleError::BundleFailed(format!(
-            "failed to open bundle {}: {}",
-            bundle_path.display(),
-            e
-        ))
-    })?;
+    let reader = open_bundle_with_retry(bundle_path, internal_password)?;
 
     // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
     if reader.version < 2 {
@@ -1178,7 +1200,6 @@ async fn create_import_snapshot(
 async fn import_impl(
     repo: Arc<Repository>,
     lock_handle: Option<LockHandle>,
-    password: &zeroize::Zeroizing<String>,
     global: &GlobalArgs,
     args: &CmdArgs,
 ) -> Result<(), BundleError> {
@@ -1189,7 +1210,7 @@ async fn import_impl(
     repo.init_pack_saver(args.readers)?;
 
     for bundle_path in &args.input {
-        run_import_bundle(&repo, bundle_path, password, global, args).await?;
+        run_import_bundle(&repo, bundle_path, &args.internal_password, global, args).await?;
     }
 
     // Flush pack saver
@@ -1229,12 +1250,6 @@ async fn run_import(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
 
     tracing::info!(target: "bundle", "Starting bundle import: {} files to repo {}", args.input.len(), global.repo);
 
-    let password = match &args.internal_password {
-        Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_password("Enter bundle password")
-            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
-    };
-
     with_repository_lock(
         global.auth_file.as_ref(),
         global.key.as_ref(),
@@ -1251,8 +1266,8 @@ async fn run_import(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         global.retry_lock_duration,
         global.no_lock,
         |repo, _secure_storage, lock_handle| {
-            let password = password.clone();
-            async move { import_impl(repo, lock_handle, &password, global, args).await }
+            let args = args.clone();
+            async move { import_impl(repo, lock_handle, global, &args).await }
         },
     )
     .await?;
@@ -1291,14 +1306,7 @@ async fn run_mount(args: &CmdArgs) -> Result<(), BundleError> {
 
     let canonical_mountpoint = get_absolute_normalized_path(&actual_mountpoint)?;
 
-    let password = match &args.internal_password {
-        Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_password("Enter bundle password")
-            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
-    };
-
-    let reader = BundleReader::open(bundle, &password)
-        .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+    let reader = open_bundle_with_retry(bundle, &args.internal_password)?;
     // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
     if reader.version < 2 {
         warn_v1_bundle();

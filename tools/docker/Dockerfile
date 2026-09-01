@@ -24,7 +24,7 @@ RUN dnf update -y && \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN cargo install cargo-xwin cargo-zigbuild
+RUN cargo install cargo-xwin "cargo-zigbuild@0.23.0"
 
 # Pre-download Windows CRT/SDK (so builds don't fetch at runtime)
 RUN mkdir /tmp/xwin-cache && cd /tmp/xwin-cache && \

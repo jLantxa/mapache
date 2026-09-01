@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use argon2::Params;
 
-use crate::{repository::storage::SecureStorage, ui::cli};
+use crate::{repository::storage::SecureStorage, ui::cli, utils::size};
 
 /// Target wall-clock time for a single Argon2id derivation.
 pub const CALIBRATE_TARGET: Duration = Duration::from_millis(500);
@@ -12,6 +12,12 @@ pub const CALIBRATE_UPPER: f64 = 1.33;
 
 /// Lower and upper memory bounds for calibration (MiB).
 pub const CALIBRATE_MEMORY_BOUNDS: (u32, u32) = (32, 256);
+
+/// Factor applied to memory when reducing after overshoot.
+const REDUCTION_FACTOR: f64 = 0.95;
+
+/// Dummy password used for calibration benchmarks.
+const DUMMY_PASSWORD: &str = "mapachito";
 
 /// Return default Argon2id parameters (fast, no benchmarking).
 pub fn default_params() -> Params {
@@ -36,35 +42,37 @@ pub fn calibrate_params(target: Duration, max_memory_mib: u32) -> Params {
 /// 2. Start with the maximum memory that fits under `max_memory_mib`.
 /// 3. Increase `t` until duration >= target.
 /// 4. If too slow (> upper bound), reduce memory and repeat.
-fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
+pub fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
+    fn find_t(p: u32, m: u32, target: Duration, salt: &[u8]) -> (u32, Duration) {
+        let mut t = 1;
+        let mut duration = bench(DUMMY_PASSWORD, salt, m, t, p, 1);
+
+        while duration < target {
+            // Argon2 cost is ~linear in t for fixed m: estimate the t that
+            // hits the target from the last measurement instead of t += 1.
+            let per_iter = duration.as_secs_f64() / f64::from(t);
+            let estimated = (target.as_secs_f64() / per_iter).ceil() as u32;
+            t = estimated.max(t + 1);
+            duration = bench(DUMMY_PASSWORD, salt, m, t, p, 1);
+        }
+        (t, duration)
+    }
+
     let p = optimal_parallelism();
 
-    let max_memory_kib = max_memory_mib.saturating_mul(1024);
-    let min_memory_kib = CALIBRATE_MEMORY_BOUNDS.0.saturating_mul(1024);
+    let max_memory_kib = max_memory_mib.saturating_mul(size::KiB as u32);
+    let min_memory_kib = CALIBRATE_MEMORY_BOUNDS.0.saturating_mul(size::KiB as u32);
     let mut m = find_max_memory(p, max_memory_kib);
 
-    const DUMMY_PASSWORD: &str = "mapachito";
     let salt = SecureStorage::generate_salt::<32>();
 
-    let mut t: u32 = 1;
-    let mut duration = bench(DUMMY_PASSWORD, &salt, m, t, p);
-
-    while duration < target {
-        t += 1;
-        duration = bench(DUMMY_PASSWORD, &salt, m, t, p);
-    }
+    let (mut t, mut duration) = find_t(p, m, target, &salt);
 
     let upper = Duration::from_secs_f64(target.as_secs_f64() * CALIBRATE_UPPER);
     while duration > upper && m > min_memory_kib {
         let fraction = target.as_secs_f64() / duration.as_secs_f64();
-        m = find_max_memory(p, (m as f64 * fraction * 0.95) as u32);
-        t = 1;
-        duration = bench(DUMMY_PASSWORD, &salt, m, t, p);
-
-        while duration < target {
-            t += 1;
-            duration = bench(DUMMY_PASSWORD, &salt, m, t, p);
-        }
+        m = find_max_memory(p, (m as f64 * fraction * REDUCTION_FACTOR) as u32);
+        (t, duration) = find_t(p, m, target, &salt);
     }
 
     argon2::ParamsBuilder::new()
@@ -91,11 +99,8 @@ pub(crate) fn find_max_memory(p: u32, max_kib: u32) -> u32 {
     aligned.max(block)
 }
 
-/// Run Argon2id derivation and return the elapsed time.
-/// Variance is smoothed by the validation pass in [`calibrate`].
-fn bench(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Duration {
-    const BENCH_RUNS: u32 = 5;
-
+/// Run Argon2id derivation and return the average elapsed time over `runs` iterations.
+fn bench(password: &str, salt: &[u8], m: u32, t: u32, p: u32, runs: u32) -> Duration {
     let params = argon2::ParamsBuilder::new()
         .m_cost(m)
         .t_cost(t)
@@ -107,14 +112,14 @@ fn bench(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Duration {
     let mut key = [0u8; 32];
 
     let mut total = Duration::ZERO;
-    for _ in 0..BENCH_RUNS {
+    for _ in 0..runs {
         let start = Instant::now();
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut key)
             .expect("argon2 bench should not fail");
         total += start.elapsed();
     }
-    total / BENCH_RUNS
+    total / runs
 }
 
 #[cfg(test)]

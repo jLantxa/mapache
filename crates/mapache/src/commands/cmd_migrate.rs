@@ -125,14 +125,20 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             let mut all_tree_plaintexts: HashMap<ID, Vec<u8>> = HashMap::new();
 
             let dry = args.dry_run;
+            let interrupted = cleanup_handler.interrupted.clone();
             let results: Vec<_> = futures::stream::iter(all_pack_ids.iter())
                 .map(|pack_id| {
                     let repo = repo.clone();
                     let backend = backend.clone();
                     let secure_storage = secure_storage.clone();
                     let reenc_bar = reenc_bar.clone();
+                    let interrupted = interrupted.clone();
 
                     async move {
+                        if interrupted.load(Ordering::SeqCst) {
+                            reenc_bar.inc(1);
+                            return (pack_id, None);
+                        }
                         let res = if !dry {
                             Some(
                                 migration::re_encrypt_pack(
@@ -168,6 +174,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 .await;
 
             reenc_bar.finish_and_clear();
+
+            if cleanup_handler.is_interrupted() {
+                return Err(MigrateError::Interrupted);
+            }
 
             let mut error_count = 0;
             for (old_id, res) in results {
@@ -230,6 +240,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 );
 
                 if !dry {
+                    if cleanup_handler.is_interrupted() {
+                        return Err(MigrateError::Interrupted);
+                    }
+
                     let (rm, serialized_trees) =
                         migration::update_tree_hierarchy(&all_tree_plaintexts, &root_tree_ids)?;
 

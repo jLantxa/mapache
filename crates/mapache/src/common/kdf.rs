@@ -16,6 +16,9 @@ pub const CALIBRATE_MEMORY_BOUNDS: (u32, u32) = (32, 64);
 /// Factor applied to memory when reducing after overshoot.
 const REDUCTION_FACTOR: f64 = 0.95;
 
+/// Fraction of total system memory to use for KDF calibration.
+const MEMORY_USAGE_RATIO: f32 = 0.10;
+
 /// Dummy password used for calibration benchmarks.
 const DUMMY_PASSWORD: &str = "mapachito";
 
@@ -26,14 +29,27 @@ pub fn default_params() -> Params {
 
 /// Return total physical memory in MiB.
 fn total_memory_mib() -> u64 {
-    // SAFETY: sysconf(2) is always safe to call; returns -1 on error.
-    let (pages, page_size) = unsafe {
-        (
-            libc::sysconf(libc::_SC_PHYS_PAGES),
-            libc::sysconf(libc::_SC_PAGE_SIZE),
-        )
-    };
-    (pages * page_size) as u64 / size::MiB
+    #[cfg(unix)]
+    {
+        // SAFETY: sysconf(2) is always safe to call; returns -1 on error.
+        let (pages, page_size) = unsafe {
+            (
+                libc::sysconf(libc::_SC_PHYS_PAGES),
+                libc::sysconf(libc::_SC_PAGE_SIZE),
+            )
+        };
+        // Cast to u64 before multiply to avoid overflow on 32-bit systems.
+        (pages as u64) * (page_size as u64) / size::MiB
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY: GlobalMemoryStatusEx is always safe to call; zeroed struct is valid.
+        let mut mem = unsafe { std::mem::zeroed::<MEMORYSTATUSEX>() };
+        mem.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+        unsafe { GlobalMemoryStatusEx(&mut mem) };
+        mem.ullTotalPhys / size::MiB
+    }
 }
 
 /// Benchmark and return Argon2id parameters tuned for the current hardware.
@@ -46,7 +62,6 @@ pub fn calibrate_params(target: Duration, max_memory_mib: Option<u32>) -> Params
          Run this only when the system is idle for accurate results."
     );
 
-    const MEMORY_USAGE_RATIO: f32 = 0.10;
     let max_memory_mib = max_memory_mib.unwrap_or_else(|| {
         ((total_memory_mib() as f32 * MEMORY_USAGE_RATIO) as u32)
             .clamp(CALIBRATE_MEMORY_BOUNDS.0, CALIBRATE_MEMORY_BOUNDS.1)
@@ -60,7 +75,7 @@ pub fn calibrate_params(target: Duration, max_memory_mib: Option<u32>) -> Params
 /// Target is a minimum: calibration always overshoots (slower = stronger).
 /// The result must not exceed `CALIBRATE_UPPER × target`.
 ///
-/// 1. Fix `p = 1` for deterministic calibration.
+/// 1. Determine optimal parallelism (capped to 4).
 /// 2. Start with the maximum memory that fits under `max_memory_mib`.
 /// 3. Increase `t` until duration >= target.
 /// 4. If too slow (> upper bound), reduce memory and repeat.

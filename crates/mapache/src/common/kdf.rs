@@ -11,7 +11,7 @@ pub const CALIBRATE_TARGET: Duration = Duration::from_millis(500);
 pub const CALIBRATE_UPPER: f64 = 1.33;
 
 /// Lower and upper memory bounds for calibration (MiB).
-pub const CALIBRATE_MEMORY_BOUNDS: (u32, u32) = (32, 256);
+pub const CALIBRATE_MEMORY_BOUNDS: (u32, u32) = (32, 64);
 
 /// Factor applied to memory when reducing after overshoot.
 const REDUCTION_FACTOR: f64 = 0.95;
@@ -24,12 +24,34 @@ pub fn default_params() -> Params {
     Params::default()
 }
 
+/// Return total physical memory in MiB.
+fn total_memory_mib() -> u64 {
+    // SAFETY: sysconf(2) is always safe to call; returns -1 on error.
+    let (pages, page_size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGE_SIZE),
+        )
+    };
+    (pages * page_size) as u64 / size::MiB
+}
+
 /// Benchmark and return Argon2id parameters tuned for the current hardware.
-pub fn calibrate_params(target: Duration, max_memory_mib: u32) -> Params {
+///
+/// If `max_memory_mib` is `None`, uses up to 10% of total system memory (clamped to
+/// [`CALIBRATE_MEMORY_BOUNDS`]). If `Some(n)`, uses `n` MiB as the upper bound.
+pub fn calibrate_params(target: Duration, max_memory_mib: Option<u32>) -> Params {
     cli::warning!(
         "calibrating Argon2id parameters. \
          Run this only when the system is idle for accurate results."
     );
+
+    const MEMORY_USAGE_RATIO: f32 = 0.10;
+    let max_memory_mib = max_memory_mib.unwrap_or_else(|| {
+        ((total_memory_mib() as f32 * MEMORY_USAGE_RATIO) as u32)
+            .clamp(CALIBRATE_MEMORY_BOUNDS.0, CALIBRATE_MEMORY_BOUNDS.1)
+    });
+
     calibrate(target, max_memory_mib)
 }
 
@@ -42,7 +64,7 @@ pub fn calibrate_params(target: Duration, max_memory_mib: u32) -> Params {
 /// 2. Start with the maximum memory that fits under `max_memory_mib`.
 /// 3. Increase `t` until duration >= target.
 /// 4. If too slow (> upper bound), reduce memory and repeat.
-pub fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
+fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
     fn find_t(p: u32, m: u32, target: Duration, salt: &[u8]) -> (u32, Duration) {
         let mut t = 1;
         let mut duration = bench(DUMMY_PASSWORD, salt, m, t, p, 1);
@@ -93,7 +115,7 @@ fn optimal_parallelism() -> u32 {
 
 /// Find the largest multiple of `128 * p` KiB that fits under `max_kib`.
 /// Returns at least `128 * p` to ensure a minimum allocation.
-pub(crate) fn find_max_memory(p: u32, max_kib: u32) -> u32 {
+fn find_max_memory(p: u32, max_kib: u32) -> u32 {
     let block = 128 * p;
     let aligned = (max_kib / block) * block;
     aligned.max(block)

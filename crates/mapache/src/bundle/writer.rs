@@ -76,7 +76,7 @@ impl BundleWriter {
     ) -> Result<Self> {
         let salt = SecureStorage::generate_salt::<BUNDLE_SALT_LEN>();
         let params = if calibrate_kdf {
-            kdf::calibrate_params(kdf::CALIBRATE_TARGET, kdf::CALIBRATE_MEMORY_BOUNDS.1)
+            kdf::calibrate_params(kdf::CALIBRATE_TARGET, None)
         } else {
             kdf::default_params()
         };

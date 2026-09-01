@@ -8,7 +8,7 @@ use std::{
 use argon2;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt, future::BoxFuture};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -26,7 +26,109 @@ use crate::{
     ui, utils,
 };
 
-/// Error types for KeyManager operations
+/// Supported KDF algorithms and their parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "algorithm")]
+pub enum KdfConfig {
+    #[serde(rename = "argon2id")]
+    Argon2id(Argon2Params),
+}
+
+impl std::fmt::Display for KdfConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KdfConfig::Argon2id(_) => write!(f, "Argon2id"),
+        }
+    }
+}
+
+/// Argon2id KDF parameters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Argon2Params {
+    pub m: u32,
+    pub t: u32,
+    pub p: u32,
+}
+
+/// A metadata structure that contains information about a repository key
+#[derive(Debug, Serialize)]
+pub struct KeyFile {
+    pub created: DateTime<Local>,
+    pub username: String,
+
+    /// KDF algorithm and parameters
+    pub kdf: KdfConfig,
+
+    pub salt: String,
+    pub encrypted_key: String,
+}
+
+// TODO(v1-removal): Remove this custom Deserialize impl and use #[derive(Deserialize)].
+// The default deserialization handles the v2 format (kdf object) correctly.
+impl<'de> Deserialize<'de> for KeyFile {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawKeyFile {
+            created: DateTime<Local>,
+            username: String,
+            kdf: Option<KdfConfig>,
+            m: Option<u32>,
+            t: Option<u32>,
+            p: Option<u32>,
+            salt: String,
+            encrypted_key: String,
+        }
+
+        let raw = RawKeyFile::deserialize(deserializer)?;
+
+        // v2: kdf field present
+        if let Some(kdf) = raw.kdf {
+            return Ok(KeyFile {
+                created: raw.created,
+                username: raw.username,
+                kdf,
+                salt: raw.salt,
+                encrypted_key: raw.encrypted_key,
+            });
+        }
+
+        // v1: flat m/t/p fields, assume Argon2id
+        let m = raw
+            .m
+            .ok_or_else(|| serde::de::Error::missing_field("kdf or m"))?;
+        let t = raw
+            .t
+            .ok_or_else(|| serde::de::Error::missing_field("kdf or t"))?;
+        let p = raw
+            .p
+            .ok_or_else(|| serde::de::Error::missing_field("kdf or p"))?;
+
+        Ok(KeyFile {
+            created: raw.created,
+            username: raw.username,
+            kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
+            salt: raw.salt,
+            encrypted_key: raw.encrypted_key,
+        })
+    }
+}
+
+impl KeyFile {
+    pub fn argon2_params(&self) -> Result<argon2::Params> {
+        match &self.kdf {
+            KdfConfig::Argon2id(params) => argon2::ParamsBuilder::new()
+                .m_cost(params.m)
+                .t_cost(params.t)
+                .p_cost(params.p)
+                .build()
+                .map_err(|e| MapacheError::Crypto(format!("invalid Argon2 parameters: {e}"))),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum KeyManagerError {
     /// No keyfiles found (repository may not be initialized)
@@ -78,36 +180,6 @@ impl std::fmt::Display for KeyManagerError {
 }
 
 impl std::error::Error for KeyManagerError {}
-
-/// A metadata structure that contains information about a repository key
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KeyFile {
-    pub created: DateTime<Local>,
-    pub username: String,
-
-    /// Argon2 memory size
-    pub m: u32,
-
-    /// Argon2 iterations
-    pub t: u32,
-
-    /// Argon2 parallelism
-    pub p: u32,
-
-    pub salt: String,
-    pub encrypted_key: String,
-}
-
-impl KeyFile {
-    pub fn argon2_params(&self) -> Result<argon2::Params> {
-        argon2::ParamsBuilder::new()
-            .m_cost(self.m)
-            .t_cost(self.t)
-            .p_cost(self.p)
-            .build()
-            .map_err(|e| MapacheError::Crypto(format!("invalid Argon2 parameters: {e}")))
-    }
-}
 
 /// A KeyFile stream loading files on demand asynchronously.
 pub struct KeyFileStream {
@@ -244,7 +316,7 @@ impl KeyManager {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
         let create_time = Local::now();
         let argon2_params = if calibrate_kdf {
-            kdf::calibrate_params(kdf::CALIBRATE_TARGET, kdf::CALIBRATE_MEMORY_BOUNDS.1)
+            kdf::calibrate_params(kdf::CALIBRATE_TARGET, None)
         } else {
             kdf::default_params()
         };
@@ -263,12 +335,14 @@ impl KeyManager {
 
         let encrypted_key = ss.encrypt(master_key)?;
 
+        let m = argon2_params.m_cost();
+        let t = argon2_params.t_cost();
+        let p = argon2_params.p_cost();
+
         Ok(KeyFile {
             created: create_time,
             username: auth.username.clone(),
-            m: argon2_params.m_cost(),
-            t: argon2_params.t_cost(),
-            p: argon2_params.p_cost(),
+            kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
             encrypted_key: utils::base64::encode(&encrypted_key),
             salt: utils::base64::encode(&salt),
         })
@@ -515,9 +589,11 @@ mod tests {
         let kf = KeyFile {
             created: Local::now(),
             username: "test".to_string(),
-            m: 1024,
-            t: 1,
-            p: 1,
+            kdf: KdfConfig::Argon2id(Argon2Params {
+                m: 1024,
+                t: 1,
+                p: 1,
+            }),
             salt: "".to_string(),
             encrypted_key: "".to_string(),
         };

@@ -47,6 +47,10 @@ pub struct AddArgs {
     /// Optional path to save the new Keyfile
     #[clap(long = "path", value_parser)]
     output_keyfile_path: Option<PathBuf>,
+
+    /// Benchmark and tune Argon2id parameters for this hardware
+    #[clap(long)]
+    pub calibrate_kdf: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -56,7 +60,11 @@ pub struct DeleteArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct PasswordChangeArgs {}
+pub struct PasswordChangeArgs {
+    /// Benchmark and tune Argon2id parameters for this hardware
+    #[clap(long)]
+    pub calibrate_kdf: bool,
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct ExportArgs {
@@ -163,10 +171,11 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<(), KeyErro
     ui::cli::log!("\nCreating new user key...");
     let new_auth = request_new_auth()
         .map_err(|e| KeyError::RepoOpenFail(format!("failed to get new auth: {}", e.inner())))?;
-    let new_key_file = KeyManager::generate_key_file(&new_auth, &master_key, repo_version, false)
-        .map_err(|e| {
-        KeyError::RepoOpenFail(format!("could not generate key: {}", e.inner()))
-    })?;
+    let new_key_file =
+        KeyManager::generate_key_file(&new_auth, &master_key, repo_version, args.calibrate_kdf)
+            .map_err(|e| {
+                KeyError::RepoOpenFail(format!("could not generate key: {}", e.inner()))
+            })?;
 
     let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
@@ -219,7 +228,7 @@ async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<(), K
 
 async fn run_password_change(
     global_args: &GlobalArgs,
-    _args: &PasswordChangeArgs,
+    args: &PasswordChangeArgs,
 ) -> Result<(), KeyError> {
     let auth = request_auth()
         .map_err(|e| KeyError::RepoOpenFail(format!("authentication failed: {}", e.inner())))?;
@@ -255,10 +264,11 @@ async fn run_password_change(
             })?,
     };
 
-    let new_keyfile = KeyManager::generate_key_file(&new_auth, &master_key, repo_version, false)
-        .map_err(|e| {
-            KeyError::RepoOpenFail(format!("failed to generate key file: {}", e.inner()))
-        })?;
+    let new_keyfile =
+        KeyManager::generate_key_file(&new_auth, &master_key, repo_version, args.calibrate_kdf)
+            .map_err(|e| {
+                KeyError::RepoOpenFail(format!("failed to generate key file: {}", e.inner()))
+            })?;
     tracing::info!(target: "key", "Saving updated key file for user {}", auth.username);
     key_manager
         .save_keyfile(&new_keyfile)

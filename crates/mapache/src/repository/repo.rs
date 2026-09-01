@@ -283,10 +283,8 @@ impl Repository {
             .map_err(|e| MapacheError::Crypto(format!("could not generate key: {e}")))?;
         tracing::info!(
             target: "repo",
-            "Keyfile generated (Argon2 m={}, t={}, p={})",
-            keyfile.m,
-            keyfile.t,
-            keyfile.p
+            "Keyfile generated ({kdf})",
+            kdf = keyfile.kdf
         );
         let secure_storage = Arc::new(
             SecureStorage::new()

@@ -64,10 +64,7 @@ pub struct CmdArgs {
     #[clap(long, value_parser = clap::value_parser!(u32).range(0..=100))]
     pub ecc: Option<u32>,
 
-    /// Benchmark and tune Argon2id parameters for this hardware.
-    ///
-    /// WARNING: Run this only when the system is idle. High CPU load during
-    /// calibration will produce weaker parameters than intended.
+    /// Benchmark and tune Argon2id parameters for this hardware
     #[clap(long)]
     pub calibrate_kdf: bool,
 }

@@ -649,6 +649,12 @@ content.
 {
   "created": "2025-11-20T19:00:00.663953700+01:00",
   "username": "mapache",
+  "kdf": {
+    "algorithm": "argon2id",
+    "m": 19456,
+    "t": 2,
+    "p": 1
+  },
   "m": 19456,
   "t": 2,
   "p": 1,
@@ -656,6 +662,11 @@ content.
   "encrypted_key": "bkwxbjuLbV094UiRFoO5t2YlV3ZhsCQdn3z2A+YyPSNewGFUo+AwL+L7Jae406yW4OHcHzFwN3wv7Vlj"
 }
 ```
+
+> **Note:** The top-level `m`, `t`, `p` fields are deprecated (v1 format) and
+> will be removed in a future version. New keyfiles always write the `kdf`
+> object. Old keyfiles without `kdf` are read by constructing the `kdf` object
+> from the flat fields.
 
 ## Local cache
 

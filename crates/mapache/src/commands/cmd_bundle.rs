@@ -249,10 +249,7 @@ pub struct CmdArgs {
     #[arg(skip)]
     pub internal_password: Option<String>,
 
-    /// Benchmark and tune Argon2id parameters for this hardware.
-    ///
-    /// WARNING: Run this only when the system is idle. High CPU load during
-    /// calibration will produce weaker parameters than intended.
+    /// Benchmark and tune Argon2id parameters for this hardware
     #[clap(long)]
     pub calibrate_kdf: bool,
 }

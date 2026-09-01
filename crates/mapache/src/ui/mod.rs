@@ -1,4 +1,12 @@
-use crate::common::global::GlobalOpts;
+use std::sync::Arc;
+
+use indicatif::ProgressState;
+use parking_lot::Mutex;
+
+use crate::{
+    common::global::GlobalOpts,
+    utils::{self, rate_estimator::RateEstimator},
+};
 
 pub mod cli;
 pub(crate) mod debug;
@@ -25,4 +33,37 @@ pub(crate) fn default_bar_draw_target() -> indicatif::ProgressDrawTarget {
     } else {
         indicatif::ProgressDrawTarget::hidden()
     }
+}
+
+/// Adds a `custom_elapsed` key to the style that formats elapsed time using
+/// `utils::pretty_print_duration`.
+pub(crate) fn with_custom_elapsed(style: indicatif::ProgressStyle) -> indicatif::ProgressStyle {
+    style.with_key(
+        "custom_elapsed",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
+        },
+    )
+}
+
+/// Adds a `custom_eta` key to the style that computes ETA from a shared `RateEstimator`.
+pub(crate) fn with_custom_eta(
+    style: indicatif::ProgressStyle,
+    rate: Arc<Mutex<RateEstimator>>,
+) -> indicatif::ProgressStyle {
+    style.with_key(
+        "custom_eta",
+        move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let pos = state.pos() as f64;
+            let total = state.len().map(|l| l as f64);
+            match rate.lock().eta(pos, total.unwrap_or(pos)) {
+                Some(d) => {
+                    let _ = w.write_str(&utils::pretty_print_duration(d));
+                }
+                None => {
+                    let _ = w.write_str("--");
+                }
+            }
+        },
+    )
 }

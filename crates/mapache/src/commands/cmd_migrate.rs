@@ -2,21 +2,28 @@
 use std::{
     collections::HashMap,
     io,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
 use clap::Args;
 use futures::StreamExt;
 use indicatif::ProgressBar;
+use parking_lot::Mutex;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, ID, error::MapacheError},
+    common::{ContentIdType, ID, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError},
     repository::{index::MasterIndex, migration, repo::THIS_REPOSITORY_VERSION},
-    ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
-    utils,
+    ui::{
+        self, cli::color::Colorize, default_bar_draw_target, default_progress_style,
+        with_custom_elapsed, with_custom_eta,
+    },
+    utils::{self, rate_estimator::RateEstimator},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -101,7 +108,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             // ── Step 1: Re-encrypt packs ──────────────────────────────
             let all_pack_ids = repo.list_packs().await?;
             old_pack_ids.extend(all_pack_ids.iter().copied());
-            ui::cli::log!("\nStep 1/5: Re-encrypting {} packs...", all_pack_ids.len());
+            ui::cli::log!("\nStep 1/4: Re-encrypting {} packs...", all_pack_ids.len());
             tracing::info!(target: "migrate", "Step 1: Re-encrypting {} packs", all_pack_ids.len());
 
             let reenc_label = if args.dry_run {
@@ -109,20 +116,25 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             } else {
                 "Re-encrypting packs"
             };
+            let reenc_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
             let reenc_bar = ProgressBar::with_draw_target(
                 Some(all_pack_ids.len() as u64),
                 default_bar_draw_target(),
             )
             .with_style(
-                default_progress_style()
-                    .template(&format!(
-                        "[{{elapsed}}] [{{bar:20.cyan/white}}] {reenc_label}: {{pos}}/{{len}} [ETA: {{eta}}]"
-                    ))
-                    .expect("invalid progress bar template"),
+                with_custom_eta(
+                    with_custom_elapsed(
+                        default_progress_style()
+                            .template(&format!(
+                                "[{{percent}} %] [{{bar:20.cyan/white}}] [{{custom_elapsed}}] {reenc_label}: {{pos}}/{{len}} [ETA: {{custom_eta}}]"
+                            ))
+                            .expect("invalid progress bar template"),
+                    ),
+                    Arc::clone(&reenc_rate),
+                ),
             );
 
             let mut pack_map: Vec<(ID, ID, Vec<_>)> = Vec::new();
-            let mut all_tree_plaintexts: HashMap<ID, Vec<u8>> = HashMap::new();
 
             let dry = args.dry_run;
             let interrupted = cleanup_handler.interrupted.clone();
@@ -132,11 +144,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     let backend = backend.clone();
                     let secure_storage = secure_storage.clone();
                     let reenc_bar = reenc_bar.clone();
+                    let reenc_rate = reenc_rate.clone();
                     let interrupted = interrupted.clone();
 
                     async move {
                         if interrupted.load(Ordering::SeqCst) {
                             reenc_bar.inc(1);
+                            reenc_rate.lock().observe(reenc_bar.position() as f64);
                             return (pack_id, None);
                         }
                         let res = if !dry {
@@ -166,6 +180,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                         };
 
                         reenc_bar.inc(1);
+                        reenc_rate.lock().observe(reenc_bar.position() as f64);
                         (pack_id, res)
                     }
                 })
@@ -183,8 +198,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             for (old_id, res) in results {
                 match res {
                     None => {}
-                    Some(Ok((new_id, descriptors, tree_plaintexts))) => {
-                        all_tree_plaintexts.extend(tree_plaintexts);
+                    Some(Ok((new_id, descriptors, _tree_plaintexts))) => {
                         pack_map.push((*old_id, new_id, descriptors));
                     }
                     Some(Err(e)) => {
@@ -213,76 +227,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 }
             }
 
-            // ── Step 2: Re-serialize trees (JSON → binary) + pack them ─
+            // ── Step 2: Re-encrypt snapshots ──────────────────────
             let snapshot_ids = repo.list_snapshot_ids().await?;
-            let mut root_tree_ids: Vec<ID> = Vec::new();
-            for snap_id in &snapshot_ids {
-                let snap = repo.load_snapshot(snap_id, None).await?;
-                root_tree_ids.push(snap.tree);
-            }
-
-            let mut root_map: HashMap<ID, ID> = HashMap::new();
-            let mut tree_pack_descriptor: Option<(ID, Vec<_>)> = None;
-
-            if !all_tree_plaintexts.is_empty() && !root_tree_ids.is_empty() {
-                let tree_count = all_tree_plaintexts.len();
-                ui::cli::log!("\nStep 2/5: Re-serializing {tree_count} tree blobs (JSON → binary)...");
-                tracing::info!(target: "migrate", "Step 2: Re-serializing {tree_count} tree blobs");
-
-                let tree_bar = ProgressBar::with_draw_target(
-                    Some(tree_count as u64),
-                    default_bar_draw_target(),
-                )
-                .with_style(
-                    default_progress_style()
-                        .template("[{elapsed}] [{bar:20.cyan/white}] Re-serializing trees: {pos}/{len} [ETA: {eta}]")
-                        .expect("invalid progress bar template"),
-                );
-
-                if !dry {
-                    if cleanup_handler.is_interrupted() {
-                        return Err(MigrateError::Interrupted);
-                    }
-
-                    let (rm, serialized_trees) =
-                        migration::update_tree_hierarchy(&all_tree_plaintexts, &root_tree_ids)?;
-
-                    tree_bar.finish_and_clear();
-                    ui::cli::log!(
-                        "Re-serialized {} tree blobs, {} root trees updated",
-                        serialized_trees.len(),
-                        rm.len()
-                    );
-
-                    root_map = rm;
-
-                    // Pack all re-serialized trees into a single pack.
-                    if !serialized_trees.is_empty() {
-                        secure_storage.set_nonce_at_end(new_nonce_at_end);
-                        let mut blobs = Vec::with_capacity(serialized_trees.len());
-                        for (tree_id, binary) in &serialized_trees {
-                            let encoded = secure_storage.encode(binary)?;
-                            blobs.push((*tree_id, crate::common::BlobType::Tree, encoded, binary.len() as u64));
-                        }
-                        if let Some((pack_id, descriptors)) = migration::create_pack_from_blobs(
-                            repo.as_ref(), backend.as_ref(), &secure_storage, &blobs,
-                        ).await? {
-                            tree_pack_descriptor = Some((pack_id, descriptors));
-                        }
-                    }
-
-                    drop(all_tree_plaintexts);
-                } else {
-                    tree_bar.finish_and_clear();
-                    ui::cli::log!("[DRY RUN] Would re-serialize {tree_count} tree blobs");
-                    drop(all_tree_plaintexts);
-                }
-            } else {
-                ui::cli::log!("\nStep 2/5: No tree blobs to re-serialize");
-                drop(all_tree_plaintexts);
-            }
-
-            // ── Step 3: Re-encrypt snapshots ──────────────────────
             {
                 let dropped_ids = repo.list_dropped_snapshot_ids().await?;
                 old_snapshot_ids.extend(snapshot_ids.iter().copied());
@@ -290,22 +236,26 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 let total_files = snapshot_ids.len() + dropped_ids.len();
 
                 if total_files > 0 {
-                    let has_tree_changes = !root_map.is_empty();
-                    ui::cli::log!("\nStep 3/5: Re-encrypting {} snapshots{}...", total_files,
-                        if has_tree_changes { " (with tree updates)" } else { "" });
-                    tracing::info!(target: "migrate", "Step 3: Re-encrypting {} snapshots", total_files);
+                    ui::cli::log!("\nStep 2/4: Re-encrypting {} snapshots...", total_files);
+                    tracing::info!(target: "migrate", "Step 2: Re-encrypting {} snapshots", total_files);
 
                     let file_label = if dry { "Scanning snapshots" } else { "Re-encrypting snapshots" };
+                    let file_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
                     let file_bar = ProgressBar::with_draw_target(
                         Some(total_files as u64),
                         default_bar_draw_target(),
                     )
                     .with_style(
-                        default_progress_style()
-                            .template(&format!(
-                                "[{{elapsed}}] [{{bar:20.cyan/white}}] {file_label}: {{pos}}/{{len}} [ETA: {{eta}}]"
-                            ))
-                            .expect("invalid progress bar template"),
+                        with_custom_eta(
+                            with_custom_elapsed(
+                                default_progress_style()
+                                    .template(&format!(
+                                        "[{{percent}} %] [{{bar:20.cyan/white}}] [{{custom_elapsed}}] {file_label}: {{pos}}/{{len}} [ETA: {{custom_eta}}]"
+                                    ))
+                                    .expect("invalid progress bar template"),
+                            ),
+                            Arc::clone(&file_rate),
+                        ),
                     );
 
                     // Merge active + dropped into a single iterator: (id, tag)
@@ -314,35 +264,20 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                         .chain(dropped_ids.iter().map(|id| (*id, Some("dropped"))));
 
                     let mut snapshot_error_count = 0;
-                    for (old_id, tag) in all_snapshots {
+                    for (old_id, _tag) in all_snapshots {
                         if cleanup_handler.is_interrupted() {
                             return Err(MigrateError::Interrupted);
                         }
                         if dry {
                             file_bar.inc(1);
+                            file_rate.lock().observe(file_bar.position() as f64);
                             continue;
                         }
 
-                        let result = if has_tree_changes {
-                            let snap = repo.load_snapshot(&old_id, tag).await?;
-                            let new_root = root_map.get(&snap.tree).copied().unwrap_or(snap.tree);
-                            let params = migration::ReEncryptParams {
-                                repo: repo.as_ref(),
-                                backend: backend.as_ref(),
-                                secure_storage: secure_storage.as_ref(),
-                                old_nonce_at_end,
-                                new_nonce_at_end,
-                            };
-                            migration::re_encrypt_snapshot(
-                                &params,
-                                &old_id, new_root,
-                            ).await
-                        } else {
-                            migration::re_encrypt_file(
-                                repo.as_ref(), backend.as_ref(), secure_storage.as_ref(),
-                                ContentIdType::Snapshot, &old_id, old_nonce_at_end, new_nonce_at_end,
-                            ).await
-                        };
+                        let result = migration::re_encrypt_file(
+                            repo.as_ref(), backend.as_ref(), secure_storage.as_ref(),
+                            ContentIdType::Snapshot, &old_id, old_nonce_at_end, new_nonce_at_end,
+                        ).await;
 
                         match result {
                             Ok(new_id) => { new_snapshot_ids.push(new_id); }
@@ -352,6 +287,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                             }
                         }
                         file_bar.inc(1);
+                        file_rate.lock().observe(file_bar.position() as f64);
                     }
 
                     file_bar.finish_and_clear();
@@ -364,30 +300,35 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
 
                     ui::cli::log!("Re-encrypted {} snapshot files", total_files);
                 } else {
-                    ui::cli::log!("\nStep 3/5: No snapshots to re-encrypt");
+                    ui::cli::log!("\nStep 2/4: No snapshots to re-encrypt");
                 }
             }
 
-            // ── Step 4: Rebuild index and persist ──────────────────────
-            ui::cli::log!("\nStep 4/5: Rebuilding index...");
-            tracing::info!(target: "migrate", "Step 4: Rebuilding index");
+            // ── Step 3: Rebuild index and persist ──────────────────────
+            ui::cli::log!("\nStep 3/4: Rebuilding index...");
+            tracing::info!(target: "migrate", "Step 3: Rebuilding index");
 
             let mut new_master_index = MasterIndex::new(global_args.index_mode);
             new_master_index.set_autosave(false);
 
+            let scan_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
             let scan_bar = ProgressBar::with_draw_target(
                 Some(pack_map.len() as u64),
                 default_bar_draw_target(),
             )
             .with_style(
-                default_progress_style()
-                    .template("[{elapsed}] [{bar:20.cyan/white}] Building index: {pos}/{len} [ETA: {eta}]")
-                    .expect("invalid progress bar template"),
+                with_custom_eta(
+                    with_custom_elapsed(
+                        default_progress_style()
+                            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] Building index: {pos}/{len} [ETA: {custom_eta}]")
+                            .expect("invalid progress bar template"),
+                    ),
+                    Arc::clone(&scan_rate),
+                ),
             );
 
             let mut blob_count = 0;
             let mut zero_blob_count = 0;
-            let total_packs = pack_map.len();
             for (_old_id, new_id, descriptors) in &pack_map {
                 if cleanup_handler.is_interrupted() {
                     return Err(MigrateError::Interrupted);
@@ -402,32 +343,23 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     .add_pack(repo.as_ref(), new_id, descriptors.clone())
                     .await?;
                 scan_bar.inc(1);
-            }
-
-            // Register the tree pack (re-serialized binary trees) if any.
-            let mut extra_pack_count = 0usize;
-            if let Some((tree_pack_id, tree_descriptors)) = tree_pack_descriptor {
-                blob_count += tree_descriptors.len();
-                new_master_index
-                    .add_pack(repo.as_ref(), &tree_pack_id, tree_descriptors)
-                    .await?;
-                extra_pack_count += 1;
+                scan_rate.lock().observe(scan_bar.position() as f64);
             }
 
             scan_bar.finish_and_clear();
 
-            let total_indexed_packs = total_packs + extra_pack_count;
+            let total_packs = pack_map.len();
             if zero_blob_count > 0 {
-                ui::cli::log!("Index covers {} blobs ({} zero) across {} packs", blob_count, zero_blob_count, total_indexed_packs);
+                ui::cli::log!("Index covers {} blobs ({} zero) across {} packs", blob_count, zero_blob_count, total_packs);
             } else {
-                ui::cli::log!("Index covers {} blobs across {} packs", blob_count, total_indexed_packs);
+                ui::cli::log!("Index covers {} blobs across {} packs", blob_count, total_packs);
             }
 
             let old_index_ids = repo.list_index_ids().await?;
 
-            // ── Step 5: Update manifest (atomic commit point) ──────────
-            ui::cli::log!("\nStep 5/5: Updating manifest and cleaning up...");
-            tracing::info!(target: "migrate", "Step 5: Updating manifest and cleaning up");
+            // ── Step 4: Update manifest (atomic commit point) ──────────
+            ui::cli::log!("\nStep 4/4: Updating manifest and cleaning up...");
+            tracing::info!(target: "migrate", "Step 4: Updating manifest and cleaning up");
 
             if !args.dry_run {
                 secure_storage.set_nonce_at_end(new_nonce_at_end);

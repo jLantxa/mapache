@@ -370,18 +370,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
 
     let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
 
-    let bundle_writer = Arc::new(
-        BundleWriter::new(
-            output,
-            &password,
-            global.compression_level.to_level(),
-            !matches!(global.compression_level, Compression::None),
-            args.format as u16,
-            ecc_config,
-            args.calibrate_kdf,
-        )
-        .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
-    );
     let shutdown_signal = Arc::new(AtomicBool::new(false));
     let progress = Arc::new(SnapshotProgress::new());
 
@@ -497,6 +485,19 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         exclude_paths.clone(),
         status.clone(),
         event_sender.clone(),
+    );
+
+    let bundle_writer = Arc::new(
+        BundleWriter::new(
+            output,
+            &password,
+            global.compression_level.to_level(),
+            !matches!(global.compression_level, Compression::None),
+            args.format as u16,
+            ecc_config,
+            args.calibrate_kdf,
+        )
+        .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     );
 
     // Map FSNodeStream output into the DiffTuple format that run_pipeline expects.

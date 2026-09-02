@@ -550,15 +550,22 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         tracing::warn!(target: "bundle", "Scanner task panicked: {e}");
     }
 
-    let result = pipeline_result?;
-
-    writer_finalize(
-        bundle_writer.as_ref(),
-        result.root_tree_id,
-        output,
-        &progress,
-    )
-    .await?;
+    match pipeline_result {
+        Ok(result) => {
+            writer_finalize(
+                bundle_writer.as_ref(),
+                result.root_tree_id,
+                output,
+                &progress,
+            )
+            .await?;
+        }
+        Err(e) => {
+            drop(bundle_writer);
+            let _ = tokio::fs::remove_file(output).await;
+            return Err(BundleError::Repo(e));
+        }
+    }
 
     let summary = progress.summary();
     event_sender(Event::Backup(BackupEvent::Finished(summary)));
@@ -707,106 +714,122 @@ async fn export_snapshot_impl(
         .map_err(|e| MapacheError::Repo(e.to_string()))?,
     );
 
-    // Collect all blob IDs from the snapshot tree
-    if !global.json {
-        cli::log!("{} Walking snapshot tree...", "[2/3]".bold().cyan());
-    }
-
-    let mut blob_list: Vec<(ID, BlobType)> = Vec::new();
-    let mut tree_stack: Vec<ID> = Vec::new();
-    let mut visited_trees: IdSet<ID> = IdSet::default();
-    let mut visited_blobs: IdSet<ID> = IdSet::default();
-    let mut total_bytes: u64 = 0;
-    let index = repo.index();
-
-    tree_stack.push(snapshot.tree);
-
-    while let Some(tree_id) = tree_stack.pop() {
-        if !visited_trees.insert(tree_id) {
-            continue;
-        }
-        blob_list.push((tree_id, BlobType::Tree));
-        if let Some(loc) = index.get(&tree_id).await {
-            total_bytes += loc.raw_length as u64;
+    let export_result = (|| async {
+        // Collect all blob IDs from the snapshot tree
+        if !global.json {
+            cli::log!("{} Walking snapshot tree...", "[2/3]".bold().cyan());
         }
 
-        match Tree::load_from_repo(repo.as_ref(), &tree_id).await {
-            Ok(tree) => {
-                for node in tree.nodes {
-                    if let Some(subtree_id) = node.tree {
-                        tree_stack.push(subtree_id);
-                    }
-                    if let Some(blob_ids) = node.blobs {
-                        for blob_id in blob_ids {
-                            if !visited_blobs.insert(blob_id) {
-                                continue;
-                            }
-                            blob_list.push((blob_id, BlobType::Data));
-                            if let Some(loc) = index.get(&blob_id).await {
-                                total_bytes += loc.raw_length as u64;
+        let mut blob_list: Vec<(ID, BlobType)> = Vec::new();
+        let mut tree_stack: Vec<ID> = Vec::new();
+        let mut visited_trees: IdSet<ID> = IdSet::default();
+        let mut visited_blobs: IdSet<ID> = IdSet::default();
+        let mut total_bytes: u64 = 0;
+        let index = repo.index();
+
+        tree_stack.push(snapshot.tree);
+
+        while let Some(tree_id) = tree_stack.pop() {
+            if !visited_trees.insert(tree_id) {
+                continue;
+            }
+            blob_list.push((tree_id, BlobType::Tree));
+            if let Some(loc) = index.get(&tree_id).await {
+                total_bytes += loc.raw_length as u64;
+            }
+
+            match Tree::load_from_repo(repo.as_ref(), &tree_id).await {
+                Ok(tree) => {
+                    for node in tree.nodes {
+                        if let Some(subtree_id) = node.tree {
+                            tree_stack.push(subtree_id);
+                        }
+                        if let Some(blob_ids) = node.blobs {
+                            for blob_id in blob_ids {
+                                if !visited_blobs.insert(blob_id) {
+                                    continue;
+                                }
+                                blob_list.push((blob_id, BlobType::Data));
+                                if let Some(loc) = index.get(&blob_id).await {
+                                    total_bytes += loc.raw_length as u64;
+                                }
                             }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                return Err(
-                    MapacheError::Repo(format!("failed to load tree {}: {}", tree_id, e)).into(),
-                );
+                Err(e) => {
+                    return Err(MapacheError::Repo(format!(
+                        "failed to load tree {}: {}",
+                        tree_id, e
+                    ))
+                    .into());
+                }
             }
         }
-    }
 
-    // Write blobs to bundle concurrently
-    let start = Instant::now();
-    let total = blob_list.len();
+        // Write blobs to bundle concurrently
+        let start = Instant::now();
+        let total = blob_list.len();
 
-    let (bar, export_rate) = make_transfer_progress_bar(total_bytes, global.json);
+        let (bar, export_rate) = make_transfer_progress_bar(total_bytes, global.json);
 
-    let results: Vec<Result<(), MapacheError>> = stream::iter(blob_list)
-        .map(|(blob_id, blob_type)| {
-            let repo = repo.clone();
-            let bundle_writer = bundle_writer.clone();
-            let bar = bar.clone();
-            let export_rate = export_rate.clone();
-            async move {
-                let data = repo.load_blob(&blob_id).await?;
-                let blob_size = data.len() as u64;
+        let results: Vec<Result<(), MapacheError>> = stream::iter(blob_list)
+            .map(|(blob_id, blob_type)| {
+                let repo = repo.clone();
+                let bundle_writer = bundle_writer.clone();
+                let bar = bar.clone();
+                let export_rate = export_rate.clone();
+                async move {
+                    let data = repo.load_blob(&blob_id).await?;
+                    let blob_size = data.len() as u64;
 
-                tokio::task::spawn_blocking(move || {
-                    bundle_writer.save_blob(
-                        blob_type,
-                        WriteContents::Owned(data),
-                        SaveID::WithID(blob_id),
-                    )
-                })
-                .await
-                .map_err(|e| MapacheError::Repo(format!("export task panicked: {}", e)))??;
+                    tokio::task::spawn_blocking(move || {
+                        bundle_writer.save_blob(
+                            blob_type,
+                            WriteContents::Owned(data),
+                            SaveID::WithID(blob_id),
+                        )
+                    })
+                    .await
+                    .map_err(|e| MapacheError::Repo(format!("export task panicked: {}", e)))??;
 
-                if let Some(ref bar) = bar {
-                    bar.inc(blob_size);
-                    export_rate.lock().observe(bar.position() as f64);
+                    if let Some(ref bar) = bar {
+                        bar.inc(blob_size);
+                        export_rate.lock().observe(bar.position() as f64);
+                    }
+
+                    Ok(())
                 }
+            })
+            .buffer_unordered(args.readers)
+            .collect::<Vec<Result<(), MapacheError>>>()
+            .await;
 
-                Ok(())
-            }
-        })
-        .buffer_unordered(args.readers)
-        .collect::<Vec<Result<(), MapacheError>>>()
-        .await;
+        for r in results {
+            r?;
+        }
 
-    for r in results {
-        r?;
-    }
+        if let Some(ref bar) = bar {
+            bar.finish_and_clear();
+        }
 
-    if let Some(ref bar) = bar {
-        bar.finish_and_clear();
-    }
+        // Finalize bundle
+        bundle_writer
+            .finalize(snapshot.tree)
+            .map_err(|e| MapacheError::Repo(e.to_string()))?;
 
-    // Finalize bundle
-    bundle_writer
-        .finalize(snapshot.tree)
-        .map_err(|e| MapacheError::Repo(e.to_string()))?;
+        Ok::<_, BundleError>((total, total_bytes, start))
+    })()
+    .await;
+
+    let (total, total_bytes, start) = match export_result {
+        Ok(v) => v,
+        Err(e) => {
+            drop(bundle_writer);
+            let _ = tokio::fs::remove_file(output).await;
+            return Err(e);
+        }
+    };
 
     let final_size = std::fs::metadata(output)
         .map_err(|e| MapacheError::Repo(format!("failed to stat bundle file: {}", e)))?

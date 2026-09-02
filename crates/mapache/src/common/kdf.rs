@@ -47,6 +47,8 @@ fn total_memory_mib() -> u64 {
         // SAFETY: GlobalMemoryStatusEx is always safe to call; zeroed struct is valid.
         let mut mem = unsafe { std::mem::zeroed::<MEMORYSTATUSEX>() };
         mem.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
+        // SAFETY: `GlobalMemoryStatusEx` is a documented Win32 API that fills in a
+        // `MEMORYSTATUSEX` struct; the struct is properly initialized above.
         unsafe { GlobalMemoryStatusEx(&mut mem) };
         mem.ullTotalPhys / size::MiB
     }

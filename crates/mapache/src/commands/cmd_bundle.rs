@@ -371,6 +371,8 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
 
     let shutdown_signal = Arc::new(AtomicBool::new(false));
+    let _cleanup_handler =
+        CleanupHandler::new_with_interrupt_and_callback(shutdown_signal.clone(), || {});
     let progress = Arc::new(SnapshotProgress::new());
 
     // Normalize source paths to absolute, canonical form.

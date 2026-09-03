@@ -9,6 +9,7 @@ pub mod cmd_config;
 pub mod cmd_copy;
 mod cmd_diff;
 pub mod cmd_dump;
+pub mod cmd_ecc;
 pub mod cmd_find;
 pub mod cmd_forget;
 pub mod cmd_init;
@@ -101,6 +102,7 @@ pub enum Command {
     Config(cmd_config::CmdArgs),
     Diff(WithGlobal<cmd_diff::CmdArgs>),
     Dump(WithGlobal<cmd_dump::CmdArgs>),
+    Ecc(WithGlobal<cmd_ecc::CmdArgs>),
     Find(WithGlobal<cmd_find::CmdArgs>),
     Forget(WithGlobal<cmd_forget::CmdArgs>),
     Init(WithGlobal<cmd_init::CmdArgs>),
@@ -697,6 +699,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Copy(cmd) => (resolve_global(&cmd.global, &config), Command::Copy(cmd)),
         Command::Diff(cmd) => (resolve_global(&cmd.global, &config), Command::Diff(cmd)),
         Command::Dump(cmd) => (resolve_global(&cmd.global, &config), Command::Dump(cmd)),
+        Command::Ecc(cmd) => (resolve_global(&cmd.global, &config), Command::Ecc(cmd)),
         Command::Find(cmd) => (resolve_global(&cmd.global, &config), Command::Find(cmd)),
         Command::Init(cmd) => (resolve_global(&cmd.global, &config), Command::Init(cmd)),
         Command::Key(cmd) => (resolve_global(&cmd.global, &config), Command::Key(cmd)),
@@ -767,6 +770,9 @@ pub async fn parse_and_run() -> i32 {
             .await
             .map_err(CmdError::new),
         Command::Dump(cmd) => cmd_dump::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Ecc(cmd) => cmd_ecc::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
         Command::Find(cmd) => cmd_find::run(&global, &cmd.args)

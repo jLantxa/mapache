@@ -655,13 +655,15 @@ content.
     "t": 2,
     "p": 1
   },
-  "m": 19456,
-  "t": 2,
-  "p": 1,
   "salt": "VRKrdGuf5T8iW3b5VYgJ+bMTMrYKRphbxkq2qW6C7VQ=",
   "encrypted_key": "bkwxbjuLbV094UiRFoO5t2YlV3ZhsCQdn3z2A+YyPSNewGFUo+AwL+L7Jae406yW4OHcHzFwN3wv7Vlj"
 }
 ```
+
+The `kdf` field is a tagged enum (`KdfConfig`) that stores both the algorithm
+name and its parameters. The `algorithm` discriminator allows extending to
+additional KDFs in the future without changing the on-disk format. Currently the
+only supported value is `"argon2id"`.
 
 > **Note:** The top-level `m`, `t`, `p` fields are deprecated (v1 format) and
 > will be removed in a future version. New keyfiles always write the `kdf`

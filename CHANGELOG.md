@@ -23,12 +23,17 @@
 - **ECC in bundle format v2**: Bundle files now support inline Reed-Solomon ECC
   protecting the blob data section. Enabled with `--ecc <PERCENT>` during bundle
   creation. Corrupted blobs are automatically repaired during extraction.
+- **`mapache ecc`**: New command to manage ECC sidecars after repository creation.
+  Subcommands: `enable`, `disable`, `set-percent`, and `regenerate`. Allows
+  enabling ECC on existing repositories, changing the overhead percentage, or
+  regenerating all sidecars.
 - *Verify metadata*: `mapache verify` can now check metadata files (index,
   snapshot, etc.) and repair them if ECC is enabled.
 - **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
   for commands that don't need the full index.
 - *KDF calibration*: Added `--calibrate-kdf` to allow calibrating the Argon2id
-  parameters for a target run time in the running hardware.
+  parameters for a target run time in the running hardware. Memory is
+  auto-detected (10% of RAM, clamped to 32–64 MiB).
 
 ### Changed
 
@@ -45,6 +50,10 @@
 - **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
   operating on v1 repositories. Consider migrating with `mapache migrate`.
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
+- **Keyfile format**: Key files now use a nested `kdf` object with an
+  `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
+  instead of flat top-level `m`, `t`, `p` fields. Old v1 keyfiles are read
+  transparently by constructing the `kdf` object from the flat fields.
 
 ### Fixed
 
@@ -59,6 +68,9 @@
   to epoch, fixing silent metadata loss on old files.
 - **Bundle validation**: Reject blob sizes and trailer fields that overflow
   `u32` instead of silently truncating.
+- **Bundle cleanup on interrupt/error**: Delete the output file when a bundle
+  creation is interrupted by Ctrl+C or fails after the file has been created.
+  Also delay opening the bundle writer until after all upfront checks pass.
 - **Verify exit codes**: Detect corrupt metadata files (exit code `23`) and
   preserve per-error exit codes in `clean`.
 - **Symlink restore safety**: Symlink subtrees no longer emit during tree

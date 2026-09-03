@@ -476,6 +476,7 @@ mapache init -r <URL>
 mapache init --format 2 -r <URL>   # Explicit v2 (default)
 mapache init --format 1 -r <URL>   # Legacy v1 (deprecated)
 mapache init --ecc 50 -r <URL>     # Enable ECC with 50% overhead
+mapache init --calibrate-kdf -r <URL>  # Tune Argon2id for this hardware
 ```
 
 Creates a new empty repository at the given location. Supported URL schemes:
@@ -488,6 +489,7 @@ Creates a new empty repository at the given location. Supported URL schemes:
 |---|---|
 | `--format <1\|2>` | Repository format version (default: 2) |
 | `--ecc <0-100>` | Enable ECC with given overhead percentage (0 disables) |
+| `--calibrate-kdf` | Benchmark Argon2id parameters on the current hardware (slow; use once) |
 
 > **SSH key support:** mapache supports Ed25519 and ECDSA keys for SFTP
 > authentication. RSA keys are **not** supported — use `ssh-keygen -t ed25519`
@@ -1335,6 +1337,7 @@ Bundle-specific options:
 | `--readers <N>` | Parallel readers (default: 4) |
 | `--format <1\|2>` | Bundle format version (default: 2). v2 supports ECC |
 | `--ecc <0-100>` | Enable Reed-Solomon ECC with given overhead percentage (v2 only) |
+| `--calibrate-kdf` | Benchmark Argon2id parameters for this hardware (slow; use once) |
 | `-c, --create` | Create mountpoint if it does not exist (mount mode) |
 | `--allow-other` | Allow other users to access the mount |
 | `--metadata-only` | Display file listing without loading contents |
@@ -1564,6 +1567,7 @@ Initialize a new backup repository.
 mapache init -r <URL>
   --format <1|2>         Repository format version (default: 2)
   --ecc <0-100>          Enable ECC with given overhead percentage (0 disables)
+  --calibrate-kdf        Benchmark Argon2id parameters for this hardware
 ```
 
 ### `mapache snapshot`
@@ -1736,11 +1740,41 @@ Manage repository key files.
 
 ```
 mapache key list -r <URL>
-mapache key add -r <URL> [--path <PATH>]
+mapache key add -r <URL> [--path <PATH>] [--calibrate-kdf]
 mapache key delete <KEY_ID> -r <URL>
-mapache key change-password -r <URL>
+mapache key change-password -r <URL> [--calibrate-kdf]
 mapache key export <KEY_ID> -r <URL> [-o <PATH>]
 ```
+
+| Flag | Description |
+|---|---|
+| `--calibrate-kdf` | Benchmark Argon2id parameters on the current hardware (slow; use once) |
+
+When `--calibrate-kdf` is used, mapache benchmarks the current hardware and
+selects Argon2id memory/iterations/parallelism tuned to a 500 ms target. Memory
+is auto-detected (10% of RAM, clamped to 32–64 MiB). Use this when creating a
+key on a powerful server that will later be used for restores.
+
+### `mapache ecc`
+
+Manage Reed-Solomon ECC sidecars for the repository.
+
+```bash
+mapache ecc enable <PERCENT> -r <URL>      # Enable ECC and generate sidecars
+mapache ecc disable -r <URL>               # Disable ECC and remove sidecars
+mapache ecc set-percent <PERCENT> -r <URL> # Change overhead and regenerate
+mapache ecc regenerate -r <URL>            # Regenerate all sidecars
+```
+
+| Subcommand | Description |
+|---|---|
+| `enable <PERCENT>` | Enable ECC with the given overhead percentage (1–100) and generate sidecars for all packs, indices, and snapshots |
+| `disable` | Disable ECC and delete all `.ecc` sidecar files |
+| `set-percent <PERCENT>` | Change the ECC overhead percentage; deletes old sidecars and regenerates with the new setting |
+| `regenerate` | Regenerate all sidecars using the current ECC config (useful after corruption or parameter changes) |
+
+`ecc` requires repository format v2. Use `mapache migrate` to upgrade v1
+repositories before enabling ECC.
 
 ### `mapache bundle`
 
@@ -1762,6 +1796,7 @@ mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
   -e, --exclude <GLOB>    Exclude globs (bundle mode)
   --as-root               Use a single directory as the bundle root (bundle mode)
   --readers <N>           Parallel readers (default: 4)
+  --calibrate-kdf         Benchmark Argon2id parameters for this hardware (create mode)
   -c, --create            Create mountpoint (mount mode)
   --allow-other           Allow other users (mount mode)
   --metadata-only         Don't load file contents (mount mode)

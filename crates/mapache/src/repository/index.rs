@@ -545,11 +545,7 @@ impl Index {
     /// Saves the index to the repository.
     /// Returns the total uncompressed and compressed sizes of the saved index files.
     // TODO(v1-removal): Remove `repo_version` parameter.
-    pub async fn persist(
-        &mut self,
-        repo: &Repository,
-        repo_version: Option<u32>,
-    ) -> Result<SizePair> {
+    pub async fn persist(&mut self, repo: &Repository, repo_version: u32) -> Result<SizePair> {
         self.finalize();
 
         if self.is_empty() {
@@ -583,7 +579,13 @@ impl Index {
 
         add_to_entries(&self.data_ids, BlobType::Data);
         add_to_entries(&self.tree_ids, BlobType::Tree);
-        add_to_entries(&self.zero_ids, BlobType::Zero);
+        // TODO(v1-removal): Remove the version check; v1 format does not support BlobType::Zero.
+        let zero_type = if repo_version >= 2 {
+            BlobType::Zero
+        } else {
+            BlobType::Data
+        };
+        add_to_entries(&self.zero_ids, zero_type);
 
         // Sort blobs within each pack for deterministic serialization
         for pack in &mut pack_entries {
@@ -595,12 +597,10 @@ impl Index {
 
         // Sort packs themselves
         pack_entries.sort_unstable_by_key(|p| p.id);
-
-        let effective_version = repo_version.unwrap_or(repo.repo_version());
         let serialized = IndexFile {
             packs: pack_entries,
         }
-        .serialize(effective_version)?;
+        .serialize(repo_version)?;
 
         let (id, size) = repo
             .save_file(
@@ -1206,7 +1206,7 @@ impl MasterIndex {
         }
 
         if let Some(mut idx) = index_to_persist {
-            let size = idx.persist(repo, None).await?;
+            let size = idx.persist(repo, repo.repo_version()).await?;
             // Put the persisted index back with updated status.
             let mut lock = self.inner.write();
             lock.indices.push(idx);
@@ -1226,6 +1226,7 @@ impl MasterIndex {
         repo: &Repository,
         repo_version: Option<u32>,
     ) -> Result<SizePair> {
+        let repo_version = repo_version.unwrap_or(repo.repo_version());
         let mut total_size = SizePair::zero();
 
         // Collect indices that need persisting, taking them out to avoid holding

@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
     commands::{
-        Compression, GlobalArgs, UseSnapshot, cmd_amend, cmd_bundle, cmd_cat, cmd_clean,
+        Compression, GlobalArgs, UseSnapshot, cmd_amend, cmd_bundle, cmd_cat, cmd_clean, cmd_ecc,
         cmd_forget, cmd_init, cmd_log, cmd_rebuild_index, cmd_recall, cmd_rechunk, cmd_restore,
         cmd_snapshot, cmd_stats, cmd_sync, cmd_unlock, cmd_verify,
     },
@@ -35,6 +35,7 @@ mod test_cmd_completion;
 mod test_cmd_copy;
 mod test_cmd_diff;
 mod test_cmd_dump;
+mod test_cmd_ecc;
 mod test_cmd_find;
 mod test_cmd_forget;
 mod test_cmd_init;
@@ -210,6 +211,11 @@ impl TestContext {
     /// Creates a default Rechunk CmdArgs builder.
     pub fn rechunk_builder(&self) -> RechunkBuilder {
         RechunkBuilder::new()
+    }
+
+    /// Creates an Ecc CmdArgs builder.
+    pub fn ecc_builder(&self, subcmd: cmd_ecc::SubCmd) -> EccBuilder {
+        EccBuilder::new(subcmd)
     }
 
     /// Creates a default Amend CmdArgs builder.
@@ -950,6 +956,23 @@ impl RechunkBuilder {
         cmd_rechunk::run(global, &self.args)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[derive(Clone)]
+pub struct EccBuilder {
+    pub args: cmd_ecc::CmdArgs,
+}
+
+impl EccBuilder {
+    pub fn new(subcmd: cmd_ecc::SubCmd) -> Self {
+        Self {
+            args: cmd_ecc::CmdArgs { subcmd },
+        }
+    }
+
+    pub async fn run(self, global: &GlobalArgs) -> Result<()> {
+        cmd_ecc::run(global, &self.args).await.map_err(Into::into)
     }
 }
 

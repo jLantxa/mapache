@@ -50,15 +50,27 @@ pub struct Argon2Params {
     pub p: u32,
 }
 
-/// A metadata structure that contains information about a repository key
+/// Key file struct (v2 layout with nested kdf object).
+///
+/// On disk, v1 repos use flat m/t/p fields ([`KeyFileV1`]). The custom
+/// [`Deserialize`] impl converts v1 format on read into this representation.
 #[derive(Debug, Serialize)]
 pub struct KeyFile {
     pub created: DateTime<Local>,
     pub username: String,
-
-    /// KDF algorithm and parameters
     pub kdf: KdfConfig,
+    pub salt: String,
+    pub encrypted_key: String,
+}
 
+/// v1 key file layout: flat m/t/p fields. Kept for backward-compatible serialization.
+#[derive(Debug, Serialize)]
+pub struct KeyFileV1 {
+    pub created: DateTime<Local>,
+    pub username: String,
+    pub m: u32,
+    pub t: u32,
+    pub p: u32,
     pub salt: String,
     pub encrypted_key: String,
 }
@@ -300,19 +312,18 @@ impl KeyManager {
             })
     }
 
-    /// Generates a new KeyFile for the master key with a new password.
+    /// Generates a new key file for the master key with a new password.
     ///
-    /// `repo_version` controls the nonce position used to encrypt the master key
-    /// inside the keyfile: v1 uses nonce-at-start, v2+ uses nonce-at-end. This
-    /// ensures old v1 binaries (which only try nonce-at-start) can still open
-    /// keyfiles produced by the current code.
-    // TODO(v1-removal): Remove repo_version parameter, always use nonce-at-end.
+    /// Returns a `serde_json::Value` serialized in the format matching `repo_version`:
+    /// v1 uses flat m/t/p fields and nonce-at-start, v2+ uses a nested kdf object
+    /// and nonce-at-end.
+    // TODO(v1-removal): Remove repo_version parameter, always use nonce-at-end and kdf object.
     pub fn generate_key_file(
         auth: &Auth,
         master_key: &[u8],
         repo_version: u32,
         calibrate_kdf: bool,
-    ) -> Result<KeyFile> {
+    ) -> Result<serde_json::Value> {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
         let create_time = Local::now();
         let argon2_params = if calibrate_kdf {
@@ -339,13 +350,28 @@ impl KeyManager {
         let t = argon2_params.t_cost();
         let p = argon2_params.p_cost();
 
-        Ok(KeyFile {
-            created: create_time,
-            username: auth.username.clone(),
-            kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
-            encrypted_key: utils::base64::encode(&encrypted_key),
-            salt: utils::base64::encode(&salt),
-        })
+        // TODO(v1-removal): Remove the v1 branch; always use KeyFile.
+        let value = if repo_version < 2 {
+            serde_json::to_value(KeyFileV1 {
+                created: create_time,
+                username: auth.username.clone(),
+                m,
+                t,
+                p,
+                salt: utils::base64::encode(&salt),
+                encrypted_key: utils::base64::encode(&encrypted_key),
+            })?
+        } else {
+            serde_json::to_value(KeyFile {
+                created: create_time,
+                username: auth.username.clone(),
+                kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
+                salt: utils::base64::encode(&salt),
+                encrypted_key: utils::base64::encode(&encrypted_key),
+            })?
+        };
+
+        Ok(value)
     }
 
     /// Retrieve the master key from all available keys in a folder
@@ -487,15 +513,19 @@ impl KeyManager {
         Ok(data)
     }
 
-    /// Save a KeyFile
-    pub async fn save_keyfile(&self, keyfile: &KeyFile) -> Result<ID> {
+    /// Save a key file from a pre-serialized JSON value.
+    pub async fn save_keyfile(
+        &self,
+        keyfile_json: &serde_json::Value,
+        username: &str,
+    ) -> Result<ID> {
         let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
-        let keyfile_json = serde_json::to_string(keyfile)?;
-        let compressed_json = ss.compress(keyfile_json.as_bytes())?;
+        let keyfile_bytes = serde_json::to_vec(keyfile_json)?;
+        let compressed_json = ss.compress(&keyfile_bytes)?;
         let id = ID::from_content(&compressed_json);
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
 
-        tracing::info!(target: "keys", "Saving new key file {} for user {}", id.to_short_hex(8), keyfile.username);
+        tracing::info!(target: "keys", "Saving new key file {} for user {}", id.to_short_hex(8), username);
         self.backend
             .write(
                 &Handle::new_with_hint(&path, ContentIdType::Key, true),
@@ -571,7 +601,8 @@ mod tests {
         };
         let master_key = KeyManager::generate_new_master_key();
 
-        let key_file = KeyManager::generate_key_file(&auth, &master_key, 2, false)?;
+        let key_file_value = KeyManager::generate_key_file(&auth, &master_key, 2, false)?;
+        let key_file: KeyFile = serde_json::from_value(key_file_value)?;
         assert_eq!(key_file.username, "test_user");
 
         let decoded_master_key = KeyManager::decode_master_key(&auth.password, &key_file)?;

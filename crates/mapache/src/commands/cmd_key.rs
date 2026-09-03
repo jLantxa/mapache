@@ -271,7 +271,7 @@ async fn run_password_change(
             })?;
     tracing::info!(target: "key", "Saving updated key file for user {}", auth.username);
     key_manager
-        .save_keyfile(&new_keyfile)
+        .save_keyfile(&new_keyfile, &new_auth.username)
         .await
         .map_err(|e| KeyError::RepoOpenFail(format!("failed to save key file: {}", e.inner())))?;
     tracing::info!(target: "key", "Deleting old key file {}", old_id.to_short_hex(8));

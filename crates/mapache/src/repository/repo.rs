@@ -283,8 +283,8 @@ impl Repository {
             .map_err(|e| MapacheError::Crypto(format!("could not generate key: {e}")))?;
         tracing::info!(
             target: "repo",
-            "Keyfile generated ({kdf})",
-            kdf = keyfile.kdf
+            "Keyfile generated (kdf algorithm: {})",
+            keyfile.get("kdf").and_then(|k| k.get("algorithm")).and_then(|a| a.as_str()).unwrap_or("argon2id")
         );
         let secure_storage = Arc::new(
             SecureStorage::new()
@@ -1884,7 +1884,8 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 2, false)?;
+        let keyfile_value = KeyManager::generate_key_file(&auth, &master_key.clone(), 2, false)?;
+        let keyfile: keys::KeyFile = serde_json::from_value(keyfile_value)?;
 
         let salt = utils::base64::decode(&keyfile.salt)?;
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
@@ -1909,7 +1910,8 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 1, false)?;
+        let keyfile_value = KeyManager::generate_key_file(&auth, &master_key.clone(), 1, false)?;
+        let keyfile: keys::KeyFile = serde_json::from_value(keyfile_value)?;
 
         let salt = utils::base64::decode(&keyfile.salt)?;
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;

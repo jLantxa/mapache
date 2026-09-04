@@ -850,7 +850,7 @@ impl Repository {
         self.backend.remove(&path).await?;
 
         // Also delete .ecc sidecar if it exists (best-effort).
-        if with_extension.is_none() && Self::supports_ecc(file_type) {
+        if Self::supports_ecc(file_type) {
             let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
             if self.backend.path_exists(&ecc_path).await
                 && let Err(e) = self.backend.remove(&ecc_path).await
@@ -862,23 +862,23 @@ impl Repository {
         Ok(size.unwrap_or(0))
     }
 
-    /// Move a file to `.dropped` instead of deleting it, so migration is atomic.
-    /// GC will clean up `.dropped` files later.
-    pub async fn move_to_trash(&self, file_type: ContentIdType, id: &ID) -> Result<u64> {
+    /// Drop a file by renaming it to `.dropped` for atomic cleanup.
+    /// GC will remove `.dropped` files later.
+    pub async fn drop_file(&self, file_type: ContentIdType, id: &ID) -> Result<u64> {
         let path = self.get_path(file_type, id);
         let dropped_path = path.with_extension(REPO_DROPPED_EXTENSION);
-        tracing::info!(target: "repo", "Moving {file_type} {} to trash", path.display());
+        tracing::info!(target: "repo", "Dropping {file_type} {}", path.display());
 
         let size = self.backend.lstat(&path).await?.size;
         self.backend.rename(&path, &dropped_path).await?;
 
-        // Also move .ecc sidecar if it exists (best-effort).
+        // Also drop .ecc sidecar if it exists (best-effort).
         if Self::supports_ecc(file_type) {
             let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
             if self.backend.path_exists(&ecc_path).await {
                 let ecc_dropped = ecc_path.with_extension(REPO_DROPPED_EXTENSION);
                 if let Err(e) = self.backend.rename(&ecc_path, &ecc_dropped).await {
-                    tracing::warn!(target: "repo", "Failed to move ECC sidecar to trash {}: {e}", ecc_path.display());
+                    tracing::warn!(target: "repo", "Failed to drop ECC sidecar {}: {e}", ecc_path.display());
                 }
             }
         }
@@ -887,13 +887,13 @@ impl Repository {
     }
 
     /// Clean up all `.dropped` files for a given file type.
-    pub async fn clean_trash(&self, file_type: ContentIdType) -> Result<u64> {
+    pub async fn clean_dropped(&self, file_type: ContentIdType) -> Result<u64> {
         let mut total_size = 0u64;
 
         if matches!(file_type, ContentIdType::Pack) {
-            // Packs use fanout directory structure; use list_packs_and_trash.
-            let (_packs, trash) = self.list_packs_and_trash().await?;
-            for path in trash {
+            // Packs use fanout directory structure; use list_packs_and_dropped.
+            let (_packs, dropped) = self.list_packs_and_dropped().await?;
+            for path in dropped {
                 if let Some(ext) = path.extension()
                     && ext.to_string_lossy() == REPO_DROPPED_EXTENSION
                 {
@@ -1275,18 +1275,18 @@ impl Repository {
 
     /// Lists all packs in the repository.
     pub async fn list_packs(&self) -> Result<IdSet<ID>> {
-        let (packs, _) = self.list_packs_and_trash().await?;
+        let (packs, _) = self.list_packs_and_dropped().await?;
         Ok(packs)
     }
 
-    /// Lists all packs and trash files (.tmp, .dropped, orphaned .ecc) in the
+    /// Lists all packs and dropped files (.tmp, .dropped, orphaned .ecc) in the
     /// objects directory.
     ///
-    /// An `.ecc` file is considered orphaned (and thus trash) if the
-    /// corresponding pack file does not exist.
-    pub async fn list_packs_and_trash(&self) -> Result<(IdSet<ID>, Vec<PathBuf>)> {
+    /// An `.ecc` file is considered orphaned if the corresponding pack file
+    /// does not exist.
+    pub async fn list_packs_and_dropped(&self) -> Result<(IdSet<ID>, Vec<PathBuf>)> {
         let mut packs = IdSet::default();
-        let mut trash = Vec::new();
+        let mut dropped = Vec::new();
         let mut ecc_files: Vec<(ID, PathBuf)> = Vec::new();
 
         let entries = self.backend.list_dir_recursive(&self.objects_path).await?;
@@ -1312,9 +1312,9 @@ impl Repository {
                         ecc_files.push((id, path));
                         continue;
                     }
-                    trash.push(path);
+                    dropped.push(path);
                 } else if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
-                    trash.push(path);
+                    dropped.push(path);
                 }
             }
         }
@@ -1322,11 +1322,11 @@ impl Repository {
         // Collect orphaned .ecc files (base pack not present).
         for (id, path) in ecc_files {
             if !packs.contains(&id) {
-                trash.push(path);
+                dropped.push(path);
             }
         }
 
-        Ok((packs, trash))
+        Ok((packs, dropped))
     }
 
     /// Returns the path to an object with a given hash in the repository.

@@ -37,8 +37,8 @@ const GC_SNAPSHOT_CONCURRENCY: usize = 4;
 const GC_DELETE_CONCURRENCY: usize = 16;
 /// Concurrency for deleting old indices and obsolete packs.
 const GC_DELETE_SMALL_CONCURRENCY: usize = 8;
-/// Concurrency for listing directories when scanning for trash files.
-const GC_TRASH_SCAN_CONCURRENCY: usize = 4;
+/// Concurrency for listing directories when scanning for dropped files.
+const GC_DROPPED_SCAN_CONCURRENCY: usize = 4;
 
 #[derive(Clone)]
 struct GcReporter(EventSender);
@@ -86,7 +86,7 @@ pub struct Plan {
     pub tolerated_packs: IdSet<ID>, // Packs containing garbage, but keep due to tolerance
     pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
     pub index_ids: IdSet<ID>,      // Current index IDs
-    pub object_trash: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
+    pub object_dropped: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
     /// Flag that signals GC to abort at the next safe checkpoint. Checked
     /// between phases only, so an interrupted GC leaves on-disk state intact.
     pub shutdown_signal: Arc<AtomicBool>,
@@ -124,7 +124,7 @@ pub async fn scan(
         get_referenced_blobs_and_packs(repo.clone(), reporter.0.clone(), shutdown_signal.clone())
             .await?;
 
-    let (mut keep_packs, object_trash) = repo.list_packs_and_trash().await?;
+    let (mut keep_packs, object_dropped) = repo.list_packs_and_dropped().await?;
     let num_total_packs = keep_packs.len(); // Number of total packs in the repository
     let mut unused_packs = keep_packs.clone();
 
@@ -142,7 +142,7 @@ pub async fn scan(
         unused_packs,
         index_ids: repo.index().ids(),
         small_packs: IdSet::default(),
-        object_trash,
+        object_dropped,
         shutdown_signal: shutdown_signal.clone(),
     };
 
@@ -293,9 +293,9 @@ impl Plan {
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
         gc_sizes.deleted_bytes += remove_expired_locks(&self.repo, reporter.0.clone()).await?;
-        delete_trash_files(
+        delete_dropped_files(
             &self.repo,
-            Some(std::mem::take(&mut self.object_trash)),
+            Some(std::mem::take(&mut self.object_dropped)),
             reporter.0.clone(),
         )
         .await?;
@@ -747,10 +747,10 @@ async fn remove_expired_locks(repo: &Arc<Repository>, event_sender: EventSender)
 ///
 /// This function avoids a full recursive crawl by targeting only the specific
 /// directories where temporary files are created (index, snapshots, keys, locks, and data fanout).
-/// If `object_trash` is provided, it skips scanning the object directories.
-async fn delete_trash_files(
+/// If `object_dropped` is provided, it skips scanning the object directories.
+async fn delete_dropped_files(
     repo: &Arc<Repository>,
-    object_trash: Option<Vec<PathBuf>>,
+    object_dropped: Option<Vec<PathBuf>>,
     event_sender: EventSender,
 ) -> Result<()> {
     let target_dirs = vec![
@@ -764,7 +764,7 @@ async fn delete_trash_files(
 
     // Use a stream with limited concurrency to avoid saturating the runtime
     // and preventing deadlocks in block_on contexts.
-    let trash_files: Vec<PathBuf> = stream::iter(target_dirs)
+    let dropped_files: Vec<PathBuf> = stream::iter(target_dirs)
         .map(|dir| {
             let backend = backend.clone();
             async move {
@@ -788,25 +788,25 @@ async fn delete_trash_files(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(target: "gc", "Failed to list trash directory {:?}: {e}", dir);
+                        tracing::warn!(target: "gc", "Failed to list dropped files directory {:?}: {e}", dir);
                     }
                 }
                 Ok::<Vec<PathBuf>, MapacheError>(found)
             }
         })
-        .buffer_unordered(GC_TRASH_SCAN_CONCURRENCY)
+        .buffer_unordered(GC_DROPPED_SCAN_CONCURRENCY)
         .try_collect::<Vec<Vec<PathBuf>>>()
         .await?
         .into_iter()
         .flatten()
-        .chain(object_trash.into_iter().flatten())
+        .chain(object_dropped.into_iter().flatten())
         .collect();
 
-    // Delete found trash files
-    for path in trash_files {
+    // Delete found dropped files
+    for path in dropped_files {
         if backend.remove(&path).await.is_err() {
             (event_sender)(Event::Gc(GcEvent::Warning(format!(
-                "Could not remove trash file {}",
+                "Could not remove dropped file {}",
                 path.display()
             ))));
         }

@@ -398,19 +398,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 repo.save_manifest(&manifest).await?;
                 ui::cli::log!("Manifest updated to v{}", THIS_REPOSITORY_VERSION);
 
-                // Cleanup: move old files to .dropped (atomic), then clean up
+                // Cleanup: drop old files to .dropped (atomic), then clean up
                 let mut deleted_pack_count = 0u64;
                 let mut deletion_failures = 0u32;
                 for (old_id, new_id, _) in &pack_map {
                     if old_id == new_id {
                         continue;
                     }
-                    match repo.move_to_trash(ContentIdType::Pack, old_id).await {
+                    match repo.drop_file(ContentIdType::Pack, old_id).await {
                         Ok(_) => { deleted_pack_count += 1; }
-                        Err(e) => { ui::cli::warning!("failed to move old pack {} to trash: {}", old_id, e); deletion_failures += 1; }
+                        Err(e) => { ui::cli::warning!("failed to drop old pack {}: {}", old_id, e); deletion_failures += 1; }
                     }
                 }
-                ui::cli::log!("Moved {} old pack files to trash", deleted_pack_count);
+                ui::cli::log!("Dropped {} old pack files", deleted_pack_count);
 
                 let mut deleted_snap_count = 0u64;
                 for (old_id, extension) in &old_snapshot_ids {
@@ -418,21 +418,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                         continue;
                     }
 
-                    let cleanup_result = if let Some(extension) = extension {
-                        repo.delete_file(ContentIdType::Snapshot, old_id, Some(extension))
-                            .await
-                    } else {
-                        match repo.move_to_trash(ContentIdType::Snapshot, old_id).await {
-                            Ok(_) => repo
-                                .delete_file(
-                                    ContentIdType::Snapshot,
-                                    old_id,
-                                    Some(REPO_DROPPED_EXTENSION),
-                                )
-                                .await,
-                            Err(e) => Err(e),
-                        }
-                    };
+                    let cleanup_result = repo.delete_file(ContentIdType::Snapshot, old_id, *extension).await;
 
                     match cleanup_result {
                         Ok(_) => deleted_snap_count += 1,
@@ -454,23 +440,23 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     .filter(|id| !new_index_ids.contains(id))
                     .collect();
                 for id in &old_index_ids {
-                    match repo.move_to_trash(ContentIdType::Index, id).await {
+                    match repo.drop_file(ContentIdType::Index, id).await {
                         Ok(size) => { deleted_index_size.fetch_add(size, Ordering::AcqRel); }
-                        Err(e) => { ui::cli::error!("failed to move index {} to trash: {}", id, e); deletion_failures += 1; }
+                        Err(e) => { ui::cli::error!("failed to drop index {}: {}", id, e); deletion_failures += 1; }
                     }
                 }
-                ui::cli::log!("Moved {} old index files to trash", old_index_ids.len());
+                ui::cli::log!("Dropped {} old index files", old_index_ids.len());
 
                 if deletion_failures > 0 {
                     return Err(MigrateError::Repo(MapacheError::Repo(format!(
-                        "migration completed but failed to move {deletion_failures} old files to trash"
+                        "migration completed but failed to drop {deletion_failures} old files"
                     ))));
                 }
 
-                // Clean up pack and index trash files after successful migration.
+                // Clean up dropped pack and index files after successful migration.
                 for ct in [ContentIdType::Pack, ContentIdType::Index] {
-                    if let Err(e) = repo.clean_trash(ct).await {
-                        ui::cli::warning!("failed to clean {ct} trash after migration: {e}");
+                    if let Err(e) = repo.clean_dropped(ct).await {
+                        ui::cli::warning!("failed to clean {ct} dropped files after migration: {e}");
                     }
                 }
 

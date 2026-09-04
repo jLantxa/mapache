@@ -5,7 +5,7 @@ mod tests {
 
     use anyhow::{Context, Result};
 
-    use mapache::commands::cmd_migrate;
+    use mapache::{commands::cmd_migrate, repository::repo::SNAPSHOTS_DIR};
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext},
@@ -171,6 +171,52 @@ mod tests {
                 path.display(),
             );
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_v1_migrate_preserves_dropped_snapshot() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_builder()
+            .format(1)
+            .run(&ctx.global)
+            .await
+            .context("Failed to init v1 repo")?;
+
+        ctx.snapshot(vec![backup_data_tmp_path.join("file.txt")])
+            .await
+            .context("Failed to snapshot")?;
+        let snapshot_id = ctx
+            .get_snapshot_ids()?
+            .into_iter()
+            .next()
+            .context("Snapshot was not created")?;
+
+        ctx.forget_builder()
+            .forget(vec![snapshot_id])
+            .run(&ctx.global)
+            .await
+            .context("Failed to drop snapshot")?;
+
+        cmd_migrate::run(&ctx.global, &cmd_migrate::CmdArgs { dry_run: false })
+            .await
+            .context("Migration failed")?;
+
+        let snapshot_paths = std::fs::read_dir(ctx.repo_path.join(SNAPSHOTS_DIR))?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(snapshot_paths.len(), 1);
+        assert_eq!(
+            snapshot_paths[0]
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("dropped")
+        );
 
         Ok(())
     }

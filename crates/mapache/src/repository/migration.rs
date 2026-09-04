@@ -151,21 +151,31 @@ pub async fn validate_pack(
 
 /// Re-encrypt a standalone file (snapshot, index, etc.).
 pub async fn re_encrypt_file(
-    repo: &Repository,
-    backend: &dyn StorageBackend,
-    secure_storage: &SecureStorage,
+    params: &ReEncryptParams<'_>,
     file_type: ContentIdType,
     old_id: &ID,
-    old_nonce_at_end: bool,
-    new_nonce_at_end: bool,
+    extension: Option<&str>,
 ) -> Result<ID> {
-    let old_path = repo.get_path(file_type, old_id);
-    let data = backend.read(&Handle::new(&old_path), 0, 0).await?;
-    let re_encrypted = secure_storage.re_encrypt(&data, old_nonce_at_end, new_nonce_at_end)?;
+    let old_path = params
+        .repo
+        .get_path(file_type, old_id)
+        .with_extension(extension.unwrap_or_default());
+    let data = params.backend.read(&Handle::new(&old_path), 0, 0).await?;
+    let re_encrypted = params.secure_storage.re_encrypt(
+        &data,
+        params.old_nonce_at_end,
+        params.new_nonce_at_end,
+    )?;
     let new_id = ID::from_content(&re_encrypted);
-    let new_path = repo.get_path(file_type, &new_id);
+    let new_path = params
+        .repo
+        .get_path(file_type, &new_id)
+        .with_extension(extension.unwrap_or_default());
     let new_handle = Handle::new(&new_path);
-    backend.write(&new_handle, re_encrypted.into()).await?;
+    params
+        .backend
+        .write(&new_handle, re_encrypted.into())
+        .await?;
     Ok(new_id)
 }
 

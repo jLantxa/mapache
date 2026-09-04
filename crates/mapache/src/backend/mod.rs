@@ -66,6 +66,18 @@ impl Default for RetryOptions {
     }
 }
 
+fn retry_backoff(options: &RetryOptions, retry_number: u32) -> Result<std::time::Duration> {
+    let multiplier = 1u32.checked_shl(retry_number).ok_or_else(|| {
+        MapacheError::Config(format!(
+            "retry backoff exponent is too large: {retry_number}"
+        ))
+    })?;
+
+    options.base_delay.checked_mul(multiplier).ok_or_else(|| {
+        MapacheError::Config("retry backoff duration exceeds the supported maximum".to_string())
+    })
+}
+
 /// A generic retry wrapper with exponential backoff and per-request timeouts.
 pub async fn retry<T, F, Fut>(name: &str, opts: &RetryOptions, op: F) -> Result<T>
 where
@@ -87,6 +99,12 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
+    if opts.max_attempts == 0 {
+        return Err(MapacheError::Config(
+            "retry max_attempts must be greater than zero".to_string(),
+        ));
+    }
+
     let mut attempts = 0;
     loop {
         let attempt_res = tokio::time::timeout(opts.request_timeout, op()).await;
@@ -101,7 +119,7 @@ where
             Err(e) => {
                 tracing::warn!(target: "backend", "{name} attempt {} timed out: {e:#}, retrying...", attempts + 1);
                 attempts += 1;
-                let wait = opts.base_delay * (2_u32.pow(attempts - 1));
+                let wait = retry_backoff(opts, attempts - 1)?;
                 tokio::time::sleep(wait).await;
             }
             Ok(Err(e)) if !should_retry(&e) => {
@@ -116,7 +134,7 @@ where
             Ok(Err(e)) => {
                 tracing::warn!(target: "backend", "{name} attempt {} failed: {e:#}, retrying...", attempts + 1);
                 attempts += 1;
-                let wait = opts.base_delay * (2_u32.pow(attempts - 1));
+                let wait = retry_backoff(opts, attempts - 1)?;
                 tokio::time::sleep(wait).await;
             }
         }
@@ -775,5 +793,37 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_retry_backoff_rejects_overflow() {
+        let opts = RetryOptions {
+            max_attempts: 3,
+            base_delay: std::time::Duration::MAX,
+            request_timeout: std::time::Duration::from_secs(1),
+        };
+
+        assert!(retry_backoff(&opts, 0).is_ok());
+        assert!(retry_backoff(&opts, 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_retry_rejects_zero_attempts() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempts = AtomicU32::new(0);
+        let opts = RetryOptions {
+            max_attempts: 0,
+            ..RetryOptions::default()
+        };
+
+        let result = retry("test_op", &opts, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, MapacheError>(42) }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
     }
 }

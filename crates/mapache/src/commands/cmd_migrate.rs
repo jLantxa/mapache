@@ -1,6 +1,6 @@
 // TODO(v1-removal): Remove this entire command.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io,
     sync::{
         Arc,
@@ -18,7 +18,11 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, ID, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError},
-    repository::{index::MasterIndex, migration, repo::THIS_REPOSITORY_VERSION},
+    repository::{
+        index::MasterIndex,
+        migration::{self, ReEncryptParams},
+        repo::{REPO_DROPPED_EXTENSION, THIS_REPOSITORY_VERSION},
+    },
     ui::{
         self, cli::color::Colorize, default_bar_draw_target, default_progress_style,
         with_custom_elapsed, with_custom_eta,
@@ -101,13 +105,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             let old_nonce_at_end = false;
             let new_nonce_at_end = true;
 
-            let mut old_pack_ids: Vec<ID> = Vec::new();
-            let mut old_snapshot_ids: Vec<ID> = Vec::new();
-            let mut new_snapshot_ids: Vec<ID> = Vec::new();
+            let mut old_snapshot_ids: Vec<(ID, Option<&str>)> = Vec::new();
+            let mut new_snapshot_ids = HashSet::new();
 
             // ── Step 1: Re-encrypt packs ──────────────────────────────
             let all_pack_ids = repo.list_packs().await?;
-            old_pack_ids.extend(all_pack_ids.iter().copied());
             ui::cli::log!("\nStep 1/4: Re-encrypting {} packs...", all_pack_ids.len());
             tracing::info!(target: "migrate", "Step 1: Re-encrypting {} packs", all_pack_ids.len());
 
@@ -231,8 +233,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             let snapshot_ids = repo.list_snapshot_ids().await?;
             {
                 let dropped_ids = repo.list_dropped_snapshot_ids().await?;
-                old_snapshot_ids.extend(snapshot_ids.iter().copied());
-                old_snapshot_ids.extend(dropped_ids.iter().copied());
+                old_snapshot_ids.extend(snapshot_ids.iter().map(|id| (*id, None)));
+                old_snapshot_ids.extend(
+                    dropped_ids
+                        .iter()
+                        .map(|id| (*id, Some(REPO_DROPPED_EXTENSION))),
+                );
                 let total_files = snapshot_ids.len() + dropped_ids.len();
 
                 if total_files > 0 {
@@ -261,10 +267,21 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     // Merge active + dropped into a single iterator: (id, tag)
                     let all_snapshots = snapshot_ids
                         .iter().map(|id| (*id, None))
-                        .chain(dropped_ids.iter().map(|id| (*id, Some("dropped"))));
+                        .chain(
+                            dropped_ids
+                                .iter()
+                                .map(|id| (*id, Some(REPO_DROPPED_EXTENSION))),
+                        );
+                    let re_encrypt_params = ReEncryptParams {
+                        repo: repo.as_ref(),
+                        backend: backend.as_ref(),
+                        secure_storage: secure_storage.as_ref(),
+                        old_nonce_at_end,
+                        new_nonce_at_end,
+                    };
 
                     let mut snapshot_error_count = 0;
-                    for (old_id, _tag) in all_snapshots {
+                    for (old_id, tag) in all_snapshots {
                         if cleanup_handler.is_interrupted() {
                             return Err(MigrateError::Interrupted);
                         }
@@ -275,12 +292,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                         }
 
                         let result = migration::re_encrypt_file(
-                            repo.as_ref(), backend.as_ref(), secure_storage.as_ref(),
-                            ContentIdType::Snapshot, &old_id, old_nonce_at_end, new_nonce_at_end,
-                        ).await;
+                            &re_encrypt_params,
+                            ContentIdType::Snapshot,
+                            &old_id,
+                            tag,
+                        )
+                        .await;
 
                         match result {
-                            Ok(new_id) => { new_snapshot_ids.push(new_id); }
+                            Ok(new_id) => {
+                                new_snapshot_ids.insert(new_id);
+                            }
                             Err(e) => {
                                 snapshot_error_count += 1;
                                 ui::cli::error!("error re-encrypting snapshot {old_id}: {e}");
@@ -390,19 +412,41 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 }
                 ui::cli::log!("Moved {} old pack files to trash", deleted_pack_count);
 
-                let new_snapshot_set: std::collections::HashSet<ID> =
-                    new_snapshot_ids.iter().copied().collect();
                 let mut deleted_snap_count = 0u64;
-                for old_id in &old_snapshot_ids {
-                    if new_snapshot_set.contains(old_id) {
+                for (old_id, extension) in &old_snapshot_ids {
+                    if new_snapshot_ids.contains(old_id) {
                         continue;
                     }
-                    match repo.move_to_trash(ContentIdType::Snapshot, old_id).await {
-                        Ok(_) => { deleted_snap_count += 1; }
-                        Err(e) => { ui::cli::warning!("failed to move old snapshot {} to trash: {}", old_id, e); deletion_failures += 1; }
+
+                    let cleanup_result = if let Some(extension) = extension {
+                        repo.delete_file(ContentIdType::Snapshot, old_id, Some(extension))
+                            .await
+                    } else {
+                        match repo.move_to_trash(ContentIdType::Snapshot, old_id).await {
+                            Ok(_) => repo
+                                .delete_file(
+                                    ContentIdType::Snapshot,
+                                    old_id,
+                                    Some(REPO_DROPPED_EXTENSION),
+                                )
+                                .await,
+                            Err(e) => Err(e),
+                        }
+                    };
+
+                    match cleanup_result {
+                        Ok(_) => deleted_snap_count += 1,
+                        Err(e) => {
+                            ui::cli::warning!(
+                                "failed to remove old snapshot {}: {}",
+                                old_id,
+                                e
+                            );
+                            deletion_failures += 1;
+                        }
                     }
                 }
-                ui::cli::log!("Moved {} old snapshot files to trash", deleted_snap_count);
+                ui::cli::log!("Removed {} old snapshot files", deleted_snap_count);
 
                 let deleted_index_size = AtomicU64::new(0);
                 let old_index_ids: Vec<_> = old_index_ids
@@ -423,9 +467,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     ))));
                 }
 
-                // Clean up trash files after successful migration
-                for ct in [ContentIdType::Pack, ContentIdType::Snapshot, ContentIdType::Index] {
-                    let _ = repo.clean_trash(ct).await;
+                // Clean up pack and index trash files after successful migration.
+                for ct in [ContentIdType::Pack, ContentIdType::Index] {
+                    if let Err(e) = repo.clean_trash(ct).await {
+                        ui::cli::warning!("failed to clean {ct} trash after migration: {e}");
+                    }
                 }
 
                 let added_size: i64 = new_index_size.encoded as i64

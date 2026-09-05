@@ -192,7 +192,7 @@ impl CmdArgs {
 
 impl Merge for CmdArgs {
     fn merge(&mut self, other: Self) {
-        if !other.paths.is_empty() {
+        if self.paths.is_empty() {
             self.paths = other.paths;
         }
 

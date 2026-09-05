@@ -135,7 +135,7 @@ pub trait Merge {
 }
 
 fn merge_opt<T>(dst: &mut Option<T>, src: Option<T>) {
-    if src.is_some() {
+    if dst.is_none() {
         *dst = src;
     }
 }
@@ -1055,5 +1055,48 @@ mod tests {
         assert!(matches!(pack_size_parser("4095"), Ok(4095.0)));
         assert!(pack_size_parser("4096").is_err());
         assert!(pack_size_parser("8000").is_err());
+    }
+
+    #[test]
+    fn test_merge_opt_cli_takes_precedence() {
+        let mut cli = Some(7);
+        merge_opt(&mut cli, Some(3));
+        assert_eq!(cli, Some(7), "CLI value must not be overridden by config");
+
+        let mut cli_unset = None;
+        merge_opt(&mut cli_unset, Some(3));
+        assert_eq!(cli_unset, Some(3), "config fills in unset CLI value");
+
+        merge_opt(&mut cli, None);
+        assert_eq!(cli, Some(7), "None config must not clear CLI value");
+    }
+
+    #[test]
+    fn test_global_args_config_does_not_override_cli() {
+        let cli = CliGlobalArgs {
+            repo: Some("/repo/cli".into()),
+            no_cache: Some(true),
+            pack_size_mib: Some(64.0),
+            ..Default::default()
+        };
+        let config = CliGlobalArgs {
+            repo: Some("/repo/config".into()),
+            no_cache: Some(false),
+            pack_size_mib: Some(16.0),
+            ..Default::default()
+        };
+
+        let mut merged = cli.clone();
+        merged.merge(config.clone());
+        assert_eq!(merged.repo.as_deref(), Some("/repo/cli"));
+        assert_eq!(merged.no_cache, Some(true));
+        assert_eq!(merged.pack_size_mib, Some(64.0));
+
+        let mut cli_unset = CliGlobalArgs {
+            repo: None,
+            ..Default::default()
+        };
+        cli_unset.merge(config);
+        assert_eq!(cli_unset.repo.as_deref(), Some("/repo/config"));
     }
 }

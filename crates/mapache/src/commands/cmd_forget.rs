@@ -168,12 +168,12 @@ impl CmdArgs {
 
 impl Merge for CmdArgs {
     fn merge(&mut self, other: Self) {
-        if !other.forget.is_empty() {
+        if self.forget.is_empty() {
             self.forget = other.forget;
         }
         // skip: force
         merge_opt(&mut self.tags_str, other.tags_str);
-        if !other.hosts.is_empty() {
+        if self.hosts.is_empty() {
             self.hosts = other.hosts;
         }
         merge_opt(&mut self.keep_last, other.keep_last);

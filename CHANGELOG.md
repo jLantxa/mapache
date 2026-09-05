@@ -57,6 +57,10 @@
 
 ### Fixed
 
+- **Config precedence**: CLI flags now correctly take precedence over config
+  file values. Previously any value present in the config silently overrode the
+  explicit command-line flag (e.g. config `keep_last=1` won over
+  `--keep-last 30`).
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that

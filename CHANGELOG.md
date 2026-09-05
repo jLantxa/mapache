@@ -65,6 +65,8 @@
   files kept locally no longer get their metadata (mtime, permissions, xattrs)
   silently overwritten by the snapshot's metadata. Newly restored files and
   directories still receive the snapshot's metadata.
+- **`migrate` lock**: `mapache migrate` now holds an exclusive lock while
+  rewriting the repository, preventing races with concurrent snapshots.
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that

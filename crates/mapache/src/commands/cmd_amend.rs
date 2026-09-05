@@ -35,6 +35,8 @@ use crate::{
 pub enum AmendError {
     #[error("amend interrupted by user")]
     Interrupted,
+    #[error("snapshot not found: {0}")]
+    NotFound(String),
     #[error(transparent)]
     Repo(#[from] MapacheError),
     #[error(transparent)]
@@ -45,6 +47,7 @@ impl ToExitCode for AmendError {
     fn to_exit_code(&self) -> i32 {
         match self {
             AmendError::Interrupted => 130,
+            AmendError::NotFound(_) => 1,
             AmendError::Repo(_) => 1,
             AmendError::Io(_) => 1,
         }
@@ -122,9 +125,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), AmendEr
             } else {
                 match find_use_snapshot(repo.clone(), &args.snapshot).await {
                     Ok(Some((id, snap))) => snapshots.push((id, snap)),
-                    Ok(None) | Err(_) => {
-                        return Err(AmendError::Interrupted);
+                    Ok(None) => {
+                        return Err(AmendError::NotFound(format!(
+                            "no snapshot found for {} (only snapshots created by this host are considered)",
+                            args.snapshot
+                        )));
                     }
+                    Err(e) => return Err(AmendError::Repo(e)),
                 }
             }
 

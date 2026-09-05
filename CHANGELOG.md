@@ -101,7 +101,11 @@
   tree ID not set" when files are skipped mid-run (e.g. an unreadable file or a
   diff-resolution failure). After the stream ends, remaining trees are
   force-finalized so the snapshot completes and omits the skipped items with a
-  warning.
+warning.
+- **Stat-failure visibility**: Files that fail to stat during directory
+  scanning are now surfaced as visible warnings in snapshot and bundle output
+  instead of being silently omitted with only a debug log, so data loss from
+  permission errors is not silent.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

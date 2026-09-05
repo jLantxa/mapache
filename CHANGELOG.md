@@ -70,6 +70,10 @@
 - **Copy integrity**: `mapache copy` now aborts (non-zero exit) when a source
   tree cannot be read, instead of writing a destination snapshot that silently
   references data which was never copied.
+- **`rebuild-index` safety**: When any pack fails to parse, `rebuild-index`
+  aborts and leaves the existing index untouched instead of persisting a
+  partial index and deleting the original (which would orphan blobs). It also
+  now holds an exclusive lock.
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that

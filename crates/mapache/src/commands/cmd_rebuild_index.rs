@@ -52,7 +52,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?,
         global_args.to_repo_config(),
-        false,
+        true,
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
@@ -162,6 +162,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
             tracing::info!(target: "rebuild-index", "Rebuild summary: {} blobs found, {} packs skipped due to errors", blob_count, error_count);
             if error_count > 0 {
                 ui::cli::warning!("Skipped {} packs due to errors", error_count);
+            }
+
+            // If any pack failed to parse, abort before touching the index.
+            // Persisting a partial index and deleting the old one would
+            // permanently orphan every blob stored in the broken packs.
+            if error_count > 0 && !args.dry_run {
+                return Err(RebuildIndexError::Repo(MapacheError::Internal(format!(
+                    "aborting index rebuild: {error_count} pack(s) could not be read; the existing index was left untouched"
+                ))));
             }
 
             // Save the new index

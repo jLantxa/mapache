@@ -104,6 +104,11 @@ impl Lock {
         }
     }
 
+    #[cfg(test)]
+    pub fn set_pid_for_test(&mut self, pid: u32) {
+        self.pid = pid;
+    }
+
     pub fn refresh(&mut self) {
         self.timestamp = Local::now();
     }
@@ -210,10 +215,22 @@ impl Lock {
         }
     }
 
-    /// A lock is considered stale if it's expired OR if we can prove the process is dead.
+    /// A lock is considered stale when it can safely be reclaimed by another process.
+    ///
+    /// - Same host: the lock is reclaimable as soon as its owner process is provably
+    ///   dead. A *live* process never loses its lock based on age alone: a writer
+    ///   stalled on slow network I/O must not be taken over by a second writer
+    ///   while it is still running.
+    /// - Different host (liveness cannot be verified): the lock is reclaimable once
+    ///   it has gone without a refresh for [`LOCK_EXPIRE_TIMEOUT`].
     #[must_use]
     pub fn is_stale(&self) -> bool {
-        self.is_expired() || !self.process_alive()
+        let (current_hostname, _) = utils::get_system_info();
+        if self.hostname.is_empty() || current_hostname.map(|h| h != self.hostname).unwrap_or(true)
+        {
+            return self.is_expired();
+        }
+        !self.process_alive()
     }
 }
 
@@ -582,9 +599,30 @@ mod tests {
     }
 
     #[test]
-    fn test_lock_stale_when_expired() {
+    fn test_lock_not_stale_when_expired_but_same_host_process_alive() {
+        // Regression for M4: an expired lock whose owner is a *live* process on
+        // the same host must not be reclaimed (the owner may be stalled on I/O).
         let past = Local::now() - ChronoDuration::hours(2);
         let lock = Lock::new_for_test(true, past);
+        assert!(lock.is_expired());
+        assert!(!lock.is_stale());
+    }
+
+    #[test]
+    fn test_lock_stale_when_expired_on_different_host() {
+        let past = Local::now() - ChronoDuration::hours(2);
+        let mut lock = Lock::new_for_test(true, past);
+        lock.hostname = "some-other-host".to_string();
+        assert!(lock.is_expired());
+        assert!(lock.is_stale());
+    }
+
+    #[test]
+    fn test_lock_stale_when_same_host_process_dead() {
+        let mut lock = Lock::new(true);
+        // Far beyond any possible PID (Linux pid_max is at most 2^22), so this
+        // can never resolve to a live process or to the special "-1"/"0" pids.
+        lock.pid = i32::MAX as u32;
         assert!(lock.is_stale());
     }
 

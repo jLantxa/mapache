@@ -93,6 +93,10 @@
   `skip` keeps a conflicting symlink with a warning, `overwrite` replaces it,
   and `fail` aborts — instead of always replacing or always failing regardless
   of the chosen strategy.
+- **Lock staleness**: A lock left by a process that is still running on the same
+  host is no longer treated as stale merely because it exceeded the lock age.
+  Locks are only reclaimed by age when the owning process cannot be confirmed
+  alive (other or unknown host).
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

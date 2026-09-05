@@ -821,10 +821,9 @@ impl Repository {
 
         match file_type {
             ContentIdType::Pack => Ok(data),
-            ContentIdType::Key => {
-                self.secure_storage
-                    .decompress_with_limit(&data, keys::MAX_KEYFILE_SIZE)
-            }
+            ContentIdType::Key => self
+                .secure_storage
+                .decompress_with_limit(&data, keys::MAX_KEYFILE_SIZE),
             _ => self.secure_storage.decode_owned(data),
         }
     }
@@ -2037,6 +2036,9 @@ mod tests {
             true,
             Local::now() - LOCK_EXPIRE_TIMEOUT,
         )));
+        // Simulate a crashed owner on this host (impossible PID) so the lock is
+        // stale regardless of the age-based expiry semantics.
+        other_lock.lock().set_pid_for_test(i32::MAX as u32);
         r0.save_lock(&other_lock).await?;
 
         let (_, _, lock_handle) = Repository::try_open_with_lock(

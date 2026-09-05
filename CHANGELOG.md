@@ -106,6 +106,14 @@ warning.
   scanning are now surfaced as visible warnings in snapshot and bundle output
   instead of being silently omitted with only a debug log, so data loss from
   permission errors is not silent.
+- **`verify` error handling**: `mapache verify` now errors out on failures while
+  listing index/snapshot metadata files and no longer discards per-snapshot
+  corruption-impact traversal results (reported, and honored by `--fail-early`),
+  instead of silently continuing as if everything was verified.
+- **`migrate` / footer robustness**: Pack footer parsing and v1→v2 migration now
+  detect out-of-bounds blob descriptors and `u32` offset overflow and return an
+  error instead of panicking or wrapping on a malformed footer or a data section
+  over 4 GiB.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

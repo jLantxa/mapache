@@ -75,6 +75,9 @@ impl BlobLoader for BundleReader {
                         data.len()
                     )));
                 }
+                if entry.blob_type != crate::common::BlobType::Zero {
+                    id.verify_content(&data)?;
+                }
                 Ok(data)
             }
             Err(MapacheError::Crypto(_)) if self.ecc_config.is_some() => {
@@ -102,6 +105,9 @@ impl BlobLoader for BundleReader {
                         entry.raw_length,
                         data.len()
                     )));
+                }
+                if entry.blob_type != crate::common::BlobType::Zero {
+                    id.verify_content(&data)?;
                 }
                 Ok(data)
             }

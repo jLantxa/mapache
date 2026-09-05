@@ -638,16 +638,21 @@ impl Repository {
             .await
             .ok_or(MapacheError::NotInIndex(*id))?;
         if locator.blob_type == BlobType::Zero {
-            return Ok(vec![0u8; locator.raw_length as usize]);
+            let zero_data = vec![0u8; locator.raw_length as usize];
+            id.verify_content(&zero_data)?;
+            return Ok(zero_data);
         }
-        self.load_from_pack(
-            &locator.pack_id,
-            locator.blob_type,
-            locator.offset,
-            locator.length,
-            locator.compressed,
-        )
-        .await
+        let data = self
+            .load_from_pack(
+                &locator.pack_id,
+                locator.blob_type,
+                locator.offset,
+                locator.length,
+                locator.compressed,
+            )
+            .await?;
+        id.verify_content(&data)?;
+        Ok(data)
     }
 
     /// Load a single index file from disk by its ID (public for cold iteration).

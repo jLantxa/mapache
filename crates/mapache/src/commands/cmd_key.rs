@@ -57,6 +57,10 @@ pub struct AddArgs {
 pub struct DeleteArgs {
     #[clap(value_parser)]
     id: String,
+
+    /// Skip the confirmation prompt
+    #[clap(long)]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -218,6 +222,17 @@ async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<(), K
         .find_id_with_prefix(&args.id)
         .await
         .map_err(|e| KeyError::RepoOpenFail(format!("failed to find key: {}", e.inner())))?;
+
+    if !args.yes
+        && !confirm_prompt(&format!(
+            "Delete key {}? This cannot be undone. [y/N] ",
+            id.to_short_hex(8)
+        ))?
+    {
+        ui::cli::log!("Aborted.");
+        return Ok(());
+    }
+
     tracing::info!(target: "key", "Deleting key file {}", id.to_short_hex(8));
     backend
         .remove(&path)
@@ -300,7 +315,7 @@ async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<(), K
     let raw_keyfile = key_manager
         .load_raw_keyfile(&id)
         .await
-        .map_err(|e| KeyError::RepoOpenFail(format!("failed to load key file: {}", e.inner())))?;
+        .map_err(|e| KeyError::RepoOpenFail(format!("failed to load key file: {e}")))?;
 
     std::fs::write(&args.output_path, &raw_keyfile)?;
 
@@ -311,4 +326,17 @@ async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<(), K
     );
 
     Ok(())
+}
+
+/// Prompts the user for a yes/no confirmation. Anything other than "y"/"yes"
+/// (case-insensitive) is treated as a "no".
+fn confirm_prompt(prompt: &str) -> io::Result<bool> {
+    use std::io::Write;
+    let mut stdout = io::stdout();
+    stdout.write_all(prompt.as_bytes())?;
+    stdout.flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(matches!(answer.as_str(), "y" | "yes"))
 }

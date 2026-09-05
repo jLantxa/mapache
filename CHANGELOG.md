@@ -117,6 +117,12 @@ warning.
 - **Bundle writer bounds**: The ECC, index, and manifest section lengths written
   to the bundle trailer are now validated with `u32::try_from` instead of
   silently truncating any section larger than 4 GiB.
+- **Deterministic blob nonce**: Blob encryption nonces are now derived from the
+  content hash instead of an independent random value, so the 96-bit GCM-SIV
+  nonce can only repeat for identical content (which is safe for GCM-SIV),
+  eliminating random collision risk at scale.
+- **`key` destructive confirmation**: `key delete` now requires `--yes` (or
+  an interactive confirmation) before proceeding.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

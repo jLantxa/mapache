@@ -114,6 +114,9 @@ warning.
   detect out-of-bounds blob descriptors and `u32` offset overflow and return an
   error instead of panicking or wrapping on a malformed footer or a data section
   over 4 GiB.
+- **Bundle writer bounds**: The ECC, index, and manifest section lengths written
+  to the bundle trailer are now validated with `u32::try_from` instead of
+  silently truncating any section larger than 4 GiB.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

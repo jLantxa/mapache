@@ -490,6 +490,7 @@ impl PackSaver {
                 worker_threads.push(std::thread::spawn(move || -> Result<()> {
                     while let Ok((mut packer, blob_type)) = rx.recv() {
                         if err_ptr.lock().is_some() {
+                            let _ = tx.send(packer);
                             return Ok(());
                         }
 

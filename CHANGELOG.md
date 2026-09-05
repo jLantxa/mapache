@@ -131,6 +131,10 @@ warning.
 - **FUSE read performance**: Mounted file reads now resolve blob lengths from
   the index and binary-search the first intersecting blob, instead of loading
   and decrypting every blob from the start of the file on each syscall.
+- **Packer worker pool**: Workers that stop early after another worker reports an
+  error now return their packer to the empty pool instead of dropping it, keeping
+  the pool stable and preventing the pack-saver loop from hanging on a starved
+  pool when a pack fails.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

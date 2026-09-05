@@ -178,7 +178,7 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
     let stripe_encoded: Vec<Vec<u8>> = layouts
         .par_iter()
         .enumerate()
-        .map(|(idx, stripe)| {
+        .map(|(idx, stripe)| -> Result<Vec<u8>, EccEncodeError> {
             let data_offset = offsets[idx];
             let k = stripe.data_shards;
             let p = stripe.parity_shards;
@@ -204,7 +204,7 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
                     .map(|s| s.as_mut_slice())
                     .collect();
                 rs.encode_into(&data_refs, &mut parity_refs)
-                    .expect("encode succeeds");
+                    .map_err(|e| EccEncodeError::EncodeFailed(format!("{e}")))?;
             }
 
             // Build stripe payload: [crc32_data_0..][crc32_parity_0..][parity_data..]
@@ -228,9 +228,9 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
             // Raw parity bytes.
             stripe_out.extend_from_slice(&parity_buf);
 
-            stripe_out
+            Ok(stripe_out)
         })
-        .collect();
+        .collect::<Result<Vec<Vec<u8>>, EccEncodeError>>()?;
 
     // Append stripes in order.
     for stripe in &stripe_encoded {
@@ -519,6 +519,7 @@ pub(crate) fn validate_crc(data: &[u8], ecc_payload: &[u8]) -> Result<(), usize>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EccEncodeError {
     InvalidShardCount { k: usize, p: usize },
+    EncodeFailed(String),
 }
 
 impl std::fmt::Display for EccEncodeError {
@@ -530,6 +531,7 @@ impl std::fmt::Display for EccEncodeError {
                     "invalid shard count: k={k}, p={p} (must be >0 and k+p<=256)"
                 )
             }
+            Self::EncodeFailed(msg) => write!(f, "encode failed: {msg}"),
         }
     }
 }

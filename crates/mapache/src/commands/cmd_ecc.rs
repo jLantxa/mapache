@@ -170,11 +170,18 @@ async fn cmd_disable(
     ui::cli::log!("Disabling ECC...");
     tracing::info!(target: "ecc", "Disabling ECC");
 
-    let count = delete_all_sidecars(backend, cleanup_handler).await?;
+    // Step 1: Reset the ECC value in the manifest.
+    // The value is what gates repairs and new encodings, so this is the actual
+    // "reset". Leftover sidecars are harmless (each self-describes its own K/P),
+    // so doing this first is strictly more crash-safe than deleting them first.
+    {
+        let mut manifest = repo.manifest().clone();
+        manifest.set_ecc(None);
+        repo.save_manifest(&manifest).await?;
+    }
 
-    let mut manifest = repo.manifest().clone();
-    manifest.set_ecc(None);
-    repo.save_manifest(&manifest).await?;
+    // Step 2: Best-effort cleanup of the now-orphaned sidecars.
+    let count = delete_all_sidecars(backend, cleanup_handler).await?;
 
     ui::cli::log!(
         "Done. Removed {} sidecars in {}",
@@ -202,21 +209,16 @@ async fn cmd_set_percent(
     );
     tracing::info!(target: "ecc", "Setting ECC to {}% overhead", percent);
 
-    // Step 1: Disable ECC in the manifest so interrupted runs are safe.
-    {
-        let mut manifest = repo.manifest().clone();
-        manifest.set_ecc(None);
-        repo.save_manifest(&manifest).await?;
-    }
-
-    // Step 2: Delete all existing sidecars.
-    let _deleted = delete_all_sidecars(backend, cleanup_handler).await?;
-
-    // Step 3: Regenerate all sidecars with the new config.
+    // Step 1: Regenerate all sidecars with the new config.
+    // Each sidecar is replaced in place (tmp + rename). During the operation a
+    // transient mix of old/new K/P exists, but every sidecar self-describes its
+    // own K/P in its header, so verify/repair stays functional throughout.
     let count =
         regenerate_sidecars(repo, backend, secure_storage, &new_config, cleanup_handler).await?;
 
-    // Step 4: Update manifest with the new ECC config.
+    // Step 2: Update manifest with the new ECC config.
+    // The manifest's K/P is only used for future encodings (new packs, indices,
+    // snapshots); existing sidecars already carry the new K/P in their headers.
     {
         let mut manifest = repo.manifest().clone();
         manifest.set_ecc(Some(new_config));

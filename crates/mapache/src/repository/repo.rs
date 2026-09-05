@@ -735,12 +735,19 @@ impl Repository {
         };
 
         // Compute ECC sidecar before moving encoded_data.
+        // Run ECC encoding on a blocking thread to avoid stalling the async runtime.
         let ecc_payload = if Self::supports_ecc(file_type) {
             if let Some(ecc_config) = self.manifest.ecc() {
                 let k = ecc_config.data_shards as usize;
                 let p = ecc_config.parity_shards as usize;
-                let raw_ecc = ecc::ecc_encode(bytes_to_write, k, p)
-                    .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
+                let data_for_ecc = bytes_to_write.to_vec();
+                let raw_ecc =
+                    tokio::task::spawn_blocking(move || ecc::ecc_encode(&data_for_ecc, k, p))
+                        .await
+                        .map_err(|e| {
+                            MapacheError::Internal(format!("ECC encode task failed: {e}"))
+                        })?
+                        .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
                 if raw_ecc.is_empty() {
                     None
                 } else {

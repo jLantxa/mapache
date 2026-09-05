@@ -81,6 +81,16 @@ pub async fn re_encrypt_pack(
 
         let start = desc.offset as usize;
         let end = start + desc.length as usize;
+        if end < start || end > data_section_end {
+            return Err(MapacheError::Format(format!(
+                "pack {} descriptor for blob {} is out of bounds: offset {} + length {} exceeds data section ({} bytes)",
+                old_pack_id.to_short_hex(8),
+                desc.id.to_short_hex(8),
+                desc.offset,
+                desc.length,
+                data_section_end
+            )));
+        }
         let blob_encrypted = &pack_data[start..end];
 
         let plaintext = secure_storage
@@ -101,7 +111,13 @@ pub async fn re_encrypt_pack(
                 secure_storage.re_encrypt(blob_encrypted, old_nonce_at_end, new_nonce_at_end)?;
             desc.offset = new_offset;
             desc.length = re_encrypted.len() as u32;
-            new_offset += desc.length;
+            new_offset = new_offset.checked_add(desc.length).ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "pack {} exceeds 4 GiB while re-encrypting (offset overflow at blob {})",
+                    old_pack_id.to_short_hex(8),
+                    desc.id.to_short_hex(8)
+                ))
+            })?;
             new_data.extend_from_slice(&re_encrypted);
         }
     }

@@ -405,7 +405,11 @@ impl Packer {
                     raw_length,
                     compressed,
                 });
-                offset += length;
+                offset = offset.checked_add(length).ok_or_else(|| {
+                    MapacheError::Integrity(format!(
+                        "pack offset overflow while parsing footer (offset {offset} + length {length})"
+                    ))
+                })?;
             }
         }
 

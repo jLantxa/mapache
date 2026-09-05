@@ -87,6 +87,8 @@
   an existing repository whose lock cannot be acquired, instead of silently
   continuing without a destination lock and degrading the copy. The unlocked
   fallback is only used for fresh (bootstrapping) destinations.
+- **`copy` destination lock**: `mapache copy` now acquires a lock on
+  the destination repository by default (honoring `--no-lock`).
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

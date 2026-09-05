@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{self, BackendOptions, WriteContents},
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, open_repository},
+    commands::{
+        GlobalArgs, ToExitCode, cleanup::CleanupHandler, open_repository, open_repository_with_lock,
+    },
     common::{
         BlobType, ContentIdType, ID, SaveID,
         defaults::{SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
@@ -144,14 +146,29 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
             ))
         })?;
 
-    let (dst_repo, _dst_ss) = open_repository(
-        global_args.auth_file.as_ref(),
-        global_args.key.as_ref(),
-        dst_backend.clone(),
-        repo_config,
-    )
-    .await
-    .map_err(|e| CopyError::RepoOpenFail(e.to_string()))?;
+    let (dst_repo, _dst_ss, dst_lock) = if global_args.no_lock {
+        let (repo, ss) = open_repository(
+            global_args.auth_file.as_ref(),
+            global_args.key.as_ref(),
+            dst_backend.clone(),
+            repo_config,
+        )
+        .await
+        .map_err(|e| CopyError::RepoOpenFail(e.to_string()))?;
+        (repo, ss, None)
+    } else {
+        let (repo, ss, lock) = open_repository_with_lock(
+            global_args.auth_file.as_ref(),
+            global_args.key.as_ref(),
+            dst_backend.clone(),
+            repo_config,
+            false, // copy only appends content-addressed blobs: a non-exclusive lock suffices
+            global_args.retry_lock_duration,
+        )
+        .await
+        .map_err(|e| CopyError::RepoOpenFail(e.to_string()))?;
+        (repo, ss, Some(lock))
+    };
 
     // Reload master indices for blob lookup
     src_repo.reload_master_index().await?;
@@ -262,6 +279,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
             "Process interrupted. Cleaning up...".bold().yellow()
         );
     });
+    if let Some(lock) = &dst_lock {
+        cleanup_handler.add_lock(Some(lock.clone()));
+    }
 
     let start = Instant::now();
 
@@ -301,6 +321,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
     }
 
     tracing::info!(target: "copy", "Copy command completed in {:?}", start.elapsed());
+    if let Some(lock) = dst_lock {
+        lock.unlock().await;
+    }
     Ok(())
 }
 

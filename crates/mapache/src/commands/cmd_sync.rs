@@ -199,6 +199,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         {
             Some(lock)
         } else {
+            // Never silently proceed without a lock against a repository that
+            // already exists (e.g. `--delete` could interleave with another
+            // writer). A destination that is not yet a repository (bootstrap)
+            // is the only case where omitting the lock is acceptable.
+            let dst_is_repo = dst_backend
+                .path_exists(std::path::Path::new(repo::MANIFEST_PATH))
+                .await;
+            if dst_is_repo {
+                return Err(SyncError::RepoOpenFail(format!(
+                    "destination repository {} is already a repository but could not be opened with a lock",
+                    args.target
+                )));
+            }
             None
         }
     };

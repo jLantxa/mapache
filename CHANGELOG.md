@@ -97,6 +97,11 @@
   host is no longer treated as stale merely because it exceeded the lock age.
   Locks are only reclaimed by age when the owning process cannot be confirmed
   alive (other or unknown host).
+- **Skipped-file snapshot completeness**: Snapshots no longer abort with "root
+  tree ID not set" when files are skipped mid-run (e.g. an unreadable file or a
+  diff-resolution failure). After the stream ends, remaining trees are
+  force-finalized so the snapshot completes and omits the skipped items with a
+  warning.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

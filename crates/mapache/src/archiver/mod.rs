@@ -688,6 +688,7 @@ mod tests {
             mock::{BackendOp, MockBackend, MockEffect},
         },
         common::{ContentIdType, ID, defaults::TEST_REPO_CONFIG},
+        fs::calculate_lcp,
         repository::repo::{Auth, THIS_REPOSITORY_VERSION},
         ui::events::noop_sender,
     };
@@ -721,7 +722,11 @@ mod tests {
 
         let options = SnapshotOptions {
             absolute_source_paths: vec![tmp.path().to_path_buf()],
-            snapshot_root_path: PathBuf::from("/"),
+            // Mirror production's root computation (calculate_lcp of the source
+            // paths). The raw "/" root is POSIX-only and is not an ancestor of
+            // the temp dir on Windows (drive-relative "\"), which broke the
+            // tree serializer's finalize chain there.
+            snapshot_root_path: calculate_lcp(&[tmp.path().to_path_buf()], false),
             exclude_paths: Vec::new(),
             parent_snapshot: None,
             tags: BTreeSet::new(),
@@ -826,7 +831,8 @@ mod tests {
 
         let options = SnapshotOptions {
             absolute_source_paths: vec![tmp.path().to_path_buf()],
-            snapshot_root_path: PathBuf::from("/"),
+            // Mirror production's root computation; see test_archiver_atomic_ordering.
+            snapshot_root_path: calculate_lcp(&[tmp.path().to_path_buf()], false),
             exclude_paths: Vec::new(),
             parent_snapshot: None,
             tags: BTreeSet::new(),

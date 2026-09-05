@@ -123,6 +123,9 @@ warning.
   eliminating random collision risk at scale.
 - **`key` destructive confirmation**: `key delete` now requires `--yes` (or
   an interactive confirmation) before proceeding.
+- **`forget` explicit-target filters**: An explicitly named `--forget` snapshot
+  that is excluded by the `--host`/`--tags` filters now errors out instead of
+  silently forgetting nothing.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

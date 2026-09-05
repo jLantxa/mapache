@@ -361,12 +361,24 @@ async fn forget_phase(
     if !args.forget.is_empty() {
         tracing::info!(target: "forget", "Forgetting specific snapshots: {:?}", args.forget);
         let mut forget_ids = IdSet::default();
+        let mut resolved_forgets: Vec<(&String, ID)> = Vec::new();
         for prefix in &args.forget {
             let (id, _) = repo
                 .find(ContentIdType::Snapshot, prefix)
                 .await
                 .map_err(|_e| ForgetError::ForgetFailed(format!("snapshot not found: {prefix}")))?;
             forget_ids.insert(id);
+            resolved_forgets.push((prefix, id));
+        }
+        // An explicitly named snapshot must survive the --host/--tags filters,
+        // otherwise the command would silently no-op. Refuse to continue.
+        let filtered_ids: IdSet<ID> = snapshots_sorted.iter().map(|e| e.id).collect();
+        for (prefix, id) in &resolved_forgets {
+            if !filtered_ids.contains(id) {
+                return Err(ForgetError::ForgetFailed(format!(
+                    "snapshot {prefix} is excluded by the given --host/--tags filters; nothing would be forgotten"
+                )));
+            }
         }
         for e in &snapshots_sorted {
             if !forget_ids.contains(&e.id) {

@@ -67,6 +67,9 @@
   directories still receive the snapshot's metadata.
 - **`migrate` lock**: `mapache migrate` now holds an exclusive lock while
   rewriting the repository, preventing races with concurrent snapshots.
+- **Copy integrity**: `mapache copy` now aborts (non-zero exit) when a source
+  tree cannot be read, instead of writing a destination snapshot that silently
+  references data which was never copied.
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that

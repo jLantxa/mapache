@@ -399,6 +399,10 @@ async fn collect_blobs(
                         },
                     );
                 }
+                return Err(CopyError::CopyFailed(format!(
+                    "failed to load tree {}; aborting copy to avoid writing an incomplete snapshot",
+                    tree_id.to_hex(),
+                )));
             }
         }
     }

@@ -471,14 +471,12 @@ impl Restorer {
         // paths were actually restored so the metadata pass does not clobber
         // the metadata of kept files. Overwrite/fail (None) apply metadata to
         // everything, matching the previous behavior.
-        let mut metadata_paths: Option<HashSet<PathBuf>> = if matches!(
-            self.opts.strategy,
-            Strategy::Skip | Strategy::Newer
-        ) {
-            Some(HashSet::new())
-        } else {
-            None
-        };
+        let mut metadata_paths: Option<HashSet<PathBuf>> =
+            if matches!(self.opts.strategy, Strategy::Skip | Strategy::Newer) {
+                Some(HashSet::new())
+            } else {
+                None
+            };
 
         let (total_items, total_bytes) = self.count_restore_work(tree_id).await;
         emit_event(
@@ -599,41 +597,75 @@ impl Restorer {
                 continue;
             }
 
-            // Symlink: restore immediately (metadata applied in restore_node_to_path)
+            // Symlink: honor the restore strategy like regular files instead of
+            // restoring unconditionally (under `fail`, an existing entry was
+            // previously downgraded to a warning and the command exited 0).
             if node.is_symlink() {
                 if !dry_run {
-                    // With --strategy overwrite, remove an existing entry so the
-                    // new symlink can be created (previously EEXIST).
-                    if matches!(self.opts.strategy, Strategy::Overwrite)
-                        && let Err(e) = std::fs::remove_file(&restore_path)
-                        && e.kind() != std::io::ErrorKind::NotFound
+                    match self
+                        .should_restore_node(&node, &restore_path, index.clone())
+                        .await
                     {
-                        emit_event(
-                            &self.event_sender,
-                            Event::Restore(RestoreEvent::Warning(format!(
-                                "Failed to remove existing entry for {}: {}",
-                                restore_path.display(),
-                                e
-                            ))),
-                        );
-                    }
-                    if let Err(_e) = node_restorer::restore_node_to_path(
-                        &self.event_sender,
-                        &node,
-                        &restore_path,
-                        false,
-                    )
-                    .await
-                    {
-                        emit_event(
-                            &self.event_sender,
-                            Event::Restore(RestoreEvent::Warning(format!(
-                                "Failed to restore symlink {}",
-                                restore_path.display(),
-                            ))),
-                        );
-                    } else {
-                        record_restored_path(&mut metadata_paths, &restore_path).await;
+                        Ok(RestorePlan::Skip) => {
+                            emit_event(
+                                &self.event_sender,
+                                Event::Restore(RestoreEvent::Warning(format!(
+                                    "Skipping existing symlink {} per strategy {}",
+                                    restore_path.display(),
+                                    self.opts.strategy
+                                ))),
+                            );
+                        }
+                        Ok(_) => {
+                            // With --strategy overwrite, remove an existing entry so the
+                            // new symlink can be created (previously EEXIST).
+                            if matches!(self.opts.strategy, Strategy::Overwrite)
+                                && let Err(e) = std::fs::remove_file(&restore_path)
+                                && e.kind() != std::io::ErrorKind::NotFound
+                            {
+                                emit_event(
+                                    &self.event_sender,
+                                    Event::Restore(RestoreEvent::Warning(format!(
+                                        "Failed to remove existing entry for {}: {}",
+                                        restore_path.display(),
+                                        e
+                                    ))),
+                                );
+                            }
+                            if let Err(_e) = node_restorer::restore_node_to_path(
+                                &self.event_sender,
+                                &node,
+                                &restore_path,
+                                false,
+                            )
+                            .await
+                            {
+                                emit_event(
+                                    &self.event_sender,
+                                    Event::Restore(RestoreEvent::Warning(format!(
+                                        "Failed to restore symlink {}",
+                                        restore_path.display(),
+                                    ))),
+                                );
+                            } else {
+                                record_restored_path(&mut metadata_paths, &restore_path).await;
+                            }
+                        }
+                        Err(e) => {
+                            emit_event(
+                                &self.event_sender,
+                                Event::Restore(RestoreEvent::Error(format!(
+                                    "Error checking {}: {}",
+                                    restore_path.display(),
+                                    e
+                                ))),
+                            );
+                            if self.opts.quit_on_error
+                                || matches!(self.opts.strategy, Strategy::Fail)
+                            {
+                                return Err(MapacheError::Internal(format!("{e}")));
+                            }
+                        }
                     }
                 }
                 emit_event(

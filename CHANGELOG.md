@@ -89,6 +89,10 @@
   fallback is only used for fresh (bootstrapping) destinations.
 - **`copy` destination lock**: `mapache copy` now acquires a lock on
   the destination repository by default (honoring `--no-lock`).
+- **Restore symlink strategy**: Restore now honors `--strategy` for symlinks:
+  `skip` keeps a conflicting symlink with a warning, `overwrite` replaces it,
+  and `fail` aborts — instead of always replacing or always failing regardless
+  of the chosen strategy.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

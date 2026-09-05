@@ -586,6 +586,61 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_symlink_respects_restore_strategy() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        // Snapshot content: a symlink pointing to "target.txt"
+        std::os::unix::fs::symlink("target.txt", backup_path.join("link"))?;
+
+        ctx.init_repo().await?;
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        std::fs::create_dir_all(&restore_path)?;
+        let existing_link = restore_path.join("link");
+
+        // (1) --strategy fail on an existing symlink: must error, not silently
+        // downgrade the conflict to a warning and exit 0.
+        std::os::unix::fs::symlink("other.txt", &existing_link)?;
+        let res = ctx
+            .restore_builder(restore_path.clone())
+            .strategy(Strategy::Fail)
+            .run(&ctx.global)
+            .await;
+        assert!(
+            res.is_err(),
+            "fail strategy must error when the symlink already exists"
+        );
+        assert_eq!(std::fs::read_link(&existing_link)?, PathBuf::from("other.txt"));
+
+        // (2) --strategy skip: the existing symlink is left untouched.
+        std::fs::remove_file(&existing_link)?;
+        std::os::unix::fs::symlink("other.txt", &existing_link)?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Skip)
+            .run(&ctx.global)
+            .await?;
+        assert_eq!(std::fs::read_link(&existing_link)?, PathBuf::from("other.txt"));
+
+        // (3) --strategy overwrite: the existing symlink is replaced.
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
+        assert_eq!(std::fs::read_link(&existing_link)?, PathBuf::from("target.txt"));
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_restore_sparse_vs_eager_allocation() -> Result<()> {
         let ctx = TestContext::new().await?;

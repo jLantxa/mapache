@@ -117,6 +117,13 @@ impl BlobLoader for BundleReader {
             ))),
         }
     }
+
+    async fn blob_len(&self, id: &ID) -> Result<Option<u64>> {
+        Ok(self
+            .index_map
+            .get(id)
+            .map(|&idx| self.index.entries[idx].raw_length as u64))
+    }
 }
 
 impl BundleReader {

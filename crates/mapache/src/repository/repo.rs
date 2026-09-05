@@ -237,6 +237,14 @@ impl BlobLoader for Repository {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         self.load_blob(id).await
     }
+
+    async fn blob_len(&self, id: &ID) -> Result<Option<u64>> {
+        Ok(self
+            .master_index
+            .get(id)
+            .await
+            .map(|locator| locator.raw_length as u64))
+    }
 }
 
 #[async_trait]

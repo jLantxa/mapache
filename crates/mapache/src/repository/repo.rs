@@ -821,7 +821,10 @@ impl Repository {
 
         match file_type {
             ContentIdType::Pack => Ok(data),
-            ContentIdType::Key => self.secure_storage.decompress(&data),
+            ContentIdType::Key => {
+                self.secure_storage
+                    .decompress_with_limit(&data, keys::MAX_KEYFILE_SIZE)
+            }
             _ => self.secure_storage.decode_owned(data),
         }
     }

@@ -19,6 +19,7 @@ use crate::{
     common::{
         ID,
         error::{MapacheError, Result},
+        kdf,
         traits::BlobLoader,
     },
     ecc,
@@ -137,6 +138,13 @@ impl BundleReader {
             ));
         }
 
+        kdf::validate_argon2_params(header.argon2_m, header.argon2_t, header.argon2_p).map_err(
+            |e| {
+                MapacheError::Format(format!(
+                    "invalid bundle format: Argon2 parameters are out of bounds: {e}"
+                ))
+            },
+        )?;
         let params = ParamsBuilder::new()
             .m_cost(header.argon2_m)
             .t_cost(header.argon2_t)

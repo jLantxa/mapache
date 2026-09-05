@@ -77,6 +77,10 @@
 - **Blob verification**: Every blob read path (restore, cat/mount, diff, copy,
   GC, bundle extraction) now verifies that the decoded content matches its
   content ID, catching same-length blob swaps that pass AEAD decryption.
+- **Keyfile hardening**: Argon2id parameters read from keyfiles are validated
+  against sane bounds before any derivation, and keyfile decompression is
+  capped at 64 MiB, preventing memory/CPU DoS via a planted malicious
+  keyfile. Bundle headers get the same Argon2 parameter bounds check.
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that

@@ -50,6 +50,10 @@ pub struct Argon2Params {
     pub p: u32,
 }
 
+/// Upper bound on the decompressed size of a keyfile. Keyfiles are small; this
+/// caps the unauthenticated zstd decompression performed before parsing.
+pub const MAX_KEYFILE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
+
 /// Key file struct (v2 layout with nested kdf object).
 ///
 /// On disk, v1 repos use flat m/t/p fields ([`KeyFileV1`]). The custom
@@ -130,14 +134,16 @@ impl<'de> Deserialize<'de> for KeyFile {
 
 impl KeyFile {
     pub fn argon2_params(&self) -> Result<argon2::Params> {
-        match &self.kdf {
-            KdfConfig::Argon2id(params) => argon2::ParamsBuilder::new()
-                .m_cost(params.m)
-                .t_cost(params.t)
-                .p_cost(params.p)
-                .build()
-                .map_err(|e| MapacheError::Crypto(format!("invalid Argon2 parameters: {e}"))),
-        }
+        let KdfConfig::Argon2id(params) = &self.kdf;
+        kdf::validate_argon2_params(params.m, params.t, params.p).map_err(|e| {
+            MapacheError::Crypto(format!("invalid Argon2 parameters in keyfile: {e}"))
+        })?;
+        argon2::ParamsBuilder::new()
+            .m_cost(params.m)
+            .t_cost(params.t)
+            .p_cost(params.p)
+            .build()
+            .map_err(|e| MapacheError::Crypto(format!("invalid Argon2 parameters: {e}")))
     }
 }
 
@@ -241,7 +247,7 @@ impl Stream for KeyFileStream {
                     let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
 
                     let keyfile_data = backend.read(&handle, 0, 0).await?;
-                    let decompressed = ss.decompress(&keyfile_data)?;
+                    let decompressed = ss.decompress_with_limit(&keyfile_data, MAX_KEYFILE_SIZE)?;
                     let kf: KeyFile = serde_json::from_slice(&decompressed)?;
 
                     Ok((id, kf))
@@ -406,7 +412,7 @@ impl KeyManager {
 
                 let ss = SecureStorage::new();
                 let keyfile_bytes = ss
-                    .decompress(&keyfile_data)
+                    .decompress_with_limit(&keyfile_data, MAX_KEYFILE_SIZE)
                     .map_err(KeyManagerError::Other)?;
                 let keyfile: KeyFile = serde_json::from_slice(&keyfile_bytes).map_err(|e| {
                     KeyManagerError::InvalidKeyfile(format!("keyFile at {path:?} is invalid: {e}"))
@@ -633,5 +639,31 @@ mod tests {
         assert_eq!(params.m_cost(), 1024);
         assert_eq!(params.t_cost(), 1);
         assert_eq!(params.p_cost(), 1);
+    }
+
+    #[test]
+    fn test_argon2_params_reject_out_of_bounds() {
+        let kf_with = |m: u32, t: u32, p: u32| KeyFile {
+            created: Local::now(),
+            username: "test".to_string(),
+            kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
+            salt: "".to_string(),
+            encrypted_key: "".to_string(),
+        };
+
+        // Huge memory cost (u32::MAX would otherwise try to allocate ~4 TiB).
+        assert!(kf_with(u32::MAX, 1, 1).argon2_params().is_err());
+        // Huge iteration count.
+        assert!(kf_with(1024, 4_000_000_000, 1).argon2_params().is_err());
+        // Excessive parallelism.
+        assert!(kf_with(1024, 1, 10_000).argon2_params().is_err());
+        // Zero / below-minimum values are also rejected.
+        assert!(kf_with(0, 1, 1).argon2_params().is_err());
+        assert!(kf_with(1024, 0, 1).argon2_params().is_err());
+        assert!(kf_with(1024, 1, 0).argon2_params().is_err());
+
+        // Legitimate values still pass.
+        assert!(kf_with(1024, 1, 1).argon2_params().is_ok());
+        assert!(kf_with(1_048_576, 1_000_000, 16).argon2_params().is_ok());
     }
 }

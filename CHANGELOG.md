@@ -135,6 +135,9 @@ warning.
   error now return their packer to the empty pool instead of dropping it, keeping
   the pool stable and preventing the pack-saver loop from hanging on a starved
   pool when a pack fails.
+- **`gc` delete failures**: `gc` now counts per-object deletion failures, logs
+  and emits user-visible errors for each one, and fails the run when any object
+  could not be deleted instead of logging "Deleted N" as if everything succeeded.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so

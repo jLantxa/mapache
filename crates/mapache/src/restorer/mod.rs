@@ -19,7 +19,7 @@ use std::io::{Seek, Write};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
@@ -467,6 +467,18 @@ impl Restorer {
         let secure_storage = self.repo.secure_storage();
         let batch_size = self.opts.batch_size.unwrap_or(usize::MAX);
         let dry_run = self.opts.dry_run;
+        // With --strategy skip/newer, existing files are kept as-is. Track which
+        // paths were actually restored so the metadata pass does not clobber
+        // the metadata of kept files. Overwrite/fail (None) apply metadata to
+        // everything, matching the previous behavior.
+        let mut metadata_paths: Option<HashSet<PathBuf>> = if matches!(
+            self.opts.strategy,
+            Strategy::Skip | Strategy::Newer
+        ) {
+            Some(HashSet::new())
+        } else {
+            None
+        };
 
         let (total_items, total_bytes) = self.count_restore_work(tree_id).await;
         emit_event(
@@ -564,6 +576,9 @@ impl Restorer {
 
             // Directory: create, then continue
             if node.is_dir() {
+                let is_new_dir = metadata_paths.is_some()
+                    && !dry_run
+                    && !crate::fs::path_exists(&restore_path).await;
                 if !dry_run && let Err(e) = fs::create_dir_all(&restore_path) {
                     emit_event(
                         &self.event_sender,
@@ -573,6 +588,9 @@ impl Restorer {
                             e
                         ))),
                     );
+                }
+                if is_new_dir {
+                    record_restored_path(&mut metadata_paths, &restore_path).await;
                 }
                 emit_event(
                     &self.event_sender,
@@ -614,6 +632,8 @@ impl Restorer {
                                 restore_path.display(),
                             ))),
                         );
+                    } else {
+                        record_restored_path(&mut metadata_paths, &restore_path).await;
                     }
                 }
                 emit_event(
@@ -716,6 +736,7 @@ impl Restorer {
                             is_hardlink: false,
                             is_selective: true,
                         });
+                        record_restored_path(&mut metadata_paths, &restore_path).await;
 
                         // Hardlink detection
                         let (is_secondary, primary_fp) = detect_hardlink(
@@ -821,6 +842,7 @@ impl Restorer {
                     is_hardlink: false,
                     is_selective: false,
                 });
+                record_restored_path(&mut metadata_paths, &restore_path).await;
 
                 // Hardlink detection with content verification
                 let (is_secondary, _fp) =
@@ -941,6 +963,8 @@ impl Restorer {
                         );
                         self.handle_quit_on_error(msg, &copy_err)?;
                     }
+                } else {
+                    record_restored_path(&mut metadata_paths, secondary).await;
                 }
             }
         }
@@ -953,6 +977,7 @@ impl Restorer {
             tree_id,
             self.opts.include.clone(),
             self.opts.exclude.clone(),
+            &metadata_paths,
         )
         .await?;
 
@@ -1051,6 +1076,24 @@ fn detect_hardlink(
         }
     }
     (false, None)
+}
+
+/// Records a path for the metadata pass, together with any of its ancestors
+/// that were implicitly created during restore. No-op when `paths` is `None`
+/// (overwrite/fail strategies apply metadata unconditionally).
+async fn record_restored_path(paths: &mut Option<HashSet<PathBuf>>, restore_path: &Path) {
+    let Some(set) = paths else {
+        return;
+    };
+    set.insert(restore_path.to_path_buf());
+    let mut ancestor = restore_path.parent();
+    while let Some(parent) = ancestor
+        && !parent.as_os_str().is_empty()
+        && !crate::fs::path_exists(parent).await
+    {
+        set.insert(parent.to_path_buf());
+        ancestor = parent.parent();
+    }
 }
 
 #[cfg(test)]

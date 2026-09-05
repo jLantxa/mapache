@@ -61,6 +61,10 @@
   file values. Previously any value present in the config silently overrode the
   explicit command-line flag (e.g. config `keep_last=1` won over
   `--keep-last 30`).
+- **Restore metadata safety**: With `--strategy skip` or `--strategy newer`,
+  files kept locally no longer get their metadata (mtime, permissions, xattrs)
+  silently overwritten by the snapshot's metadata. Newly restored files and
+  directories still receive the snapshot's metadata.
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that

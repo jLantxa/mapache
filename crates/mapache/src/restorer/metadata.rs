@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::atomic::Ordering};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::atomic::Ordering,
+};
 
 use futures::StreamExt;
 use tokio::sync::mpsc;
@@ -21,6 +25,7 @@ impl Restorer {
         tree_id: ID,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
+        metadata_paths: &Option<HashSet<PathBuf>>,
     ) -> Result<()> {
         if self.opts.dry_run {
             return Ok(());
@@ -43,6 +48,7 @@ impl Restorer {
                 let event_sender = self.event_sender.clone();
                 let target_path = self.target_path.clone();
                 let opts_strip_prefix = self.opts.strip_prefix.clone();
+                let metadata_paths = metadata_paths.clone();
                 let dir_tx = dir_tx.clone();
 
                 async move {
@@ -93,7 +99,11 @@ impl Restorer {
                     if node.is_dir() {
                         let _ = dir_tx.send((restore_path, node.metadata));
                     } else {
-                        if repo_fs::path_exists(&restore_path).await {
+                        if repo_fs::path_exists(&restore_path).await
+                            && metadata_paths
+                                .as_ref()
+                                .is_none_or(|set| set.contains(&restore_path))
+                        {
                             super::node_restorer::try_restore_node_metadata(
                                 &node.metadata,
                                 node.is_symlink(),
@@ -122,7 +132,9 @@ impl Restorer {
             if self.shutdown_signal.load(Ordering::Acquire) {
                 return Err(MapacheError::Interrupted);
             }
-            if repo_fs::path_exists(&p).await {
+            if repo_fs::path_exists(&p).await
+                && metadata_paths.as_ref().is_none_or(|set| set.contains(&p))
+            {
                 super::node_restorer::try_restore_node_metadata(
                     &meta,
                     false,

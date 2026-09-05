@@ -875,6 +875,112 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_restore_newer_preserves_kept_file_metadata() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        // Two files: one we will keep locally (skipped), one freshly restored
+        // through a chain of newly created directories.
+        let kept_file_src = backup_path.join("kept.txt");
+        std::fs::write(&kept_file_src, "CONTENT-KEPT")?;
+        let fresh_file_src = backup_path.join("nested").join("deep").join("fresh.txt");
+        std::fs::create_dir_all(fresh_file_src.parent().unwrap())?;
+        std::fs::write(&fresh_file_src, "CONTENT-FRESH")?;
+
+        // Snapshots store exact mtimes and modes.
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let t0_filetime = FileTime::from(t0);
+        set_file_times(&kept_file_src, t0_filetime, t0_filetime)?;
+        set_file_times(&fresh_file_src, t0_filetime, t0_filetime)?;
+        std::fs::set_permissions(&kept_file_src, std::fs::Permissions::from_mode(0o640))?;
+        std::fs::set_permissions(&fresh_file_src, std::fs::Permissions::from_mode(0o640))?;
+        std::fs::set_permissions(
+            fresh_file_src.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o750),
+        )?;
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Run snapshot
+        ctx.snapshot_builder(vec![backup_path.join("kept.txt"), fresh_file_src.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        // First restore brings in only the kept file (the fresh one must not exist yet)
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["kept.txt".to_string()])
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
+
+        let kept_file = restore_path.join("kept.txt");
+        assert!(kept_file.exists());
+
+        // Make the local copy newer and different (same size, so `newer` decides on mtime)
+        let local_content = "LOCAL-EDITED";
+        assert_eq!(local_content.len(), "CONTENT-KEPT".len());
+        std::fs::write(&kept_file, local_content)?;
+        let t_local = SystemTime::UNIX_EPOCH + Duration::from_secs(1_001_000_000);
+        let t_local_filetime = FileTime::from(t_local);
+        set_file_times(&kept_file, t_local_filetime, t_local_filetime)?;
+        std::fs::set_permissions(&kept_file, std::fs::Permissions::from_mode(0o600))?;
+
+        // Restore with --strategy newer: local kept file is skipped, fresh file is created
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Newer)
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
+
+        // The kept file keeps its local content and metadata (not overwritten)
+        assert_eq!(std::fs::read_to_string(&kept_file)?, local_content);
+        assert_eq!(
+            std::fs::metadata(&kept_file)?.modified()?,
+            t_local,
+            "kept file mtime must be preserved"
+        );
+        assert_eq!(
+            std::fs::metadata(&kept_file)?.permissions().mode() & 0o777,
+            0o600,
+            "kept file mode must be preserved"
+        );
+
+        // The fresh file is created with the snapshot's metadata, including
+        // the newly created parent directory chain.
+        let fresh_file = restore_path.join("nested").join("deep").join("fresh.txt");
+        assert!(fresh_file.exists());
+        assert_eq!(std::fs::read_to_string(&fresh_file)?, "CONTENT-FRESH");
+        assert_times_equal(std::fs::metadata(&fresh_file)?.modified()?, t0);
+        assert_eq!(
+            std::fs::metadata(&fresh_file)?.permissions().mode() & 0o777,
+            0o640,
+            "fresh file must get the snapshot mode"
+        );
+        let created_dir = restore_path.join("nested").join("deep");
+        assert!(
+            created_dir.exists(),
+            "nested directories must be created on restore"
+        );
+        assert_eq!(
+            std::fs::metadata(&created_dir)?.permissions().mode() & 0o777,
+            0o750,
+            "freshly created directory must get the snapshot mode"
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_restore_synthetic_full_integrity() -> Result<()> {
         let mut ctx = TestContext::new().await?;

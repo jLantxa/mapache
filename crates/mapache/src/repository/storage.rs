@@ -131,7 +131,16 @@ impl SecureStorage {
         }
 
         if let Some(cipher) = &self.cipher {
-            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = rand::random();
+            // Deterministic nonce derived from the plaintext's BLAKE3 content
+            // hash (the same hash that determines the blob content ID). This
+            // eliminates the random-nonce collision risk at scale: identical
+            // plaintexts always use the same (message-derived) nonce, and a
+            // nonce can only repeat together with identical plaintext, which
+            // is safe for GCM-SIV.
+            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] =
+                common::hash::hash(data).0[..AES_GCM_NONCE_LEN].try_into().map_err(
+                    |_| MapacheError::Internal("content hash is shorter than the nonce".to_string()),
+                )?;
             let nonce = Nonce::try_from(&nonce_bytes[..]).expect("nonce length is always 12");
             // InOutBuf shares input/output memory — zero-copy in-place encryption.
             // (The nonce-at-start v1 branch below allocates an extra Vec.)

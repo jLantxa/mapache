@@ -27,7 +27,6 @@ allow = [
     "Unicode-3.0",
     "GPL-3.0-only",
     "ISC",
-    "MPL-2.0",
     "NCSA",
     "Zlib",
     "0BSD",
@@ -42,8 +41,8 @@ ignore = false
 registries = []
 
 [bans]
-multiple-versions = "warn"
-wildcards = "warn"
+multiple-versions = "allow"
+wildcards = "allow"
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"

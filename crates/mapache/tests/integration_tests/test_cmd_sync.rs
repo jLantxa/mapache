@@ -214,4 +214,52 @@ mod tests {
 
         Ok(())
     }
+
+    /// Initialize an existing repo at the given path with the given format version.
+    async fn init_repo_at_version(
+        path: &std::path::Path,
+        auth: &mapache::repository::repo::Auth,
+        version: u32,
+    ) -> Result<()> {
+        let backend = Arc::new(LocalFS::new(path.to_path_buf()));
+        let _ =
+            mapache::repository::repo::Repository::init(version, auth, None, backend, None, false)
+                .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sync_version_mismatch_v1_to_v2() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Source repository is v1
+        ctx.init_builder().format(1).run(&ctx.global).await?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
+
+        // Destination is an existing v2 repository
+        let dst_repo_path = ctx._tmp_dir.path().join("sync_dst_v2");
+        init_repo_at_version(&dst_repo_path, &ctx.auth, 2).await?;
+
+        let output = ctx.run_mapache(&["sync", "--target", &dst_repo_path.to_string_lossy()])?;
+
+        assert!(
+            !output.status.success(),
+            "sync between different formats should fail\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let msg = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            msg.contains("different formats") && msg.contains("v1") && msg.contains("v2"),
+            "unexpected error message: {}",
+            msg
+        );
+        Ok(())
+    }
 }

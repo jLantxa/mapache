@@ -54,6 +54,10 @@
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
 - **Bundle open retry**: Opening a bundle with the wrong password now prompts
   again instead of failing immediately.
+- **Copy and sync format enforcement**: `mapache copy` and `mapache sync` now
+  require source and destination repositories to use the same format version.
+  Transferring between v1 and v2 repositories could silently mix incompatible
+  storage layouts (sync) or leak v2-only features into v1 (copy).
 - **Reduced lock hold time in GC referenced blob scanning**.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)

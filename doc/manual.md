@@ -565,6 +565,9 @@ The copy operation:
 6. Transfers only missing blobs, re-packing them at the destination
 7. Writes snapshot metadata to the destination
 
+Source and destination must use the same format version (`v1` and `v2` cannot be
+mixed). Use `mapache migrate` to upgrade a v1 repository to v2.
+
 Supports `--json` for machine-readable progress events.
 
 ---
@@ -593,6 +596,10 @@ The sync operation:
 2. deletes obsolete files (destination-only)
 3. copies missing or changed files
 4. synchronizes the manifest last to ensure destination validity.
+
+Source and destination must use the same format version (`v1` and `v2` cannot be
+mixed): `sync` replicates the raw storage layout, so version-mixed replicas would
+be unreadable. Use `mapache migrate` to upgrade a v1 repository to v2.
 
 ---
 

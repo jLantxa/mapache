@@ -80,4 +80,45 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_forget_explicit_target_excluded_by_host_filter() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Run one snapshot
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .run(&ctx.global)
+            .await?;
+
+        let ids = ctx.get_snapshot_ids()?;
+        let first_id = &ids[0];
+
+        // Explicitly forget a snapshot that a --host filter excludes. Before the
+        // fix, this silently no-op'd; it must now refuse to continue.
+        let err = ctx
+            .forget_builder()
+            .forget(vec![first_id.clone()])
+            .hosts(vec!["some-other-host".to_string()])
+            .run(&ctx.global)
+            .await
+            .expect_err("forget must fail when the explicit target is excluded by --host");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("excluded by the given --host/--tags filters"),
+            "unexpected error: {msg}"
+        );
+
+        // No snapshot was actually forgotten.
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
+
+        Ok(())
+    }
 }

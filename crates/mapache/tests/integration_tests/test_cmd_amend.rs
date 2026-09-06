@@ -161,4 +161,36 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_amend_missing_snapshot_reports_not_found() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+        ctx.snapshot(vec![backup_data_tmp_path.join("file.txt")])
+            .await?;
+
+        // Amending a non-existent snapshot ID must surface a "not found" error.
+        // Before the fix this was misreported as an interrupt (exit 130),
+        // indistinguishable from the user pressing Ctrl-C.
+        let err = ctx
+            .amend_builder()
+            .snapshot(mapache::commands::UseSnapshot::SnapshotId(
+                "deadbeefdeadbeef".to_string(),
+            ))
+            .run(&ctx.global)
+            .await
+            .expect_err("amend with a missing snapshot must fail");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not found") || msg.contains("doesn't exist"),
+            "expected a not-found error, got: {msg}"
+        );
+
+        Ok(())
+    }
 }

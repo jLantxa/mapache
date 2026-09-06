@@ -873,4 +873,44 @@ mod tests {
 
         Ok(())
     }
+
+    /// A crafted (corrupt) pack footer whose blob lengths make the running
+    /// offset overflow u32 must surface as an integrity error, never a panic.
+    /// Regression for the `checked_add` bound-check on footer parsing.
+    #[test]
+    fn test_parse_footer_rejects_offset_overflow() -> Result<()> {
+        let key = KeyManager::generate_new_master_key();
+        let secure_storage = Arc::new(
+            SecureStorage::new()
+                .with_compression(DEFAULT_COMPRESSION.to_level())
+                .with_key(&key)
+                .expect("valid 32-byte key"),
+        );
+
+        // FOOTER_BLOB_MULTIPLE bogus entries, each claiming a u32::MAX length.
+        // After the second entry the accumulated offset overflows.
+        let mut descriptors: Vec<PackedBlobDescriptor> = (0..FOOTER_BLOB_MULTIPLE)
+            .map(|i| PackedBlobDescriptor {
+                id: ID::new_random(),
+                blob_type: BlobType::Data,
+                offset: i as u32,
+                length: u32::MAX,
+                raw_length: u32::MAX,
+                compressed: false,
+            })
+            .collect();
+        let footer_blob_info = Packer::generate_footer(&mut descriptors);
+
+        let encoded_footer = secure_storage.encode(&footer_blob_info)?;
+        let mut footer_data = encoded_footer.clone();
+        footer_data.extend_from_slice(&(encoded_footer.len() as u32).to_le_bytes());
+
+        let err = Packer::parse_footer(&secure_storage, &footer_data, true, 2)
+            .expect_err("offsets over u32::MAX must be rejected");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("offset overflow"), "unexpected error: {msg}");
+
+        Ok(())
+    }
 }

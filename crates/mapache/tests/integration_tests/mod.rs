@@ -648,6 +648,11 @@ impl AmendBuilder {
         self
     }
 
+    pub fn snapshot(mut self, use_snapshot: UseSnapshot) -> Self {
+        self.args.snapshot = use_snapshot;
+        self
+    }
+
     pub fn clear_description(mut self, clear: bool) -> Self {
         self.args.clear_description = clear;
         self
@@ -785,6 +790,11 @@ impl ForgetBuilder {
 
     pub fn keep_last(mut self, count: usize) -> Self {
         self.args.keep_last = Some(count);
+        self
+    }
+
+    pub fn hosts(mut self, hosts: Vec<String>) -> Self {
+        self.args.hosts = hosts;
         self
     }
 

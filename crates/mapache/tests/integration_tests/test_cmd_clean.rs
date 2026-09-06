@@ -234,6 +234,46 @@ mod tests {
         Ok(())
     }
 
+    /// Regression (d4fd62c4): a pack that is both "unused" (no blob referenced
+    /// by any snapshot) and "obsolete" (all of its blobs are garbage) must be
+    /// deleted exactly once. Forgetting the last snapshot and running clean
+    /// turns every pack into that overlap; before the fix `clean` tried to
+    /// delete the already-deleted packs a second time and failed.
+    #[tokio::test]
+    async fn test_gc_all_snapshots_forgotten_no_double_delete() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir(&backup_path)?;
+        std::fs::write(backup_path.join("data.bin"), vec![0x42u8; 1024 * 1024])?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .run(&ctx.global)
+            .await?;
+
+        // Remove the only snapshot so every pack becomes simultaneously unused
+        // and obsolete.
+        let ids = ctx.get_snapshot_ids()?;
+        let id = ids.first().expect("one snapshot was just created");
+
+        ctx.forget_builder()
+            .forget(vec![id.clone()])
+            .force(true)
+            .run(&ctx.global)
+            .await?;
+
+        // Prior to the fix, this failed with "failed to delete pack ..." when
+        // the obsolete phase re-deleted packs already removed as unused.
+        ctx.clean_builder().run(&ctx.global).await?;
+
+        // The repository must be consistent and empty of packs afterwards.
+        ctx.verify_builder().run(&ctx.global).await?;
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_gc_tolerance() -> Result<()> {
         let mut ctx = TestContext::new().await?;

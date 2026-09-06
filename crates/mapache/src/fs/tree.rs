@@ -76,7 +76,11 @@ pub type StreamNodeInfo = (PathBuf, Result<StreamNode>);
 #[derive(Debug)]
 struct FSNodeState {
     /// Stack stores (shared_parent_path, entry_name, maybe_node) to avoid duplicating parent PathBufs.
-    stack: Vec<(Arc<PathBuf>, std::ffi::OsString, Option<Node>)>,
+    /// `maybe_node` is `Option<Result<Node>>`: `Some(Ok)` for pre-stated entries,
+    /// `Some(Err)` for entries that failed to stat during the scan (yielded as
+    /// per-path errors so the omission is surfaced to the user), `None` if the
+    /// entry must be stated lazily.
+    stack: Vec<(Arc<PathBuf>, std::ffi::OsString, Option<Result<Node>>)>,
     intermediate_paths: Vec<(PathBuf, usize, Option<Node>)>,
     filter: Arc<PathFilter>,
     with_atime: bool,
@@ -142,7 +146,7 @@ impl FSNodeStream {
                     .unwrap_or_default(),
             );
             let name = p.file_name().unwrap_or_default().to_os_string();
-            stack.push((parent, name, Some(node)));
+            stack.push((parent, name, Some(Ok(node))));
         }
 
         let state = FSNodeState {
@@ -200,18 +204,22 @@ impl FSNodeStream {
 
                 tracing::trace!(target: "fs", "Processing path: {:?}", path);
                 let with_atime = state.with_atime;
-                let node_res = if let Some(n) = maybe_node {
-                    Ok(n)
-                } else {
-                    Node::from_path(&path, with_atime).await
-                };
-
-                let node = match node_res {
-                    Ok(n) => n,
-                    Err(e) => {
+                let node = match maybe_node {
+                    Some(Ok(n)) => n,
+                    Some(Err(e)) => {
+                        // The entry failed to stat during the scan. Yield it as a
+                        // per-path error instead of silently dropping it, so the
+                        // consumer surfaces a visible warning for the omission.
                         yield (path, Err(e));
                         continue;
                     }
+                    None => match Node::from_path(&path, with_atime).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            yield (path, Err(e));
+                            continue;
+                        }
+                    },
                 };
 
                 let mut num_children = 0;
@@ -233,21 +241,17 @@ impl FSNodeStream {
                         let entries_vec: Vec<_> = entries.collect::<std::io::Result<Vec<_>>>()?;
 
                         // Stat children in parallel. A single child that fails to
-                        // stat (e.g. permission denied) is skipped with a warning
-                        // instead of dropping the whole directory or aborting the
-                        // backup.
-                        let mut children: Vec<(std::ffi::OsString, Node)> = entries_vec
+                        // stat (e.g. permission denied) is kept as a per-path
+                        // error and yielded further down so the consumer can warn
+                        // the user, instead of dropping the whole directory or
+                        // silently omitting the child from the snapshot.
+                        let mut children: Vec<(std::ffi::OsString, Result<Node>)> = entries_vec
                             .into_par_iter()
                             .filter(|entry| filter.allow(&entry.path()))
-                            .filter_map(|entry| {
+                            .map(|entry| {
                                 let child_path = entry.path();
-                                match Node::from_path_sync(&child_path, with_atime) {
-                                    Ok(child_node) => Some((entry.file_name(), child_node)),
-                                    Err(e) => {
-                                        tracing::warn!(target: "fs", "Failed to stat {}: {}", child_path.display(), e);
-                                        None
-                                    }
-                                }
+                                let child_res = Node::from_path_sync(&child_path, with_atime);
+                                (entry.file_name(), child_res)
                             })
                             .collect();
 
@@ -259,16 +263,27 @@ impl FSNodeStream {
 
                     match children_res {
                         Ok(children) => {
-                            num_children = children.len();
-                            tracing::trace!(target: "fs", "Directory {:?} scanned: {} children", path, num_children);
+                            // Only successfully stated children count towards the
+                            // tree's expected size; failed ones are yielded as
+                            // per-path errors and skipped by the consumer, so they
+                            // never reach the tree serializer.
+                            num_children = children
+                                .iter()
+                                .filter(|(_, child_res)| child_res.is_ok())
+                                .count();
+                            tracing::trace!(target: "fs", "Directory {:?} scanned: {} children ({} failed to stat)", path, num_children, children.len() - num_children);
                             // Yield the directory node NOW.
                             yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
 
-                            if num_children > 0 {
+                            if !children.is_empty() {
                                 let shared_parent = Arc::new(path.clone());
-                                // Push successfully stated nodes to stack in reverse order.
-                                for (child_name, child_node) in children.into_iter().rev() {
-                                    state.stack.push((shared_parent.clone(), child_name, Some(child_node)));
+                                // Push children to the stack in reverse order (stack
+                                // pops in forward order). Stat failures keep their
+                                // error payload so they surface as per-path errors.
+                                for (child_name, child_res) in children.into_iter().rev() {
+                                    state
+                                        .stack
+                                        .push((shared_parent.clone(), child_name, Some(child_res)));
                                 }
                             }
                         }

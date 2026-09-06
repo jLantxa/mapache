@@ -22,7 +22,7 @@ use crate::{
         repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
-    ui::events::{Event, EventSender, GcEvent, GcTaskKind},
+    ui::events::{BackupEvent, Event, EventSender, GcEvent, GcTaskKind, emit_event},
     utils::{
         self,
         collections::{IdMap, IdSet},
@@ -253,29 +253,52 @@ async fn delete_objects(
     reporter.start_task(task_kind, Some(ids.len() as u64));
     let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let deleted_size = stream::iter(ids)
+    let results = stream::iter(ids)
         .map(|id| {
             let r = reporter.clone();
             let pos = pos.clone();
             async move {
-                let size = match repo.delete_file(content_type, id, None).await {
-                    Ok(size) => size,
-                    Err(e) => {
-                        tracing::warn!(target: "gc", "failed to delete {label} {id}: {e}");
-                        0
-                    }
-                };
+                let size = repo.delete_file(content_type, id, None).await;
                 let current = pos.fetch_add(1, Ordering::Relaxed) + 1;
                 r.update_task(task_kind, current);
-                size
+                size.map_err(|e| {
+                    MapacheError::Backend(format!("failed to delete {label} {id}: {e}"))
+                })
             }
         })
         .buffer_unordered(concurrency)
-        .fold(0u64, |acc, size| async move { acc + size })
+        .collect::<Vec<_>>()
         .await;
 
+    let mut failures: u64 = 0;
+    let mut deleted_size: u64 = 0;
+    for res in results {
+        match res {
+            Ok(size) => deleted_size += size,
+            Err(e) => {
+                failures += 1;
+                tracing::error!(target: "gc", "{e}");
+                emit_event(
+                    &reporter.0,
+                    Event::Backup(BackupEvent::Error(format!("{e}"))),
+                );
+            }
+        }
+    }
+
     reporter.finish_task(task_kind);
-    reporter.log(format!("Deleted {} {label}s", pos.load(Ordering::Relaxed)));
+    reporter.log(format!(
+        "Deleted {} {label}s ({} failed)",
+        pos.load(Ordering::Relaxed),
+        failures
+    ));
+
+    if failures > 0 {
+        return Err(MapacheError::Backend(format!(
+            "{failures} of {} {label}s failed to delete",
+            ids.len()
+        )));
+    }
 
     Ok(deleted_size)
 }
@@ -306,6 +329,12 @@ impl Plan {
         }
 
         gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.0.clone()).await?;
+
+        // A pack with no referenced blobs is fully deletable as unused and has
+        // already been removed above. Exclude it from the obsolete set so it is
+        // not repacked and then deleted a second time.
+        self.obsolete_packs
+            .retain(|id| !self.unused_packs.contains(id));
 
         // Safety checkpoint: only unreferenced items have been deleted so
         // far. On-disk state is still consistent. Below this, `repack`

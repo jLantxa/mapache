@@ -50,6 +50,7 @@
 - **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
   operating on v1 repositories. Consider migrating with `mapache migrate`.
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
+- **Reduced lock hold time in GC referenced blob scanning**.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
   instead of flat top-level `m`, `t`, `p` fields. Old v1 keyfiles are read
@@ -57,8 +58,85 @@
 
 ### Fixed
 
+- **Config precedence**: CLI flags now correctly take precedence over config
+  file values. Previously any value present in the config silently overrode the
+  explicit command-line flag (e.g. config `keep_last=1` won over
+  `--keep-last 30`).
+- **Restore metadata safety**: With `--strategy skip` or `--strategy newer`,
+  files kept locally no longer get their metadata (mtime, permissions, xattrs)
+  silently overwritten by the snapshot's metadata. Newly restored files and
+  directories still receive the snapshot's metadata.
+- **Copy integrity**: `mapache copy` now aborts (non-zero exit) when a source
+  tree cannot be read, instead of writing a destination snapshot that silently
+  references data which was never copied.
+- **`rebuild-index` safety**: When any pack fails to parse, `rebuild-index`
+  aborts and leaves the existing index untouched instead of persisting a
+  partial index and deleting the original (which would orphan blobs). It also
+  now holds an exclusive lock.
+- **Blob verification**: Every blob read path (restore, cat/mount, diff, copy,
+  GC, bundle extraction) now verifies that the decoded content matches its
+  content ID, catching same-length blob swaps that pass AEAD decryption.
+- **Keyfile hardening**: Argon2id parameters read from keyfiles are validated
+  against sane bounds before any derivation, and keyfile decompression is
+  capped at 64 MiB, preventing memory/CPU DoS via a planted malicious
+  keyfile. Bundle headers get the same Argon2 parameter bounds check.
 - **Data safety**: Skip files with missing blobs instead of silently corrupting
   them via offset drift. Validate decoded blob lengths against the index.
+- **`sync` lock correctness**: `mapache sync` now aborts when the destination is
+  an existing repository whose lock cannot be acquired, instead of silently
+  continuing without a destination lock and degrading the copy. The unlocked
+  fallback is only used for fresh (bootstrapping) destinations.
+- **`copy` destination lock**: `mapache copy` now acquires a lock on
+  the destination repository by default (honoring `--no-lock`).
+- **Restore symlink strategy**: Restore now honors `--strategy` for symlinks:
+  `skip` keeps a conflicting symlink with a warning, `overwrite` replaces it,
+  and `fail` aborts — instead of always replacing or always failing regardless
+  of the chosen strategy.
+- **Lock staleness**: A lock left by a process that is still running on the same
+  host is no longer treated as stale merely because it exceeded the lock age.
+  Locks are only reclaimed by age when the owning process cannot be confirmed
+  alive (other or unknown host).
+- **Skipped-file snapshot completeness**: Snapshots no longer abort with "root
+  tree ID not set" when files are skipped mid-run (e.g. an unreadable file or a
+  diff-resolution failure). After the stream ends, remaining trees are
+  force-finalized so the snapshot completes and omits the skipped items with a
+  warning.
+- **Stat-failure visibility**: Files that fail to stat during directory
+  scanning are now surfaced as visible warnings in snapshot and bundle output
+  instead of being silently omitted with only a debug log, so data loss from
+  permission errors is not silent.
+- **`verify` error handling**: `mapache verify` now errors out on failures while
+  listing index/snapshot metadata files and no longer discards per-snapshot
+  corruption-impact traversal results (reported, and honored by `--fail-early`),
+  instead of silently continuing as if everything was verified.
+- **`migrate` / footer robustness**: Pack footer parsing and v1→v2 migration now
+  detect out-of-bounds blob descriptors and `u32` offset overflow and return an
+  error instead of panicking or wrapping on a malformed footer or a data section
+  over 4 GiB.
+- **Bundle writer bounds**: The ECC, index, and manifest section lengths written
+  to the bundle trailer are now validated with `u32::try_from` instead of
+  silently truncating any section larger than 4 GiB.
+- **Deterministic blob nonce**: Blob encryption nonces are now derived from the
+  content hash instead of an independent random value, so the 96-bit GCM-SIV
+  nonce can only repeat for identical content (which is safe for GCM-SIV),
+  eliminating random collision risk at scale.
+- **`key` destructive confirmation**: `key delete` now requires `--yes` (or
+  an interactive confirmation) before proceeding.
+- **`forget` explicit-target filters**: An explicitly named `--forget` snapshot
+  that is excluded by the `--host`/`--tags` filters now errors out instead of
+  silently forgetting nothing.
+- **`amend` informative errors**: `amend` now reports that the snapshot was not
+  found instead of claiming the operation was "interrupted by user".
+- **FUSE read performance**: Mounted file reads now resolve blob lengths from
+  the index and binary-search the first intersecting blob, instead of loading
+  and decrypting every blob from the start of the file on each syscall.
+- **Packer worker pool**: Workers that stop early after another worker reports an
+  error now return their packer to the empty pool instead of dropping it, keeping
+  the pool stable and preventing the pack-saver loop from hanging on a starved
+  pool when a pack fails.
+- **`gc` delete failures**: `gc` now counts per-object deletion failures, logs
+  and emits user-visible errors for each one, and fails the run when any object
+  could not be deleted instead of logging "Deleted N" as if everything succeeded.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so
@@ -77,11 +155,8 @@
   walk, preventing writes through a symlink from escaping the target root.
 - **Cache race**: Fix missed wakeups in download coalescing; failed downloads
   now fail fast for all waiters.
-- **Lazy index**: Resolve cold zero blobs without a disk load and sort
-  zero-blob metadata for binary search.
 - **SFTP/S3**: Non-blocking connection acquisition; stop retrying permanent
   HTTP 4xx errors. Rate limiter now throttles reads in chunks.
-- Reduced lock hold time in GC referenced blob scanning.
 - Windows: expand `~` when `HOME` is not set.
 
 ## v0.6.0 (2026-07-31)

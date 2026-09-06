@@ -14,6 +14,7 @@ use crate::{
     fs::tree::Tree,
     repository::{
         index::IndexFile,
+        keys::MAX_KEYFILE_SIZE,
         packer::Packer,
         repo::{REPO_ECC_EXTENSION, Repository},
         snapshot::Snapshot,
@@ -244,7 +245,7 @@ pub async fn verify_metadata_file(
             "use verify_pack for packs".to_string(),
         )),
         ContentIdType::Key => {
-            ss.decompress(&raw_data_clone)?;
+            ss.decompress_with_limit(&raw_data_clone, MAX_KEYFILE_SIZE)?;
             Ok(())
         }
         ContentIdType::Snapshot => {

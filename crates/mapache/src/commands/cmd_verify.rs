@@ -516,7 +516,7 @@ pub async fn run_with_repo(
 
         let snapshot_ids = repo.list_snapshot_ids().await?;
 
-        futures::stream::iter(snapshot_ids)
+        let traverse_results: Vec<Result<(), MapacheError>> = futures::stream::iter(snapshot_ids)
             .map(|snapshot_id| {
                 let repo = repo.clone();
                 let corrupt_blobs = corrupt_blobs.clone();
@@ -561,8 +561,28 @@ pub async fn run_with_repo(
                 }
             })
             .buffer_unordered(4)
-            .collect::<Vec<_>>()
+            .collect()
             .await;
+
+        // A failed traversal means we could not fully analyze a snapshot's
+        // corruption impact; report it instead of silently discarding the result.
+        for res in traverse_results {
+            if let Err(e) = res {
+                tracing::error!(
+                    target: "verify",
+                    "Failed to traverse snapshot for corruption analysis: {e}"
+                );
+                ui::cli::error!(
+                    "Failed to analyze corruption impact: {}",
+                    format!("{e:#}").red()
+                );
+                if args.fail_early {
+                    return Err(VerifyError::VerifyFailed(format!(
+                        "failed to analyze corruption impact: {e}"
+                    )));
+                }
+            }
+        }
     }
 
     let final_report = VerifyReport {
@@ -654,18 +674,16 @@ async fn verify_metadata_files(
 
     let mut files_to_verify: Vec<(ContentIdType, Option<ID>, std::path::PathBuf)> = Vec::new();
 
-    if let Ok(index_ids) = repo.list_index_ids().await {
-        for id in index_ids {
-            let path = repo.get_path(ContentIdType::Index, &id);
-            files_to_verify.push((ContentIdType::Index, Some(id), path));
-        }
+    let index_ids = repo.list_index_ids().await?;
+    for id in index_ids {
+        let path = repo.get_path(ContentIdType::Index, &id);
+        files_to_verify.push((ContentIdType::Index, Some(id), path));
     }
 
-    if let Ok(snapshot_ids) = repo.list_snapshot_ids().await {
-        for id in snapshot_ids {
-            let path = repo.get_path(ContentIdType::Snapshot, &id);
-            files_to_verify.push((ContentIdType::Snapshot, Some(id), path));
-        }
+    let snapshot_ids = repo.list_snapshot_ids().await?;
+    for id in snapshot_ids {
+        let path = repo.get_path(ContentIdType::Snapshot, &id);
+        files_to_verify.push((ContentIdType::Snapshot, Some(id), path));
     }
 
     let total = files_to_verify.len();

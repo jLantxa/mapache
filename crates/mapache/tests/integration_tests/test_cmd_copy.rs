@@ -5,10 +5,13 @@ mod tests {
 
     use anyhow::Result;
 
-    use mapache::backend::{StorageBackend, localfs::LocalFS};
+    use mapache::{
+        backend::{StorageBackend, localfs::LocalFS},
+        repository::repo::OBJECTS_DIR,
+    };
 
     use crate::{
-        integration_tests::{INTEGRATION_TEST_DATA, TestContext},
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext, set_write_permission},
         synthetic::{Dataset, SyntheticData},
     };
 
@@ -116,6 +119,73 @@ mod tests {
             .path_exists(std::path::Path::new("manifest"))
             .await;
         assert!(manifest_exists, "Manifest should exist after copy");
+
+        Ok(())
+    }
+
+    /// Corrupting a pack in the source must make copy fail instead of writing
+    /// a partial snapshot that references data which was never copied.
+    #[tokio::test]
+    async fn test_copy_fails_on_corrupt_source() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init destination repo (will be accessed via -r)
+        ctx.init_repo().await?;
+
+        // Init source repo separately
+        let src_repo_path = ctx._tmp_dir.path().join("copy_src");
+        init_repo_at(&src_repo_path, &ctx.auth).await?;
+
+        // Create a snapshot with a nested subtree in source repo
+        let mut src_global = ctx.global.clone();
+        src_global.repo = src_repo_path.to_string_lossy().to_string();
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("0")])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&src_global)
+            .await?;
+
+        // Overwrite every pack in the source repo with garbage so that no
+        // blob (including the root tree) can be read back.
+        let objects_path = src_repo_path.join(OBJECTS_DIR);
+        let mut corrupted = false;
+        for entry in std::fs::read_dir(objects_path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                for subentry in std::fs::read_dir(entry.path())? {
+                    let subentry = subentry?;
+                    let path = subentry.path();
+                    let content = std::fs::read(&path)?;
+                    if content.len() > 100 {
+                        set_write_permission(&path, true)?;
+                        std::fs::write(&path, vec![0xAB; content.len()])?;
+                        corrupted = true;
+                    }
+                }
+            }
+        }
+        assert!(corrupted, "Should have corrupted at least one pack file");
+
+        // Copy must fail hard (no silent partial copy, no exit 0)
+        let src_path_str = src_repo_path.to_string_lossy().to_string();
+        let output = ctx.run_mapache(&["copy", "--from", &src_path_str])?;
+        assert!(
+            !output.status.success(),
+            "copy should fail when the source is corrupt\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // No partial snapshot may have been written to the destination
+        let dst_ids = get_snapshot_ids(&ctx.repo_path)?;
+        assert!(
+            dst_ids.is_empty(),
+            "copy must not write snapshots when the transfer is incomplete: {dst_ids:?}"
+        );
 
         Ok(())
     }

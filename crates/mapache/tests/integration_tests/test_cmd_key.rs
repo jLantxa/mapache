@@ -31,7 +31,7 @@ mod tests {
         let key_id = keys[0].file_name().unwrap().to_str().unwrap().to_string();
 
         // Verification of 'delete' subcommand
-        ctx.run_mapache_ok(&["key", "delete", &key_id])?;
+        ctx.run_mapache_ok(&["key", "delete", "--yes", &key_id])?;
 
         assert!(!keys_dir.join(&key_id).exists());
 

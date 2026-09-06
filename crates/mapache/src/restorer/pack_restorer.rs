@@ -318,6 +318,7 @@ pub(crate) async fn restore_packs(
                                         locator.raw_length
                                     )));
                                 }
+                                blob_id.verify_content(&decoded_data)?;
 
                                 Ok(DecodedBlob {
                                     data: decoded_data,

@@ -22,6 +22,31 @@ const MEMORY_USAGE_RATIO: f32 = 0.10;
 /// Dummy password used for calibration benchmarks.
 const DUMMY_PASSWORD: &str = "mapachito";
 
+/// Bounds for Argon2id parameters read from files that have not been authenticated
+/// yet (keyfiles, bundle headers). Parameters outside these bounds are rejected before
+/// any derivation, preventing an OOM / long-hold DoS via planted malicious files.
+pub const ARGON2_M_COST_BOUNDS: (u32, u32) = (8, 1_048_576); // KiB: 8 KiB ..= 1 GiB
+pub const ARGON2_T_COST_BOUNDS: (u32, u32) = (1, 1_000_000);
+pub const ARGON2_P_COST_BOUNDS: (u32, u32) = (1, 16);
+
+/// Validate untrusted Argon2id parameters against sane bounds.
+pub fn validate_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), String> {
+    fn check(value: u32, bounds: (u32, u32), label: &str) -> Result<(), String> {
+        if (bounds.0..=bounds.1).contains(&value) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{label} cost {value} is outside the allowed range {}..={}",
+                bounds.0, bounds.1
+            ))
+        }
+    }
+    check(m_cost, ARGON2_M_COST_BOUNDS, "memory")?;
+    check(t_cost, ARGON2_T_COST_BOUNDS, "iterations")?;
+    check(p_cost, ARGON2_P_COST_BOUNDS, "parallelism")?;
+    Ok(())
+}
+
 /// Return default Argon2id parameters (fast, no benchmarking).
 pub fn default_params() -> Params {
     Params::default()

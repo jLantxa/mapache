@@ -405,7 +405,11 @@ impl Packer {
                     raw_length,
                     compressed,
                 });
-                offset += length;
+                offset = offset.checked_add(length).ok_or_else(|| {
+                    MapacheError::Integrity(format!(
+                        "pack offset overflow while parsing footer (offset {offset} + length {length})"
+                    ))
+                })?;
             }
         }
 
@@ -486,6 +490,7 @@ impl PackSaver {
                 worker_threads.push(std::thread::spawn(move || -> Result<()> {
                     while let Ok((mut packer, blob_type)) = rx.recv() {
                         if err_ptr.lock().is_some() {
+                            let _ = tx.send(packer);
                             return Ok(());
                         }
 

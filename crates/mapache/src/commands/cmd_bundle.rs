@@ -40,7 +40,7 @@ use crate::{
     ui::{
         cli::{self, color::Colorize},
         default_bar_draw_target, default_progress_style,
-        events::{BackupEvent, Event},
+        events::{BackupEvent, Event, emit_event},
     },
     utils::{self, collections::IdSet, format_size_binary, rate_estimator::RateEstimator},
 };
@@ -521,6 +521,16 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
                     }
                 }
                 Ok((path, Err(e))) => {
+                    // Fixtures that fail to stat are omitted from the bundle.
+                    // Surface the omission to the user instead of only logging it.
+                    emit_event(
+                        &coordinator_status.event_sender,
+                        Event::Backup(BackupEvent::Warning(format!(
+                            "Skipping {}: {}",
+                            path.display(),
+                            e
+                        ))),
+                    );
                     tracing::warn!(target: "bundle", "Skipping {:?}: {}", path, e);
                 }
                 Err(e) => {

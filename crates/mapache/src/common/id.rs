@@ -27,6 +27,18 @@ impl ID {
         super::hash::hash(data)
     }
 
+    /// Verifies that the given content hashes to this ID.
+    pub fn verify_content<T: AsRef<[u8]>>(&self, data: T) -> Result<()> {
+        if Self::from_content(data) == *self {
+            Ok(())
+        } else {
+            Err(MapacheError::Integrity(format!(
+                "blob content hash does not match requested ID {}",
+                self.to_hex()
+            )))
+        }
+    }
+
     /// Converts the ID to a hex String.
     pub fn to_hex(&self) -> String {
         utils::bytes_to_hex(&self.0)
@@ -371,6 +383,22 @@ mod tests {
 
         let maxes = ID::from_bytes([0xFF; 32]);
         assert_eq!(maxes.to_hex(), "f".repeat(64));
+    }
+
+    #[test]
+    fn test_id_verify_content_rejects_mismatch() {
+        let id = ID::from_content(b"expected content");
+        let err = id.verify_content(b"different content").unwrap_err();
+        assert!(matches!(err, MapacheError::Integrity(_)));
+    }
+
+    #[test]
+    fn test_id_verify_content_zero_blob() {
+        let data = vec![0u8; 4096];
+        let id = ID::from_content(&data);
+        assert!(id.verify_content(&data).is_ok());
+        let wrong = vec![0u8; 4095];
+        assert!(id.verify_content(&wrong).is_err());
     }
 
     #[test]

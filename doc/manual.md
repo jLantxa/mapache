@@ -825,6 +825,10 @@ be a snapshot ID prefix or `latest` (default).
 | `overwrite` | Replace the existing file unconditionally |
 | `newer` | Keep the file with the more recent modification time |
 
+The same strategy applies to conflicting symlinks: `skip` keeps the existing
+symlink with a warning, `overwrite` replaces it, `fail` aborts, and `newer`
+compares modification times.
+
 ### Path Filtering
 
 Restore supports both include and exclude filtering:
@@ -1219,11 +1223,12 @@ prompts for the new user's username and password.
 ### `key delete` — Remove a User
 
 ```bash
-mapache key delete KEY_ID -r <URL>
+mapache key delete KEY_ID -r <URL>          # Requires confirmation
+mapache key delete KEY_ID --yes -r <URL>    # Skip the confirmation prompt
 ```
 
 Deletes a key file by ID prefix. The affected user will no longer be able to
-access the repository.
+access the repository. Deletion requires confirmation unless `--yes` is given.
 
 ### `key change-password` — Change Password
 
@@ -1741,7 +1746,7 @@ Manage repository key files.
 ```
 mapache key list -r <URL>
 mapache key add -r <URL> [--path <PATH>] [--calibrate-kdf]
-mapache key delete <KEY_ID> -r <URL>
+mapache key delete <KEY_ID> -r <URL> [--yes]
 mapache key change-password -r <URL> [--calibrate-kdf]
 mapache key export <KEY_ID> -r <URL> [-o <PATH>]
 ```

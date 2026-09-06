@@ -19,6 +19,7 @@ use crate::{
     common::{
         ID,
         error::{MapacheError, Result},
+        kdf,
         traits::BlobLoader,
     },
     ecc,
@@ -75,6 +76,9 @@ impl BlobLoader for BundleReader {
                         data.len()
                     )));
                 }
+                if entry.blob_type != crate::common::BlobType::Zero {
+                    id.verify_content(&data)?;
+                }
                 Ok(data)
             }
             Err(MapacheError::Crypto(_)) if self.ecc_config.is_some() => {
@@ -103,12 +107,22 @@ impl BlobLoader for BundleReader {
                         data.len()
                     )));
                 }
+                if entry.blob_type != crate::common::BlobType::Zero {
+                    id.verify_content(&data)?;
+                }
                 Ok(data)
             }
             Err(e) => Err(MapacheError::Crypto(format!(
                 "failed to decode blob data: {e}"
             ))),
         }
+    }
+
+    async fn blob_len(&self, id: &ID) -> Result<Option<u64>> {
+        Ok(self
+            .index_map
+            .get(id)
+            .map(|&idx| self.index.entries[idx].raw_length as u64))
     }
 }
 
@@ -131,6 +145,13 @@ impl BundleReader {
             ));
         }
 
+        kdf::validate_argon2_params(header.argon2_m, header.argon2_t, header.argon2_p).map_err(
+            |e| {
+                MapacheError::Format(format!(
+                    "invalid bundle format: Argon2 parameters are out of bounds: {e}"
+                ))
+            },
+        )?;
         let params = ParamsBuilder::new()
             .m_cost(header.argon2_m)
             .t_cost(header.argon2_t)

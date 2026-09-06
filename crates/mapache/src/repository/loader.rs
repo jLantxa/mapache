@@ -204,6 +204,10 @@ impl BlobLoader {
                     .secure_storage()
                     .decode_blob(&data[start..end], loc.compressed)?;
 
+                if loc.blob_type != BlobType::Zero {
+                    id.verify_content(&decoded)?;
+                }
+
                 result.insert(id, decoded);
             }
         }

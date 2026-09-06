@@ -294,7 +294,13 @@ impl BundleWriter {
                 .map_err(|e| MapacheError::Crypto(format!("failed to encrypt ECC section: {e}")))?;
 
             ecc_offset = file.stream_position()?;
-            ecc_len = encrypted_ecc.len() as u32;
+            let ecc_len_u32 = u32::try_from(encrypted_ecc.len()).map_err(|_| {
+                MapacheError::Format(format!(
+                    "ECC section too large for bundle trailer ({} bytes > u32::MAX)",
+                    encrypted_ecc.len()
+                ))
+            })?;
+            ecc_len = ecc_len_u32;
             file.write_all(&encrypted_ecc)?;
         }
 
@@ -304,7 +310,12 @@ impl BundleWriter {
             .storage
             .encrypt(&index_bytes)
             .map_err(|e| MapacheError::Crypto(format!("failed to encrypt index: {e}")))?;
-        let index_len = encrypted_index.len() as u32;
+        let index_len = u32::try_from(encrypted_index.len()).map_err(|_| {
+            MapacheError::Format(format!(
+                "index section too large for bundle trailer ({} bytes > u32::MAX)",
+                encrypted_index.len()
+            ))
+        })?;
         file.write_all(&encrypted_index)?;
 
         let manifest_offset = file.stream_position()?;
@@ -317,7 +328,12 @@ impl BundleWriter {
             .storage
             .encrypt(&manifest_bytes)
             .map_err(|e| MapacheError::Crypto(format!("failed to encrypt manifest: {e}")))?;
-        let manifest_len = encrypted_manifest.len() as u32;
+        let manifest_len = u32::try_from(encrypted_manifest.len()).map_err(|_| {
+            MapacheError::Format(format!(
+                "manifest section too large for bundle trailer ({} bytes > u32::MAX)",
+                encrypted_manifest.len()
+            ))
+        })?;
         file.write_all(&encrypted_manifest)?;
 
         let trailer = BundleTrailer {

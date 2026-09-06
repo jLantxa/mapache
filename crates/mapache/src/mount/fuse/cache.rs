@@ -119,4 +119,10 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
 
         Ok(blob)
     }
+
+    /// Resolves the decompressed length of a blob from the loader's index
+    /// without loading the data (used to skip blobs outside a read range).
+    pub(super) async fn blob_len(&self, id: &ID) -> Result<Option<u64>> {
+        self.loader.blob_len(id).await
+    }
 }

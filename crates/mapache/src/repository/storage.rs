@@ -131,7 +131,18 @@ impl SecureStorage {
         }
 
         if let Some(cipher) = &self.cipher {
-            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = rand::random();
+            // Deterministic nonce derived from the plaintext's BLAKE3 content
+            // hash (the same hash that determines the blob content ID). This
+            // eliminates the random-nonce collision risk at scale: identical
+            // plaintexts always use the same (message-derived) nonce, and a
+            // nonce can only repeat together with identical plaintext, which
+            // is safe for GCM-SIV.
+            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = common::hash::hash(data).0
+                [..AES_GCM_NONCE_LEN]
+                .try_into()
+                .map_err(|_| {
+                    MapacheError::Internal("content hash is shorter than the nonce".to_string())
+                })?;
             let nonce = Nonce::try_from(&nonce_bytes[..]).expect("nonce length is always 12");
             // InOutBuf shares input/output memory — zero-copy in-place encryption.
             // (The nonce-at-start v1 branch below allocates an extra Vec.)
@@ -197,6 +208,28 @@ impl SecureStorage {
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
         zstd::decode_all(data)
             .map_err(|e| MapacheError::Compression(format!("zstd decompression failed: {e}")))
+    }
+
+    /// Decompress `data` with an upper bound on the output size, producing at most
+    /// `limit` bytes. Used for data that is decompressed before being authenticated
+    /// (e.g. keyfiles) to prevent decompression bombs.
+    pub fn decompress_with_limit(&self, data: &[u8], limit: usize) -> Result<Vec<u8>> {
+        use std::io::Read;
+        let decoder = zstd::stream::Decoder::new(data)
+            .map_err(|e| MapacheError::Compression(format!("zstd decompression failed: {e}")))?;
+        let mut out = Vec::with_capacity(limit.min(1024 * 1024));
+        decoder
+            .take(limit as u64 + 1)
+            .read_to_end(&mut out)
+            .map_err(|e| MapacheError::Compression(format!("zstd decompression failed: {e}")))?;
+        if out.len() > limit {
+            return Err(MapacheError::Compression(format!(
+                "zstd decompressed size {} exceeds limit {}",
+                out.len(),
+                limit
+            )));
+        }
+        Ok(out)
     }
 
     #[inline]
@@ -443,6 +476,33 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let decompressed_data = ss.decompress(&compressed_data).unwrap();
 
         assert_eq!(*original_data, *decompressed_data);
+    }
+
+    #[test]
+    fn test_decompress_with_limit_roundtrip() {
+        let ss = SecureStorage::new().with_compression(defaults::DEFAULT_COMPRESSION.to_level());
+
+        let original_data = TEXT;
+        let compressed_data = ss.compress(original_data).unwrap();
+
+        let decompressed_data = ss.decompress_with_limit(&compressed_data, 1024).unwrap();
+        assert_eq!(*original_data, *decompressed_data);
+
+        // A limit smaller than the decompressed size must fail, not allocate.
+        assert!(ss.decompress_with_limit(&compressed_data, 10).is_err());
+    }
+
+    #[test]
+    fn test_decompress_with_limit_rejects_bomb() {
+        let ss = SecureStorage::new().with_compression(defaults::DEFAULT_COMPRESSION.to_level());
+
+        // Highly compressible payload that expands beyond the limit.
+        let bomb = vec![0u8; 8 * 1024 * 1024];
+        let compressed_bomb = ss.compress(&bomb).unwrap();
+        assert!(compressed_bomb.len() < 1024); // sanity: compresses well
+
+        let res = ss.decompress_with_limit(&compressed_bomb, 1024);
+        assert!(res.is_err());
     }
 
     #[test]

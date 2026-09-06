@@ -363,32 +363,93 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
             let mut remaining_size = size;
             let mut current_offset = offset;
 
-            for blob_id in &blobs {
-                if remaining_size == 0 {
-                    break;
+            // Resolve blob lengths from the loader's index (no decryption), so
+            // blobs entirely before `offset` can be skipped without loading
+            // them. Previously every syscall loaded and decrypted every blob
+            // from the start of the file — O(n) per read.
+            let known_lengths = {
+                let mut lens = Vec::with_capacity(blobs.len());
+                let mut all_known = true;
+                for blob_id in &blobs {
+                    match self.blob_cache.blob_len(blob_id).await? {
+                        Some(len) => lens.push(len),
+                        None => {
+                            all_known = false;
+                            break;
+                        }
+                    }
                 }
+                if all_known { Some(lens) } else { None }
+            };
 
-                let blob_data = self.blob_cache.load(blob_id).await?;
-                let blob_len = blob_data.len() as u64;
-                let blob_end = file_pos + blob_len;
+            if let Some(lengths) = known_lengths {
+                // Binary search for the first blob that can intersect the
+                // requested range, using cumulative file offsets.
+                let mut prefix = Vec::with_capacity(lengths.len() + 1);
+                prefix.push(0u64);
+                for len in &lengths {
+                    prefix.push(prefix[prefix.len() - 1] + len);
+                }
+                let start_blob = prefix
+                    .partition_point(|&start| start <= offset)
+                    .saturating_sub(1);
+                file_pos = prefix[start_blob];
 
-                if blob_end <= current_offset {
+                for (blob_id, blob_len) in blobs.iter().zip(lengths.iter()).skip(start_blob) {
+                    if remaining_size == 0 {
+                        break;
+                    }
+
+                    let blob_end = file_pos + blob_len;
+                    if blob_end <= current_offset {
+                        file_pos += blob_len;
+                        continue;
+                    }
+
+                    let blob_data = self.blob_cache.load(blob_id).await?;
+                    let start_in_blob = current_offset.saturating_sub(file_pos) as usize;
+                    let bytes_available = blob_data.len().saturating_sub(start_in_blob);
+                    let bytes_to_read = bytes_available.min(remaining_size as usize);
+
+                    if bytes_to_read > 0 {
+                        buffer.extend_from_slice(
+                            &blob_data[start_in_blob..start_in_blob + bytes_to_read],
+                        );
+                        remaining_size -= bytes_to_read as u32;
+                        current_offset += bytes_to_read as u64;
+                    }
                     file_pos += blob_len;
-                    continue;
                 }
+            } else {
+                // Fallback for loaders without index-based length resolution:
+                // the original scan that loads every blob.
+                for blob_id in &blobs {
+                    if remaining_size == 0 {
+                        break;
+                    }
 
-                let start_in_blob = current_offset.saturating_sub(file_pos) as usize;
-                let bytes_available = (blob_len as usize).saturating_sub(start_in_blob);
-                let bytes_to_read = bytes_available.min(remaining_size as usize);
+                    let blob_data = self.blob_cache.load(blob_id).await?;
+                    let blob_len = blob_data.len() as u64;
+                    let blob_end = file_pos + blob_len;
 
-                if bytes_to_read > 0 {
-                    buffer.extend_from_slice(
-                        &blob_data[start_in_blob..start_in_blob + bytes_to_read],
-                    );
-                    remaining_size -= bytes_to_read as u32;
-                    current_offset += bytes_to_read as u64;
+                    if blob_end <= current_offset {
+                        file_pos += blob_len;
+                        continue;
+                    }
+
+                    let start_in_blob = current_offset.saturating_sub(file_pos) as usize;
+                    let bytes_available = (blob_len as usize).saturating_sub(start_in_blob);
+                    let bytes_to_read = bytes_available.min(remaining_size as usize);
+
+                    if bytes_to_read > 0 {
+                        buffer.extend_from_slice(
+                            &blob_data[start_in_blob..start_in_blob + bytes_to_read],
+                        );
+                        remaining_size -= bytes_to_read as u32;
+                        current_offset += bytes_to_read as u64;
+                    }
+                    file_pos += blob_len;
                 }
-                file_pos += blob_len;
             }
 
             Ok(buffer)

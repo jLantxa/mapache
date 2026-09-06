@@ -171,21 +171,45 @@ impl TreeSerializer {
 
     // Helper function to encapsulate the core finalization and serialization logic,
     // handling both root and non-root directories.
+    //
+    // `force` tolerates *fewer* children than expected and is only used after the
+    // stream has ended, when skipped (unreadable) files can no longer arrive.
     async fn finalize_and_save(
         &mut self,
         dir_path: PathBuf,
         pending_tree: PendingTree,
+        force: bool,
     ) -> Result<FinalizeResult> {
         // Invariant check: Ensure we actually have the expected number of children
         if let ExpectedChildren::Known(expected) = pending_tree.num_expected_children {
             let actual = pending_tree.children.len();
-            if actual != expected {
+            if actual > expected {
+                // Over-delivery is always a bug, never a skipped file.
                 return Err(error::MapacheError::Integrity(format!(
                     "{} has {} children, expected {}",
                     dir_path.display(),
                     actual,
                     expected
                 )));
+            }
+            if actual < expected {
+                if force {
+                    tracing::warn!(
+                        target: "archiver",
+                        "{} has {} of {} expected children; {} skipped item(s) omitted from snapshot",
+                        dir_path.display(),
+                        actual,
+                        expected,
+                        expected - actual
+                    );
+                } else {
+                    return Err(error::MapacheError::Integrity(format!(
+                        "{} has {} children, expected {}",
+                        dir_path.display(),
+                        actual,
+                        expected
+                    )));
+                }
             }
         }
 
@@ -279,7 +303,7 @@ impl TreeSerializer {
                 })?;
 
             let parent_info_opt = self
-                .finalize_and_save(dir_path_key, this_pending_tree)
+                .finalize_and_save(dir_path_key, this_pending_tree, false)
                 .await?;
 
             // Recursively handle the parent if it was not the root.
@@ -298,7 +322,50 @@ impl TreeSerializer {
     pub(crate) async fn finalize_root(&mut self) -> Result<()> {
         tracing::info!(target: "archiver", "Finalizing root tree");
         let root = self.snapshot_root_path.clone();
-        self.finalize_if_complete(&root).await
+
+        // Normal bottom-up finalization first: completes every directory whose
+        // expected children all arrived.
+        self.finalize_if_complete(&root).await?;
+
+        // If files were skipped (e.g. unreadable mid-snapshot), some trees never
+        // complete because their pre-registered child counts are never met. With
+        // a file missing, the snapshot previously aborted with "root tree ID not
+        // set" — instead, after the stream has ended, force-finalize the
+        // remaining trees bottom-up so the snapshot still completes and omits
+        // the skipped items.
+        while !self.pending_trees.is_empty() {
+            let deepest = self
+                .pending_trees
+                .keys()
+                .max_by_key(|p| p.components().count())
+                .cloned()
+                .ok_or_else(|| {
+                    error::MapacheError::Internal("pending tree map is empty".to_string())
+                })?;
+            self.force_finalize(&deepest).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Forcibly finalizes a single pending tree, tolerating skipped children.
+    /// Only valid after the stream has ended, so no further children can arrive.
+    async fn force_finalize(&mut self, dir_path: &Path) -> Result<()> {
+        let Some((dir_key, pending_tree)) = self.pending_trees.remove_entry(dir_path) else {
+            return Ok(());
+        };
+
+        let parent_info_opt = self.finalize_and_save(dir_key, pending_tree, true).await?;
+
+        // Recursively handle the parent if it was not the root.
+        if let Some((parent_path, completed_dir_node)) = parent_info_opt {
+            self.insert_finalized_node(&parent_path, completed_dir_node);
+            // The parent may have received its last child and now be complete;
+            // cascade normally through the standard path.
+            self.finalize_if_complete(&parent_path).await?;
+        }
+
+        Ok(())
     }
 
     /// Allow tests to inspect the pending trees map
@@ -628,7 +695,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_incomplete_tree_not_finalized() -> Result<()> {
+    async fn test_skipped_child_omitted_on_finalize_root() -> Result<()> {
+        // Regression for M5: when a child is skipped (unreadable file), the
+        // directory must still be finalized on finalize_root instead of leaving
+        // the snapshot in a permanently incomplete state ("root tree ID not set").
         let saver = Arc::new(MockBlobSaver::new());
         let mut ts = make_ts(saver.clone(), "/", &["/dir/a.txt", "/dir/b.txt"]);
 
@@ -641,7 +711,7 @@ mod tests {
         ))
         .await?;
 
-        // Only feed one of the two children
+        // Only one of the two children arrives; b.txt was skipped.
         ts.handle_processed_item((
             Path::new("/dir/a.txt"),
             StreamNode {
@@ -651,12 +721,23 @@ mod tests {
         ))
         .await?;
 
-        // incomplete trees should not be finalized
+        // The tree is still pending during normal processing.
         assert_eq!(ts.pending_count(), 2, "dir + root still pending");
 
         ts.finalize_root().await?;
-        // Root should NOT be set — tree is incomplete
-        assert!(ts.root_tree().is_none(), "root should not be finalized");
+
+        // The snapshot now completes, omitting the skipped file.
+        let root_id = ts.root_tree().expect("root should be finalized");
+        let root_bytes = saver.get(&root_id).unwrap();
+        let root_tree: Tree = serde_json::from_slice(&root_bytes)?;
+        assert_eq!(root_tree.nodes.len(), 1);
+        assert_eq!(root_tree.nodes[0].name, "dir");
+
+        let dir_id = root_tree.nodes[0].tree.expect("dir should have a tree");
+        let dir_bytes = saver.get(&dir_id).unwrap();
+        let dir_tree: Tree = serde_json::from_slice(&dir_bytes)?;
+        assert_eq!(dir_tree.nodes.len(), 1);
+        assert_eq!(dir_tree.nodes[0].name, "a.txt");
         Ok(())
     }
 

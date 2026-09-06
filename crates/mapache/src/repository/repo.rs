@@ -237,6 +237,14 @@ impl BlobLoader for Repository {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         self.load_blob(id).await
     }
+
+    async fn blob_len(&self, id: &ID) -> Result<Option<u64>> {
+        Ok(self
+            .master_index
+            .get(id)
+            .await
+            .map(|locator| locator.raw_length as u64))
+    }
 }
 
 #[async_trait]
@@ -638,16 +646,21 @@ impl Repository {
             .await
             .ok_or(MapacheError::NotInIndex(*id))?;
         if locator.blob_type == BlobType::Zero {
-            return Ok(vec![0u8; locator.raw_length as usize]);
+            let zero_data = vec![0u8; locator.raw_length as usize];
+            id.verify_content(&zero_data)?;
+            return Ok(zero_data);
         }
-        self.load_from_pack(
-            &locator.pack_id,
-            locator.blob_type,
-            locator.offset,
-            locator.length,
-            locator.compressed,
-        )
-        .await
+        let data = self
+            .load_from_pack(
+                &locator.pack_id,
+                locator.blob_type,
+                locator.offset,
+                locator.length,
+                locator.compressed,
+            )
+            .await?;
+        id.verify_content(&data)?;
+        Ok(data)
     }
 
     /// Load a single index file from disk by its ID (public for cold iteration).
@@ -816,7 +829,9 @@ impl Repository {
 
         match file_type {
             ContentIdType::Pack => Ok(data),
-            ContentIdType::Key => self.secure_storage.decompress(&data),
+            ContentIdType::Key => self
+                .secure_storage
+                .decompress_with_limit(&data, keys::MAX_KEYFILE_SIZE),
             _ => self.secure_storage.decode_owned(data),
         }
     }
@@ -2029,6 +2044,9 @@ mod tests {
             true,
             Local::now() - LOCK_EXPIRE_TIMEOUT,
         )));
+        // Simulate a crashed owner on this host (impossible PID) so the lock is
+        // stale regardless of the age-based expiry semantics.
+        other_lock.lock().set_pid_for_test(i32::MAX as u32);
         r0.save_lock(&other_lock).await?;
 
         let (_, _, lock_handle) = Repository::try_open_with_lock(

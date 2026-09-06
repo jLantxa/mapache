@@ -27,11 +27,11 @@
   Subcommands: `enable`, `disable`, `set-percent`, and `regenerate`. Allows
   enabling ECC on existing repositories, changing the overhead percentage, or
   regenerating all sidecars.
-- *Verify metadata*: `mapache verify` can now check metadata files (index,
+- **Verify metadata**: `mapache verify` can now check metadata files (index,
   snapshot, etc.) and repair them if ECC is enabled.
 - **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
   for commands that don't need the full index.
-- *KDF calibration*: Added `--calibrate-kdf` to allow calibrating the Argon2id
+- **KDF calibration**: Added `--calibrate-kdf` to allow calibrating the Argon2id
   parameters for a target run time in the running hardware. Memory is
   auto-detected (10% of RAM, clamped to 32–64 MiB).
 
@@ -49,7 +49,11 @@
   memory copy during encryption.
 - **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
   operating on v1 repositories. Consider migrating with `mapache migrate`.
+- **TUI repository format indicator**: The dashboard top bar now shows the
+  repository format version.
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
+- **Bundle open retry**: Opening a bundle with the wrong password now prompts
+  again instead of failing immediately.
 - **Reduced lock hold time in GC referenced blob scanning**.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
@@ -113,9 +117,19 @@
   detect out-of-bounds blob descriptors and `u32` offset overflow and return an
   error instead of panicking or wrapping on a malformed footer or a data section
   over 4 GiB.
+- **Migration preserves dropped snapshots**: `migrate` now moves superseded
+  objects to the `.dropped` trash instead of deleting them directly, so dropped
+  snapshots — and their ECC sidecars — survive the rewrite. GC reclaims the
+  trash afterwards.
 - **Bundle writer bounds**: The ECC, index, and manifest section lengths written
   to the bundle trailer are now validated with `u32::try_from` instead of
   silently truncating any section larger than 4 GiB.
+- **ECC crash-safety**: `ecc set-percent` regenerates sidecars before updating
+  the manifest so the repository stays protected throughout, and `disable`
+  resets the config before deleting obsolete sidecars.
+- **Bundle ECC repair safety**: Repairing a corrupted bundle writes the
+  repaired output to a `.repaired` file instead of overwriting the original,
+  which is left untouched.
 - **Deterministic blob nonce**: Blob encryption nonces are now derived from the
   content hash instead of an independent random value, so the 96-bit GCM-SIV
   nonce can only repeat for identical content (which is safe for GCM-SIV),
@@ -157,7 +171,7 @@
   now fail fast for all waiters.
 - **SFTP/S3**: Non-blocking connection acquisition; stop retrying permanent
   HTTP 4xx errors. Rate limiter now throttles reads in chunks.
-- Windows: expand `~` when `HOME` is not set.
+- **Windows**: expand `~` when `HOME` is not set.
 
 ## v0.6.0 (2026-07-31)
 

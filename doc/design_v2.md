@@ -146,6 +146,14 @@ object has been altered or manipulated.
 Each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ciphertext |
 tag | nonce]`) instead of the start.
 
+Nonces are **derived deterministically** from the plaintext content: the nonce
+is the first 12 bytes of the BLAKE3 hash of the plaintext — the same hash that
+determines the blob's content ID. Identical plaintexts therefore always produce
+identical ciphertext, which is safe for AES-GCM-SIV: a nonce can only repeat
+together with identical plaintext, so there is no collision risk even at scale.
+This also makes encryption reproducible: the same input byte-for-byte always
+yields the same encoded blob.
+
 #### Master key and key files
 
 All the encrypted content in the mapache repository is encrypted with a unique
@@ -454,6 +462,12 @@ When the high bit is set (`0x80 | type`), the blob's payload is zstd-compressed
 and the `encoded length` is the compressed size; when clear, the payload is
 stored as-is (`encoded length == raw length`).
 
+The descriptor list is padded to a multiple of 64 entries
+(`FOOTER_BLOB_MULTIPLE`) before serialization. Missing entries are filled with
+`Padding` descriptors (type `0x02`) whose other fields are random noise. As a
+result, every pack footer is a whole number of 64-entry blocks. Readers must
+skip `Padding` descriptors; they reference no data.
+
 ### Index
 
 The index files, located in the repo/index directory, are the repository's
@@ -632,9 +646,16 @@ its ID, even though the timestamp will change.
   "exclusive": false,
   "hostname": "cocoon",
   "username": "mapache",
-  "pid": 4216
+  "pid": 4216,
+  "context": ["mapache", "snapshot", "/"],
+  "creation_time": "2025-11-20T00:00:00.390485800+01:00"
 }
 ```
+
+Lock files may also contain `context` (a list of command-line arguments
+identifying the holding process) and `creation_time` (when the lock was first
+acquired). Both fields are optional: files written by older versions may omit
+them.
 
 ### Keys
 

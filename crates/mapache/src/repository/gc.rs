@@ -330,6 +330,12 @@ impl Plan {
 
         gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.0.clone()).await?;
 
+        // A pack with no referenced blobs is fully deletable as unused and has
+        // already been removed above. Exclude it from the obsolete set so it is
+        // not repacked and then deleted a second time.
+        self.obsolete_packs
+            .retain(|id| !self.unused_packs.contains(id));
+
         // Safety checkpoint: only unreferenced items have been deleted so
         // far. On-disk state is still consistent. Below this, `repack`
         // mutates the in-memory index before the new packs are flushed, so

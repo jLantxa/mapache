@@ -50,6 +50,7 @@
 - **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
   operating on v1 repositories. Consider migrating with `mapache migrate`.
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
+- **Reduced lock hold time in GC referenced blob scanning**.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
   instead of flat top-level `m`, `t`, `p` fields. Old v1 keyfiles are read
@@ -65,8 +66,6 @@
   files kept locally no longer get their metadata (mtime, permissions, xattrs)
   silently overwritten by the snapshot's metadata. Newly restored files and
   directories still receive the snapshot's metadata.
-- **`migrate` lock**: `mapache migrate` now holds an exclusive lock while
-  rewriting the repository, preventing races with concurrent snapshots.
 - **Copy integrity**: `mapache copy` now aborts (non-zero exit) when a source
   tree cannot be read, instead of writing a destination snapshot that silently
   references data which was never copied.
@@ -101,7 +100,7 @@
   tree ID not set" when files are skipped mid-run (e.g. an unreadable file or a
   diff-resolution failure). After the stream ends, remaining trees are
   force-finalized so the snapshot completes and omits the skipped items with a
-warning.
+  warning.
 - **Stat-failure visibility**: Files that fail to stat during directory
   scanning are now surfaced as visible warnings in snapshot and bundle output
   instead of being silently omitted with only a debug log, so data loss from
@@ -156,11 +155,8 @@ warning.
   walk, preventing writes through a symlink from escaping the target root.
 - **Cache race**: Fix missed wakeups in download coalescing; failed downloads
   now fail fast for all waiters.
-- **Lazy index**: Resolve cold zero blobs without a disk load and sort
-  zero-blob metadata for binary search.
 - **SFTP/S3**: Non-blocking connection acquisition; stop retrying permanent
   HTTP 4xx errors. Rate limiter now throttles reads in chunks.
-- Reduced lock hold time in GC referenced blob scanning.
 - Windows: expand `~` when `HOME` is not set.
 
 ## v0.6.0 (2026-07-31)

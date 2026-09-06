@@ -516,54 +516,53 @@ pub async fn run_with_repo(
 
         let snapshot_ids = repo.list_snapshot_ids().await?;
 
-        let traverse_results: Vec<Result<(), MapacheError>> =
-            futures::stream::iter(snapshot_ids)
-                .map(|snapshot_id| {
-                    let repo = repo.clone();
-                    let corrupt_blobs = corrupt_blobs.clone();
-                    async move {
-                        let mut stream = SerializedNodeStream::new(
-                            repo.clone(),
-                            Some(repo.load_snapshot(&snapshot_id, None).await?.tree),
-                            PathBuf::new(),
-                            None,
-                            None,
-                        )
-                        .await?;
+        let traverse_results: Vec<Result<(), MapacheError>> = futures::stream::iter(snapshot_ids)
+            .map(|snapshot_id| {
+                let repo = repo.clone();
+                let corrupt_blobs = corrupt_blobs.clone();
+                async move {
+                    let mut stream = SerializedNodeStream::new(
+                        repo.clone(),
+                        Some(repo.load_snapshot(&snapshot_id, None).await?.tree),
+                        PathBuf::new(),
+                        None,
+                        None,
+                    )
+                    .await?;
 
-                        while let Some(res) = stream.next().await {
-                            let (path, sn_node_res) = res?;
-                            let sn_node = sn_node_res?;
-                            let node = sn_node.node;
-                            let blobs = match node.blobs {
-                                Some(b) => b,
-                                None => continue,
-                            };
+                    while let Some(res) = stream.next().await {
+                        let (path, sn_node_res) = res?;
+                        let sn_node = sn_node_res?;
+                        let node = sn_node.node;
+                        let blobs = match node.blobs {
+                            Some(b) => b,
+                            None => continue,
+                        };
 
-                            let corrupt_ids = corrupt_blobs.lock();
-                            for blob_id in blobs {
-                                if !corrupt_ids.contains(&blob_id) {
-                                    continue;
-                                }
+                        let corrupt_ids = corrupt_blobs.lock();
+                        for blob_id in blobs {
+                            if !corrupt_ids.contains(&blob_id) {
+                                continue;
+                            }
 
-                                ui::cli::error!(
-                                    "Corrupt blob {} affects file \"{}\" in snapshot {}",
-                                    blob_id.to_short_hex(8).red(),
-                                    path.display().to_string().bold(),
-                                    snapshot_id.to_short_hex(12).yellow()
-                                );
+                            ui::cli::error!(
+                                "Corrupt blob {} affects file \"{}\" in snapshot {}",
+                                blob_id.to_short_hex(8).red(),
+                                path.display().to_string().bold(),
+                                snapshot_id.to_short_hex(12).yellow()
+                            );
 
-                                if json_out {
-                                    emit_blob_corruption_json(&blob_id, &path, &snapshot_id);
-                                }
+                            if json_out {
+                                emit_blob_corruption_json(&blob_id, &path, &snapshot_id);
                             }
                         }
-                        Ok::<(), MapacheError>(())
                     }
-                })
-                .buffer_unordered(4)
-                .collect()
-                .await;
+                    Ok::<(), MapacheError>(())
+                }
+            })
+            .buffer_unordered(4)
+            .collect()
+            .await;
 
         // A failed traversal means we could not fully analyze a snapshot's
         // corruption impact; report it instead of silently discarding the result.

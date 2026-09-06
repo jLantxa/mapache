@@ -598,8 +598,7 @@ impl Restorer {
             }
 
             // Symlink: honor the restore strategy like regular files instead of
-            // restoring unconditionally (under `fail`, an existing entry was
-            // previously downgraded to a warning and the command exited 0).
+            // restoring unconditionally.
             if node.is_symlink() {
                 if !dry_run {
                     match self
@@ -1009,7 +1008,7 @@ impl Restorer {
             tree_id,
             self.opts.include.clone(),
             self.opts.exclude.clone(),
-            &metadata_paths,
+            &metadata_paths.as_ref().map(|set| Arc::new(set.clone())),
         )
         .await?;
 

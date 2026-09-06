@@ -379,11 +379,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
                         }
                     }
                 }
-                if all_known {
-                    Some(lens)
-                } else {
-                    None
-                }
+                if all_known { Some(lens) } else { None }
             };
 
             if let Some(lengths) = known_lengths {

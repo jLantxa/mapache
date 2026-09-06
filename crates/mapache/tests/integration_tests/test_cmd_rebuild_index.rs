@@ -10,7 +10,9 @@ mod tests {
     };
 
     use crate::{
-        integration_tests::{INTEGRATION_TEST_DATA, TestContext, delete_all_files_from, set_write_permission},
+        integration_tests::{
+            INTEGRATION_TEST_DATA, TestContext, delete_all_files_from, set_write_permission,
+        },
         synthetic::{Dataset, SyntheticData},
     };
 

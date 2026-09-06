@@ -137,10 +137,12 @@ impl SecureStorage {
             // plaintexts always use the same (message-derived) nonce, and a
             // nonce can only repeat together with identical plaintext, which
             // is safe for GCM-SIV.
-            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] =
-                common::hash::hash(data).0[..AES_GCM_NONCE_LEN].try_into().map_err(
-                    |_| MapacheError::Internal("content hash is shorter than the nonce".to_string()),
-                )?;
+            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = common::hash::hash(data).0
+                [..AES_GCM_NONCE_LEN]
+                .try_into()
+                .map_err(|_| {
+                    MapacheError::Internal("content hash is shorter than the nonce".to_string())
+                })?;
             let nonce = Nonce::try_from(&nonce_bytes[..]).expect("nonce length is always 12");
             // InOutBuf shares input/output memory — zero-copy in-place encryption.
             // (The nonce-at-start v1 branch below allocates an extra Vec.)
@@ -478,8 +480,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_decompress_with_limit_roundtrip() {
-        let ss = SecureStorage::new()
-            .with_compression(defaults::DEFAULT_COMPRESSION.to_level());
+        let ss = SecureStorage::new().with_compression(defaults::DEFAULT_COMPRESSION.to_level());
 
         let original_data = TEXT;
         let compressed_data = ss.compress(original_data).unwrap();
@@ -493,8 +494,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_decompress_with_limit_rejects_bomb() {
-        let ss = SecureStorage::new()
-            .with_compression(defaults::DEFAULT_COMPRESSION.to_level());
+        let ss = SecureStorage::new().with_compression(defaults::DEFAULT_COMPRESSION.to_level());
 
         // Highly compressible payload that expands beyond the limit.
         let bomb = vec![0u8; 8 * 1024 * 1024];

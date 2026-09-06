@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     path::PathBuf,
-    sync::atomic::Ordering,
+    sync::{Arc, atomic::Ordering},
 };
 
 use futures::StreamExt;
@@ -25,7 +25,7 @@ impl Restorer {
         tree_id: ID,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
-        metadata_paths: &Option<HashSet<PathBuf>>,
+        metadata_paths: &Option<Arc<HashSet<PathBuf>>>,
     ) -> Result<()> {
         if self.opts.dry_run {
             return Ok(());

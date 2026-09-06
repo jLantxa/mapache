@@ -620,7 +620,10 @@ mod tests {
             res.is_err(),
             "fail strategy must error when the symlink already exists"
         );
-        assert_eq!(std::fs::read_link(&existing_link)?, PathBuf::from("other.txt"));
+        assert_eq!(
+            std::fs::read_link(&existing_link)?,
+            PathBuf::from("other.txt")
+        );
 
         // (2) --strategy skip: the existing symlink is left untouched.
         std::fs::remove_file(&existing_link)?;
@@ -629,14 +632,20 @@ mod tests {
             .strategy(Strategy::Skip)
             .run(&ctx.global)
             .await?;
-        assert_eq!(std::fs::read_link(&existing_link)?, PathBuf::from("other.txt"));
+        assert_eq!(
+            std::fs::read_link(&existing_link)?,
+            PathBuf::from("other.txt")
+        );
 
         // (3) --strategy overwrite: the existing symlink is replaced.
         ctx.restore_builder(restore_path.clone())
             .strategy(Strategy::Overwrite)
             .run(&ctx.global)
             .await?;
-        assert_eq!(std::fs::read_link(&existing_link)?, PathBuf::from("target.txt"));
+        assert_eq!(
+            std::fs::read_link(&existing_link)?,
+            PathBuf::from("target.txt")
+        );
 
         Ok(())
     }

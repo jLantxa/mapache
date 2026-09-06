@@ -169,7 +169,7 @@ impl TreeSerializer {
         self.finalize_if_complete(&target_dir_path).await
     }
 
-// Helper function to encapsulate the core finalization and serialization logic,
+    // Helper function to encapsulate the core finalization and serialization logic,
     // handling both root and non-root directories.
     //
     // `force` tolerates *fewer* children than expected and is only used after the
@@ -355,9 +355,7 @@ impl TreeSerializer {
             return Ok(());
         };
 
-        let parent_info_opt = self
-            .finalize_and_save(dir_key, pending_tree, true)
-            .await?;
+        let parent_info_opt = self.finalize_and_save(dir_key, pending_tree, true).await?;
 
         // Recursively handle the parent if it was not the root.
         if let Some((parent_path, completed_dir_node)) = parent_info_opt {

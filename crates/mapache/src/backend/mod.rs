@@ -9,7 +9,7 @@
 //! - [`S3Backend`] — S3-compatible object storage (AWS, MinIO, etc.)
 //! - [`DryBackend`] — dry-run wrapper (no I/O)
 //! - [`ThrottledBackend`] — rate-limited wrapper
-//! - [`CacheBackend`] — local metadata cache for remote backends
+//! - [`cache::CacheBackend`] — local metadata cache for remote backends
 //!
 //! The backend is selected at runtime based on the repository URL scheme
 //! (`/path`, `sftp://host/path`, `s3://bucket/path`).

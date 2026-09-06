@@ -222,7 +222,7 @@ impl Lock {
     ///   stalled on slow network I/O must not be taken over by a second writer
     ///   while it is still running.
     /// - Different host (liveness cannot be verified): the lock is reclaimable once
-    ///   it has gone without a refresh for [`LOCK_EXPIRE_TIMEOUT`].
+    ///   it has gone without a refresh for the lock expire timeout.
     #[must_use]
     pub fn is_stale(&self) -> bool {
         let (current_hostname, _) = utils::get_system_info();

@@ -229,8 +229,8 @@ impl FilterState {
     /// - `FilterAction::Cancel` on **Esc** — editing was cancelled.
     /// - `FilterAction::None` otherwise.
     ///
-    /// After receiving `Apply` or `Cancel`, call [`is_active`] and [`query`] to
-    /// inspect the new state, then re-render / re-filter as needed.
+    /// After receiving `Apply` or `Cancel`, call `is_active()` and `query()`
+    /// to inspect the new state, then re-render / re-filter as needed.
     pub fn handle_key(&mut self, key: crossterm::event::KeyCode) -> FilterAction {
         let input = match self.input.as_mut() {
             Some(i) => i,

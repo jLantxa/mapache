@@ -117,7 +117,7 @@ impl S3Backend {
     }
 
     /// True when the error wraps an HTTP 4xx status code embedded in its
-    /// message (all call sites report such failures as "HTTP <code>").
+    /// message (all call sites report such failures as "HTTP `<code>`").
     fn is_permanent_status(e: &MapacheError) -> bool {
         let msg = e.inner();
         let Some(idx) = msg.find("HTTP ") else {

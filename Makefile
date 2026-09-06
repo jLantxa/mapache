@@ -14,6 +14,10 @@ endif
 FEATURES ?= default
 BUILD_SH := sh tools/docker/build-target.sh
 
+.PHONY: all check debug release release-static release-linux-static release-arm64 \
+	release-android-arm64 release-armv7 release-windows release-darwin deny test doc \
+	fmt clippy cov clean tokei
+
 all: check fmt clippy test debug deny
 
 check:
@@ -75,6 +79,7 @@ test:
 
 doc:
 	cargo doc --no-deps --document-private-items
+	mdbook build doc
 
 fmt:
 	cargo fmt --all
@@ -93,5 +98,5 @@ clean:
 	cargo clean
 	rm -rf ./build/ ./doc/book/
 
-cloc:
-	@cloc . --exclude-dir=target --timeout 0
+tokei:
+	@tokei .

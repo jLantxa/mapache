@@ -36,7 +36,7 @@ impl ToExitCode for StatsError {
     fn to_exit_code(&self) -> i32 {
         match self {
             StatsError::Repo(_) => 1,
-            StatsError::Io(_) => 1,
+            StatsError::Io(_) => 4,
         }
     }
 }

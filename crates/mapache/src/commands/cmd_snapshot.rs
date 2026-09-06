@@ -81,7 +81,7 @@ impl ToExitCode for SnapshotError {
             SnapshotError::SnapshotFailed(_) => 30,
             SnapshotError::Interrupted => 130,
             SnapshotError::Repo(_) => 1,
-            SnapshotError::Io(_) => 1,
+            SnapshotError::Io(_) => 4,
         }
     }
 }

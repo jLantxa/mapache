@@ -66,7 +66,7 @@ impl ToExitCode for RestoreError {
             RestoreError::RestoreFailed(_) => 30,
             RestoreError::Interrupted => 130,
             RestoreError::Repo(_) => 1,
-            RestoreError::Io(_) => 1,
+            RestoreError::Io(_) => 4,
         }
     }
 }

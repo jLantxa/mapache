@@ -68,7 +68,7 @@ impl ToExitCode for BundleError {
     fn to_exit_code(&self) -> i32 {
         match self {
             BundleError::BundleFailed(_) => 20,
-            BundleError::Io(_) => 1,
+            BundleError::Io(_) => 4,
             BundleError::Repo(_) => 1,
             BundleError::Config(_) => 2,
         }

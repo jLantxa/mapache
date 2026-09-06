@@ -45,7 +45,7 @@ impl ToExitCode for LsError {
             LsError::PathNotFound(_) => 21,
             LsError::LsFailed(_) => 30,
             LsError::Repo(_) => 1,
-            LsError::Io(_) => 1,
+            LsError::Io(_) => 4,
         }
     }
 }

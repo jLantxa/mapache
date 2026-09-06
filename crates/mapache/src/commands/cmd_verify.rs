@@ -195,7 +195,7 @@ impl ToExitCode for VerifyError {
             VerifyError::VerifyFailed(_) => 22,
             VerifyError::Interrupted => 130,
             VerifyError::Repo(_) => 1,
-            VerifyError::Io(_) => 1,
+            VerifyError::Io(_) => 4,
         }
     }
 }

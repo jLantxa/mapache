@@ -33,7 +33,7 @@ impl ToExitCode for LogError {
         match self {
             LogError::SnapshotNotFound(_) => 20,
             LogError::Repo(_) => 1,
-            LogError::Io(_) => 1,
+            LogError::Io(_) => 4,
         }
     }
 }

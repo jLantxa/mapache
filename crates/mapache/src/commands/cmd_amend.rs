@@ -47,9 +47,9 @@ impl ToExitCode for AmendError {
     fn to_exit_code(&self) -> i32 {
         match self {
             AmendError::Interrupted => 130,
-            AmendError::NotFound(_) => 1,
+            AmendError::NotFound(_) => 20,
             AmendError::Repo(_) => 1,
-            AmendError::Io(_) => 1,
+            AmendError::Io(_) => 4,
         }
     }
 }

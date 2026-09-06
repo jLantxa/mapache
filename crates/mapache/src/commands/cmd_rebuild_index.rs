@@ -32,7 +32,7 @@ impl ToExitCode for RebuildIndexError {
         match self {
             RebuildIndexError::Interrupted => 130,
             RebuildIndexError::Repo(_) => 1,
-            RebuildIndexError::Io(_) => 1,
+            RebuildIndexError::Io(_) => 4,
         }
     }
 }

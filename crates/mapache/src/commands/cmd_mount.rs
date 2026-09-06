@@ -38,7 +38,7 @@ impl ToExitCode for MountError {
             MountError::MountFailed(_) => 20,
             MountError::Interrupted => 130,
             MountError::Repo(_) => 1,
-            MountError::Io(_) => 1,
+            MountError::Io(_) => 4,
         }
     }
 }

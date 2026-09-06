@@ -25,7 +25,7 @@ impl ToExitCode for CatError {
         match self {
             CatError::ObjectNotFound(_) => 20,
             CatError::Repo(_) => 1,
-            CatError::Io(_) => 1,
+            CatError::Io(_) => 4,
         }
     }
 }

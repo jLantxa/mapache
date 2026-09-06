@@ -24,7 +24,7 @@ impl ToExitCode for RecallError {
         match self {
             RecallError::SnapshotNotFound(_) => 20,
             RecallError::Repo(_) => 1,
-            RecallError::Io(_) => 1,
+            RecallError::Io(_) => 4,
         }
     }
 }

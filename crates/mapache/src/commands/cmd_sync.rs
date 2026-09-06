@@ -53,8 +53,8 @@ impl ToExitCode for SyncError {
             SyncError::FormatMismatch(_) => 13,
             SyncError::SyncFailed(_) => 20,
             SyncError::Interrupted => 130,
-            SyncError::Repo(_) => 1,
-            SyncError::Io(_) => 1,
+            SyncError::Repo(_) => 3,
+            SyncError::Io(_) => 4,
         }
     }
 }

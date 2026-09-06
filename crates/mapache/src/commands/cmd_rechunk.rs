@@ -34,7 +34,7 @@ impl ToExitCode for RechunkError {
         match self {
             RechunkError::Interrupted => 130,
             RechunkError::Repo(_) => 1,
-            RechunkError::Io(_) => 1,
+            RechunkError::Io(_) => 4,
         }
     }
 }

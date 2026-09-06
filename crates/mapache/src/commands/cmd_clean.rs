@@ -40,7 +40,7 @@ impl ToExitCode for CleanError {
             CleanError::ExecuteFailed(_) => 30,
             CleanError::Interrupted => 130,
             CleanError::Repo(_) => 1,
-            CleanError::Io(_) => 1,
+            CleanError::Io(_) => 4,
         }
     }
 }

@@ -45,7 +45,7 @@ impl ToExitCode for MigrateError {
         match self {
             MigrateError::Interrupted => 130,
             MigrateError::Repo(_) => 1,
-            MigrateError::Io(_) => 1,
+            MigrateError::Io(_) => 4,
         }
     }
 }

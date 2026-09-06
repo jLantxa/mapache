@@ -36,7 +36,7 @@ impl ToExitCode for DumpError {
             DumpError::PathNotFound(_) => 21,
             DumpError::DumpFailed(_) => 30,
             DumpError::Repo(_) => 1,
-            DumpError::Io(_) => 1,
+            DumpError::Io(_) => 4,
         }
     }
 }

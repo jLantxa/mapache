@@ -36,7 +36,7 @@ impl ToExitCode for KeyError {
     fn to_exit_code(&self) -> i32 {
         match self {
             KeyError::RepoOpenFail(_) => 10,
-            KeyError::Io(_) => 1,
+            KeyError::Io(_) => 4,
             KeyError::Repo(_) => 1,
         }
     }

@@ -34,8 +34,8 @@ impl ToExitCode for EccError {
         match self {
             EccError::Interrupted => 130,
             EccError::Repo(_) => 1,
-            EccError::Io(_) => 1,
-            EccError::InvalidArg(_) => 1,
+            EccError::Io(_) => 4,
+            EccError::InvalidArg(_) => 2,
         }
     }
 }

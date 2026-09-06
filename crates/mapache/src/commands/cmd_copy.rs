@@ -59,8 +59,8 @@ impl ToExitCode for CopyError {
             CopyError::FormatMismatch(_) => 12,
             CopyError::CopyFailed(_) => 20,
             CopyError::Interrupted => 130,
-            CopyError::Repo(_) => 1,
-            CopyError::Io(_) => 1,
+            CopyError::Repo(_) => 3,
+            CopyError::Io(_) => 4,
         }
     }
 }

@@ -37,7 +37,7 @@ impl ToExitCode for FindError {
             FindError::RepoOpenFail(_) => 10,
             FindError::FindFailed(_) => 20,
             FindError::Repo(_) => 1,
-            FindError::Io(_) => 1,
+            FindError::Io(_) => 4,
         }
     }
 }

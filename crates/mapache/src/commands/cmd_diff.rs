@@ -35,7 +35,7 @@ impl ToExitCode for DiffError {
         match self {
             DiffError::SnapshotNotFound(_) => 20,
             DiffError::Repo(_) => 1,
-            DiffError::Io(_) => 1,
+            DiffError::Io(_) => 4,
         }
     }
 }

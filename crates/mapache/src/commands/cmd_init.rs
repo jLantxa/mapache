@@ -32,11 +32,11 @@ pub enum InitError {
 impl ToExitCode for InitError {
     fn to_exit_code(&self) -> i32 {
         match self {
-            InitError::AuthFail(_) => 1,
+            InitError::AuthFail(_) => 5,
             InitError::BackendError(_) => 2,
             InitError::RepoInitError(_) => 3,
             InitError::Repo(_) => 1,
-            InitError::Io(_) => 1,
+            InitError::Io(_) => 4,
         }
     }
 }

@@ -33,7 +33,7 @@ impl ToExitCode for CacheError {
     fn to_exit_code(&self) -> i32 {
         match self {
             CacheError::Repo(_) => 1,
-            CacheError::Io(_) => 1,
+            CacheError::Io(_) => 4,
         }
     }
 }

@@ -47,7 +47,7 @@ impl ToExitCode for ForgetError {
             ForgetError::ForgetFailed(_) => 30,
             ForgetError::Interrupted => 130,
             ForgetError::Repo(_) => 1,
-            ForgetError::Io(_) => 1,
+            ForgetError::Io(_) => 4,
         }
     }
 }

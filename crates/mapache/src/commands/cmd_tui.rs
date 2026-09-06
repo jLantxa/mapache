@@ -21,7 +21,7 @@ impl ToExitCode for TuiError {
     fn to_exit_code(&self) -> i32 {
         match self {
             TuiError::Repo(_) => 1,
-            TuiError::Io(_) => 1,
+            TuiError::Io(_) => 4,
         }
     }
 }

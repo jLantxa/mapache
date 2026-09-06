@@ -6,7 +6,16 @@ use crate::{
         BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BundleHeader, BundleIndexEntry, BundleTrailer,
     },
     common::{BlobType, ID},
-    repository::{snapshot::Snapshot, storage::SecureStorage},
+    ecc::ecc_decode,
+    repository::{
+        index::{
+            IndexFile, IndexFileBlob, IndexFilePack, deserialize_index_binary,
+            serialize_index_binary,
+        },
+        packer::{PackedBlobDescriptor, Packer},
+        snapshot::Snapshot,
+        storage::SecureStorage,
+    },
 };
 
 fn arb_id() -> impl Strategy<Value = ID> {
@@ -177,6 +186,116 @@ proptest! {
         let decoded = ss.decode(&encoded)
             .map_err(|e| proptest::test_runner::TestCaseError::Fail(e.to_string().into()))?;
         prop_assert_eq!(data, decoded.as_slice());
+    }
+
+    #[test]
+    fn pack_footer_arbitrary_input_never_panics(input in prop::collection::vec(any::<u8>(), 0..3500)) {
+
+        let ss = SecureStorage::new();
+        let _ = Packer::parse_footer(&ss, &input, true, 2);
+    }
+
+    #[test]
+    fn pack_footer_corruption_is_rejected(positions in prop::collection::vec(0usize..3500, 1..10)) {
+
+        let key = [0x42u8; 32];
+        let ss = SecureStorage::new().with_key(&key).unwrap();
+
+        // Exactly FOOTER_BLOB_MULTIPLE descriptors: no padding is appended, so
+        // the generated footer is fully deterministic.
+        let mut descriptors: Vec<PackedBlobDescriptor> = (0..64u32)
+            .map(|i| PackedBlobDescriptor {
+                id: ID::from_content([i as u8]),
+                blob_type: BlobType::Data,
+                offset: i,
+                length: i + 1,
+                raw_length: i + 1,
+                compressed: true,
+            })
+            .collect();
+        let plain_footer = Packer::generate_footer(&mut descriptors);
+        let encoded = ss.encode(&plain_footer).unwrap();
+        let mut footer_data = encoded.clone();
+        footer_data.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+
+        // Flip whole bytes so every mutation is guaranteed to change the input.
+        for pos in positions {
+            let idx = pos % footer_data.len();
+            footer_data[idx] ^= 0xFF;
+        }
+
+        // Any changed byte breaks either the AEAD tag or the footer-length
+        // framing, so a corrupted footer must always be rejected.
+        let err = Packer::parse_footer(&ss, &footer_data, true, 2)
+            .expect_err("corrupted pack footer must be rejected");
+        prop_assert!(!(err.to_string().is_empty()));
+    }
+
+    #[test]
+    fn ecc_decode_arbitrary_input_never_panics(
+        data in prop::collection::vec(any::<u8>(), 0..4096),
+        ecc_payload in prop::collection::vec(any::<u8>(), 0..4096),
+    ) {
+
+        let _ = ecc_decode(&data, &ecc_payload);
+    }
+
+    #[test]
+    fn index_binary_arbitrary_input_never_panics(input in prop::collection::vec(any::<u8>(), 0..1000)) {
+
+        let _ = deserialize_index_binary(&input);
+    }
+
+    #[test]
+    fn index_binary_corruption_is_faithful_or_rejected(positions in prop::collection::vec(0usize..400, 1..10)) {
+
+        let mut packs = Vec::new();
+        for pack_id in 0..3u8 {
+            let blobs = (0..(pack_id + 1)).map(|i| IndexFileBlob {
+                id: ID::from_content([pack_id, i]),
+                blob_type: BlobType::Data,
+                offset: i as u32,
+                length: 10 + i as u32,
+                raw_length: 20 + i as u32,
+                compressed: true,
+            })
+            .collect();
+            packs.push(IndexFilePack { id: ID::from_content([pack_id]), blobs });
+        }
+        let index = IndexFile { packs };
+
+        let mut bytes = serialize_index_binary(&index);
+        for pos in positions {
+            let idx = pos % bytes.len();
+            bytes[idx] ^= 0xFF;
+        }
+
+        if let Ok(parsed) = deserialize_index_binary(&bytes) {
+            // A successful parse must reproduce exactly the bytes it consumed;
+            // anything else would mean silent corruption.
+            let reserialized = serialize_index_binary(&parsed);
+            prop_assert!(bytes.starts_with(&reserialized));
+        }
+    }
+
+    #[test]
+    fn secure_storage_decode_corruption_never_silently_succeeds(
+        data in prop::collection::vec(any::<u8>(), 0..4096),
+        positions in prop::collection::vec(0usize..5000, 1..10),
+    ) {
+
+        let key = [0x42u8; 32];
+        let ss = SecureStorage::new().with_key(&key).unwrap();
+        let mut encoded = ss.encode(&data).unwrap();
+
+        for pos in positions {
+            let idx = pos % encoded.len();
+            encoded[idx] ^= 0xFF;
+        }
+
+        if let Ok(decoded) = ss.decode(&encoded) {
+            prop_assert_eq!(&decoded[..], &data[..]);
+        }
     }
 
 }

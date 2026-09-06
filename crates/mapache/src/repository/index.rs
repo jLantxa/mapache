@@ -1507,7 +1507,10 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
             "index claims {num_packs} packs, which exceeds sanity limit"
         )));
     }
-    let mut packs = Vec::with_capacity(num_packs);
+    // No upfront preallocation: allocating the claimed count could reserve
+    // gigabytes based on a tiny corrupt file. The vectors grow only with the
+    // entries actually present in the buffer.
+    let mut packs = Vec::new();
 
     for _ in 0..num_packs {
         let pack_id = ID::from_bytes(get_array::<32>(&mut cur)?);
@@ -1517,7 +1520,7 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
                 "pack {pack_id} claims {blob_count} blobs, which exceeds sanity limit"
             )));
         }
-        let mut blobs = Vec::with_capacity(blob_count);
+        let mut blobs = Vec::new();
 
         for _ in 0..blob_count {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);
@@ -1544,6 +1547,25 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_index_rejects_huge_claimed_blob_count_without_allocating() {
+        let mut data = Vec::new();
+        put_u32(&mut data, 1); // one pack
+        put_bytes(&mut data, &[0u8; 32]); // pack id
+        put_u32(&mut data, 100_000_001); // claims >100M blobs but has zero blob entries
+
+        let err = deserialize_index_binary(&data).expect_err("must be rejected");
+        assert!(format!("{err}").contains("exceeds sanity limit"));
+    }
+
+    #[test]
+    fn test_index_rejects_huge_claimed_pack_count() {
+        let mut data = Vec::new();
+        put_u32(&mut data, 2_000_000); // exceeds sanity limit
+
+        let err = deserialize_index_binary(&data).expect_err("must be rejected");
+        assert!(format!("{err}").contains("exceeds sanity limit"));
+    }
     use super::*;
 
     // A simple deterministic ID generator for testing

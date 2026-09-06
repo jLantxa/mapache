@@ -202,7 +202,10 @@ impl BundleIndex {
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
         let len = get_u64(&mut cur)? as usize;
-        let mut entries = Vec::with_capacity(len);
+        // No upfront preallocation: the claimed count must not drive a huge
+        // allocation from a tiny file. The vector grows only with the entries
+        // actually present in the buffer.
+        let mut entries = Vec::new();
         for _ in 0..len {
             if cur.len() < BundleIndexEntry::BINARY_SIZE {
                 return Err(MapacheError::Format(format!(

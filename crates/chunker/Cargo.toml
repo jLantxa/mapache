@@ -22,7 +22,7 @@ rand = "0.10"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-rstest = "0.26"
+rstest = "0.27"
 
 [[bench]]
 name = "chunking"

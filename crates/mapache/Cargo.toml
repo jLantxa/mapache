@@ -37,7 +37,7 @@ russh = { version = "0.63", default-features = false, features = [
   "flate2",
   "ring",
 ] }
-russh-sftp = "2.4"
+russh-sftp = "3.0"
 rust-s3 = { version = "0.37", default-features = false, features = [
   "with-tokio",
 ] }
@@ -82,7 +82,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 anyhow = "1.0"
 proptest = "1.11"
-rstest = "0.26"
+rstest = "0.27"
 scopeguard = "1.2"
 serial_test = "4.0"
 tempfile = "3.27"

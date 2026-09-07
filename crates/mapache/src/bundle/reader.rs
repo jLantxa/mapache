@@ -145,6 +145,15 @@ impl BundleReader {
             ));
         }
 
+        // TODO(v1-removal): Accept only bundle format v2 once v1 bundles are
+        // no longer supported.
+        if !matches!(header.version, 1 | 2) {
+            return Err(MapacheError::Format(format!(
+                "unsupported bundle format version {}",
+                header.version
+            )));
+        }
+
         kdf::validate_argon2_params(header.argon2_m, header.argon2_t, header.argon2_p).map_err(
             |e| {
                 MapacheError::Format(format!(

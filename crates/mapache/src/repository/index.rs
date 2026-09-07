@@ -20,10 +20,14 @@ use crate::{
         repo::{Repository, SizePair},
     },
     utils::{
-        binary::{get_array, get_u8, get_u32, put_bytes, put_u32},
+        binary::{get_array, get_u8, get_u16, get_u32, put_bytes, put_u16, put_u32},
         collections::{BloomFilter, IdIndexSet, IdMap, IdSet, Lru, ShardedIdSet},
     },
 };
+
+const INDEX_MAGIC: [u8; 4] = *b"MPIX";
+const INDEX_FORMAT_VERSION: u16 = 2;
+const INDEX_HEADER_SIZE: usize = 8;
 
 /// Index loading mode: eager (load all) or lazy (hot + cold).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -580,7 +584,7 @@ impl Index {
         add_to_entries(&self.data_ids, BlobType::Data);
         add_to_entries(&self.tree_ids, BlobType::Tree);
         // TODO(v1-removal): Remove the version check; v1 format does not support BlobType::Zero.
-        let zero_type = if repo_version >= 2 {
+        let zero_type = if matches!(repo_version, 2) {
             BlobType::Zero
         } else {
             BlobType::Data
@@ -1417,21 +1421,22 @@ impl IndexFile {
     /// Serialize the `IndexFile` based on the repository version.
     // TODO(v1-removal): Remove the v1 JSON branch.
     pub fn serialize(&self, repo_version: u32) -> Result<Vec<u8>> {
-        if repo_version >= 2 {
-            Ok(serialize_index_binary(self))
-        } else {
-            super::legacy::serialize_index_json(self)
+        // TODO(v1-removal): Remove the version dispatch and always use the
+        // self-identifying v2 binary format.
+        match repo_version {
+            2 => Ok(serialize_index_binary(self)),
+            _ => super::legacy::serialize_index_json(self),
         }
     }
 
     /// Deserialize an `IndexFile` based on the repository version.
     // TODO(v1-removal): Remove the v1 JSON branch.
     pub fn deserialize(data: &[u8], repo_version: u32) -> Result<Self> {
-        if repo_version >= 2 {
-            deserialize_index_binary(data)
-                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
-        } else {
-            super::legacy::deserialize_index_json(data)
+        // TODO(v1-removal): Remove the version dispatch and legacy JSON parser.
+        match repo_version {
+            2 => deserialize_index_binary(data)
+                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}"))),
+            _ => super::legacy::deserialize_index_json(data),
         }
     }
 }
@@ -1473,12 +1478,15 @@ fn default_true() -> bool {
 /// Serialize an `IndexFile` to the binary format.
 pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
     let total_blobs: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
-    let size = 4_usize
+    let size = INDEX_HEADER_SIZE
         .saturating_add(index_file.packs.len().saturating_mul(36))
         .saturating_add(total_blobs.saturating_mul(45));
     let mut buf = Vec::with_capacity(size);
 
-    // Header
+    // Header: magic, format version, and reserved flags.
+    put_bytes(&mut buf, &INDEX_MAGIC);
+    put_u16(&mut buf, INDEX_FORMAT_VERSION);
+    put_u16(&mut buf, 0);
     put_u32(&mut buf, index_file.packs.len() as u32);
 
     for pack in &index_file.packs {
@@ -1500,6 +1508,23 @@ pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
 /// Deserialize an `IndexFile` from the binary format.
 pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
     let mut cur = data;
+
+    if cur.len() < INDEX_HEADER_SIZE {
+        return Err(MapacheError::Format(
+            "index header is truncated".to_string(),
+        ));
+    }
+    if get_array::<4>(&mut cur)? != INDEX_MAGIC {
+        return Err(MapacheError::Format("invalid index magic".to_string()));
+    }
+    if get_u16(&mut cur)? != INDEX_FORMAT_VERSION {
+        return Err(MapacheError::Format(
+            "unsupported index format version".to_string(),
+        ));
+    }
+    if get_u16(&mut cur)? != 0 {
+        return Err(MapacheError::Format("invalid index flags".to_string()));
+    }
 
     let num_packs = get_u32(&mut cur)? as usize;
     if num_packs > 1_000_000 {
@@ -1542,6 +1567,13 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
         packs.push(IndexFilePack { id: pack_id, blobs });
     }
 
+    if !cur.is_empty() {
+        return Err(MapacheError::Format(format!(
+            "index has {} trailing bytes",
+            cur.len()
+        )));
+    }
+
     Ok(IndexFile { packs })
 }
 
@@ -1550,6 +1582,9 @@ mod tests {
     #[test]
     fn test_index_rejects_huge_claimed_blob_count_without_allocating() {
         let mut data = Vec::new();
+        put_bytes(&mut data, &INDEX_MAGIC);
+        put_u16(&mut data, INDEX_FORMAT_VERSION);
+        put_u16(&mut data, 0);
         put_u32(&mut data, 1); // one pack
         put_bytes(&mut data, &[0u8; 32]); // pack id
         put_u32(&mut data, 100_000_001); // claims >100M blobs but has zero blob entries
@@ -1561,6 +1596,9 @@ mod tests {
     #[test]
     fn test_index_rejects_huge_claimed_pack_count() {
         let mut data = Vec::new();
+        put_bytes(&mut data, &INDEX_MAGIC);
+        put_u16(&mut data, INDEX_FORMAT_VERSION);
+        put_u16(&mut data, 0);
         put_u32(&mut data, 2_000_000); // exceeds sanity limit
 
         let err = deserialize_index_binary(&data).expect_err("must be rejected");
@@ -2184,6 +2222,13 @@ mod tests {
     fn test_binary_index_truncated_header() {
         // Empty data — not enough bytes for num_packs u32
         assert!(deserialize_index_binary(&[]).is_err());
+    }
+
+    #[test]
+    fn test_binary_index_rejects_trailing_bytes() {
+        let mut data = serialize_index_binary(&IndexFile::default());
+        data.push(0);
+        assert!(deserialize_index_binary(&data).is_err());
     }
 
     #[test]

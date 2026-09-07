@@ -247,6 +247,7 @@ impl Stream for KeyFileStream {
                     let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
 
                     let keyfile_data = backend.read(&handle, 0, 0).await?;
+                    id.verify_content(&keyfile_data)?;
                     let decompressed = ss.decompress_with_limit(&keyfile_data, MAX_KEYFILE_SIZE)?;
                     let kf: KeyFile = serde_json::from_slice(&decompressed)?;
 
@@ -348,7 +349,7 @@ impl KeyManager {
             .with_key(&*intermediate_key)?;
         // TODO(v1-removal): v1 binaries only try nonce-at-start; use that position for v1 repos
         // so they remain backward-compatible.
-        ss.set_nonce_at_end(repo_version >= 2);
+        ss.set_nonce_at_end(matches!(repo_version, 2));
 
         let encrypted_key = ss.encrypt(master_key)?;
 
@@ -357,8 +358,15 @@ impl KeyManager {
         let p = argon2_params.p_cost();
 
         // TODO(v1-removal): Remove the v1 branch; always use KeyFile.
-        let value = if repo_version < 2 {
-            serde_json::to_value(KeyFileV1 {
+        let value = match repo_version {
+            2 => serde_json::to_value(KeyFile {
+                created: create_time,
+                username: auth.username.clone(),
+                kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
+                salt: utils::base64::encode(&salt),
+                encrypted_key: utils::base64::encode(&encrypted_key),
+            })?,
+            _ => serde_json::to_value(KeyFileV1 {
                 created: create_time,
                 username: auth.username.clone(),
                 m,
@@ -366,15 +374,7 @@ impl KeyManager {
                 p,
                 salt: utils::base64::encode(&salt),
                 encrypted_key: utils::base64::encode(&encrypted_key),
-            })?
-        } else {
-            serde_json::to_value(KeyFile {
-                created: create_time,
-                username: auth.username.clone(),
-                kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
-                salt: utils::base64::encode(&salt),
-                encrypted_key: utils::base64::encode(&encrypted_key),
-            })?
+            })?,
         };
 
         Ok(value)
@@ -516,6 +516,7 @@ impl KeyManager {
         tracing::debug!(target: "keys", "Loading raw key file {}", id.to_short_hex(8));
         let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
         let data = self.backend.read(&handle, 0, 0).await?;
+        id.verify_content(&data)?;
         Ok(data)
     }
 

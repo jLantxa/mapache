@@ -59,8 +59,8 @@ pub struct CmdArgs {
     /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
     ///
     /// A value of 0 disables ECC. When set, pack files, index files,
-    /// snapshot files, and the manifest are protected by erasure codes
-    /// stored as `.ecc` sidecar files. Fixed K=100, P=overhead.
+    /// and snapshot files are protected by erasure codes stored as
+    /// `.ecc` sidecar files. Fixed K=100, P=overhead.
     #[clap(long, value_parser = clap::value_parser!(u32).range(0..=100))]
     pub ecc: Option<u32>,
 

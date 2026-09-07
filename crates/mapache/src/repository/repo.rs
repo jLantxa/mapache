@@ -418,6 +418,8 @@ impl Repository {
             )));
         }
 
+        repo.manifest().validate_algorithms()?;
+
         // TODO(v1-removal): The v1 format has no per-blob compression marker.
         if version < 2 && matches!(config.compression, Compression::None) {
             return Err(MapacheError::Repo(
@@ -428,7 +430,7 @@ impl Repository {
         }
 
         // TODO(v1-removal): Nonce position depends on repo version.
-        let nonce_at_end = version >= 2;
+        let nonce_at_end = matches!(version, 2);
         tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
         secure_storage.set_nonce_at_end(nonce_at_end);
 
@@ -520,23 +522,23 @@ impl Repository {
 
     /// v2: nonce at end `[ct | tag | nonce]`.  v1: nonce at start.
     pub fn nonce_at_end(&self) -> bool {
-        self.repo_version >= 2
+        matches!(self.repo_version, 2)
     }
 
     /// v2: compact binary index.  v1: JSON index.
     pub fn uses_binary_index(&self) -> bool {
-        self.repo_version >= 2
+        matches!(self.repo_version, 2)
     }
 
     /// v2: high bit of type byte is a compression marker.
     /// v1: always zstd-compressed, bit is not meaningful.
     pub fn has_compression_marker(&self) -> bool {
-        self.repo_version >= 2
+        matches!(self.repo_version, 2)
     }
 
     /// v2: `--compression none` is supported.
     pub fn supports_compression_none(&self) -> bool {
-        self.repo_version >= 2
+        matches!(self.repo_version, 2)
     }
 
     /// Get the repository backend
@@ -670,11 +672,11 @@ impl Repository {
 
     /// Load a single index file from disk by its ID.
     async fn load_index_from_file(&self, file_id: ID) -> Result<Index> {
-        let object_path = Self::get_object_path(&self.index_path, &file_id);
+        let path = self.get_path(ContentIdType::Index, &file_id);
         let index_data = self
             .backend
             .read(
-                &Handle::new_with_hint(&object_path, ContentIdType::Index, true),
+                &Handle::new_with_hint(&path, ContentIdType::Index, true),
                 0,
                 0,
             )
@@ -684,6 +686,7 @@ impl Repository {
         let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
 
         tokio::task::spawn_blocking(move || {
+            file_id.verify_content(&index_data)?;
             let decoded = secure_storage.decode(&index_data)?;
             let index_file =
                 index::IndexFile::deserialize(&decoded, repo_version).map_err(|e| {
@@ -826,6 +829,16 @@ impl Repository {
             hint: Some(hint),
         };
         let data = self.backend.read(&handle, 0, 0).await?;
+
+        if matches!(
+            file_type,
+            ContentIdType::Pack
+                | ContentIdType::Index
+                | ContentIdType::Snapshot
+                | ContentIdType::Key
+        ) {
+            id.verify_content(&data)?;
+        }
 
         match file_type {
             ContentIdType::Pack => Ok(data),
@@ -1501,6 +1514,7 @@ impl Repository {
                         .await?;
 
                     let index = tokio::task::spawn_blocking(move || {
+                        id.verify_content(&index_data)?;
                         let decoded = secure_storage.decode_owned(index_data)?;
                         let index_file = index::IndexFile::deserialize(&decoded, repo_version)
                             .map_err(|e| {
@@ -1569,7 +1583,7 @@ impl Repository {
         length: u32,
         compressed: bool,
     ) -> Result<Vec<u8>> {
-        let object_path = Self::get_object_path(&self.objects_path, id);
+        let object_path = self.get_path(ContentIdType::Pack, id);
         let data = self
             .backend
             .read(

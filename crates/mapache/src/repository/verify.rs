@@ -236,6 +236,16 @@ pub async fn verify_metadata_file(
         }
     };
 
+    // Verify content hash against the expected ID when available.
+    if let Some(expected_id) = file_id
+        && ID::from_content(&raw_data) != expected_id
+    {
+        stats.bit_rot = true;
+        if !repair {
+            return Ok(stats);
+        }
+    }
+
     // Decrypt and validate content structure on a blocking thread.
     let ss = secure_storage.clone();
     let ft = file_type;

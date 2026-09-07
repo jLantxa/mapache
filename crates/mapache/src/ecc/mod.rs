@@ -1,7 +1,7 @@
 //! Mapache ECC sidecar format.
 //!
-//! Parity-only sidecar encoding/decoding for pack files. Uses
-//! [`reed_solomon::ReedSolomon`] for the underlying erasure coding.
+//! Parity-only sidecar encoding/decoding for pack, index, and snapshot files.
+//! Uses [`reed_solomon::ReedSolomon`] for the underlying erasure coding.
 //!
 //! The sidecar stores **only parity shards** — no data is duplicated on disk.
 //! Stripes are encoded in parallel using rayon for multi-core acceleration.
@@ -12,7 +12,7 @@
 //! enabling per-shard integrity verification and targeted erasure marking.
 //!
 //! ```text
-//! Header (22 bytes):
+//! Header (54 bytes):
 //!   [0..4]   MAGIC        b"MECP"
 //!   [4]      VERSION      2
 //!   [5]      reserved     0
@@ -20,6 +20,7 @@
 //!   [8..10]  parity_shards u16 LE (P)
 //!   [10..18] original_len u64 LE
 //!   [18..22] stripe_count u32 LE
+//!   [22..54] protected data hash (BLAKE3-256)
 //!
 //! Per stripe:
 //!   [crc32_data_0 .. crc32_data_{K-1}]
@@ -31,6 +32,8 @@ mod galois;
 pub(crate) mod reed_solomon;
 
 use reed_solomon::ReedSolomon;
+
+use crate::common::ID;
 
 /// Shard size in bytes (4 KiB).
 pub(crate) const SHARD_SIZE: usize = 4096;
@@ -44,8 +47,8 @@ pub(crate) const VERSION: u8 = 2;
 /// CRC32 checksum size in bytes.
 pub(crate) const CRC_SIZE: usize = 4;
 
-/// Sidecar header size in bytes (22).
-pub(crate) const HEADER_SIZE: usize = 22;
+/// Sidecar header size in bytes (54), including the protected data hash.
+pub(crate) const HEADER_SIZE: usize = 54;
 
 /// Description of a single stripe's layout within an ECC payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +157,7 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
 
     let mut out = Vec::with_capacity(HEADER_SIZE + total_stripe_size);
 
-    // Write header (22 bytes).
+    // Write header (54 bytes).
     out.extend_from_slice(&MAGIC);
     out.push(VERSION);
     out.push(0); // reserved
@@ -162,6 +165,7 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
     out.extend_from_slice(&(p as u16).to_le_bytes());
     out.extend_from_slice(&(data.len() as u64).to_le_bytes());
     out.extend_from_slice(&(layouts.len() as u32).to_le_bytes());
+    out.extend_from_slice(ID::from_content(data).as_slice());
 
     // Pre-compute data offsets for each stripe.
     let offsets: Vec<usize> = layouts
@@ -257,12 +261,18 @@ pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, Ecc
         return Err(EccDecodeError::InvalidHeader);
     }
 
+    if ecc_payload[5] != 0 {
+        return Err(EccDecodeError::InvalidHeader);
+    }
+
     let k = u16::from_le_bytes(ecc_payload[6..8].try_into().expect("slice length is 2")) as usize;
     let p = u16::from_le_bytes(ecc_payload[8..10].try_into().expect("slice length is 2")) as usize;
     let original_len =
         u64::from_le_bytes(ecc_payload[10..18].try_into().expect("slice length is 8")) as usize;
     let stripe_count =
         u32::from_le_bytes(ecc_payload[18..22].try_into().expect("slice length is 4")) as usize;
+    let protected_hash =
+        ID::from_bytes(ecc_payload[22..54].try_into().expect("slice length is 32"));
 
     if data.len() != original_len || k == 0 || p == 0 || k + p > 256 {
         return Err(EccDecodeError::InvalidHeader);
@@ -278,7 +288,7 @@ pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, Ecc
     for s in &layouts {
         expected_size += stripe_payload_size(s.data_shards, s.parity_shards);
     }
-    if ecc_payload.len() < expected_size {
+    if ecc_payload.len() != expected_size {
         return Err(EccDecodeError::PayloadTooShort);
     }
 
@@ -361,6 +371,10 @@ pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, Ecc
     for (meta, stripe_data) in stripe_meta.iter().zip(&stripe_buffers) {
         let copy_len = meta.data_bytes.min(stripe_data.len());
         out.extend_from_slice(&stripe_data[..copy_len]);
+    }
+
+    if ID::from_content(&out) != protected_hash {
+        return Err(EccDecodeError::ProtectedDataMismatch);
     }
 
     Ok(out)
@@ -470,8 +484,12 @@ pub(crate) fn validate_crc(data: &[u8], ecc_payload: &[u8]) -> Result<(), usize>
     let p = u16::from_le_bytes(ecc_payload[8..10].try_into().expect("slice length is 2")) as usize;
     let original_len =
         u64::from_le_bytes(ecc_payload[10..18].try_into().expect("slice length is 8")) as usize;
+    let protected_hash = &ecc_payload[22..54];
 
     if data.len() != original_len || k == 0 || p == 0 {
+        return Err(0);
+    }
+    if ID::from_content(data).as_slice() != protected_hash {
         return Err(0);
     }
 
@@ -546,6 +564,7 @@ pub(crate) enum EccDecodeError {
     TooManyErasures,
     ReconstructFailed,
     CrcValidationFailed(usize),
+    ProtectedDataMismatch,
 }
 
 impl std::fmt::Display for EccDecodeError {
@@ -558,6 +577,7 @@ impl std::fmt::Display for EccDecodeError {
             Self::CrcValidationFailed(shard) => {
                 write!(f, "CRC validation failed at shard {shard} after repair")
             }
+            Self::ProtectedDataMismatch => write!(f, "ECC sidecar does not match protected data"),
         }
     }
 }
@@ -624,6 +644,39 @@ mod tests {
         assert!(matches!(
             ecc_decode(&data, &payload),
             Err(EccDecodeError::InvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn reserved_header_byte_must_be_zero() {
+        let data = vec![0u8; 100];
+        let mut payload = ecc_encode(&data, 4, 2).unwrap();
+        payload[5] = 1;
+        assert!(matches!(
+            ecc_decode(&data, &payload),
+            Err(EccDecodeError::InvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn trailing_payload_bytes_are_rejected() {
+        let data = vec![0u8; 100];
+        let mut payload = ecc_encode(&data, 4, 2).unwrap();
+        payload.push(0);
+        assert!(matches!(
+            ecc_decode(&data, &payload),
+            Err(EccDecodeError::PayloadTooShort)
+        ));
+    }
+
+    #[test]
+    fn sidecar_data_binding_is_verified() {
+        let data = vec![0u8; SHARD_SIZE * 2];
+        let mut payload = ecc_encode(&data, 4, 2).unwrap();
+        payload[22] ^= 1;
+        assert!(matches!(
+            ecc_decode(&data, &payload),
+            Err(EccDecodeError::ProtectedDataMismatch)
         ));
     }
 

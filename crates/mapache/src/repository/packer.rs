@@ -21,7 +21,7 @@ use crate::{
         repo::{Repository, SizePair},
         storage::{EncodingContext, SecureStorage},
     },
-    utils::binary::{get_array, get_u8, get_u32, put_bytes, put_u8, put_u32},
+    utils::binary::{get_array, get_u8, get_u16, get_u32, put_bytes, put_u8, put_u16, put_u32},
 };
 
 //   Pack footer format:
@@ -62,6 +62,9 @@ use crate::{
 static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const FOOTER_BLOB_LEN: usize = 41;
+const FOOTER_MAGIC: [u8; 4] = *b"MPFT";
+const FOOTER_FORMAT_VERSION: u16 = 2;
+const FOOTER_HEADER_SIZE: usize = 8;
 
 /// Maximum descriptors per pack before flushing. Guards against unbounded
 /// descriptor accumulation when a pack contains only zero blobs (which don't
@@ -290,7 +293,12 @@ impl Packer {
             }
         }
 
-        let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
+        let mut pack_footer =
+            Vec::with_capacity(FOOTER_HEADER_SIZE + FOOTER_BLOB_LEN * descriptors.len());
+
+        put_bytes(&mut pack_footer, &FOOTER_MAGIC);
+        put_u16(&mut pack_footer, FOOTER_FORMAT_VERSION);
+        put_u16(&mut pack_footer, 0);
 
         for blob in descriptors {
             put_bytes(&mut pack_footer, blob.id.as_slice());
@@ -381,9 +389,41 @@ impl Packer {
         };
         let footer_blob_info = secure_storage.decompress(&decrypted)?;
         let mut cur = footer_blob_info.as_slice();
+        let has_v2_footer_header = cur.starts_with(&FOOTER_MAGIC);
+        // TODO(v1-removal): Remove this legacy branch and always parse the v2
+        // self-identifying footer header.
+        if repo_version >= 2 || has_v2_footer_header {
+            if cur.len() < FOOTER_HEADER_SIZE {
+                return Err(MapacheError::Format(
+                    "pack footer header is truncated".to_string(),
+                ));
+            }
+            if get_array::<4>(&mut cur)? != FOOTER_MAGIC {
+                return Err(MapacheError::Format(
+                    "invalid pack footer magic".to_string(),
+                ));
+            }
+            if get_u16(&mut cur)? != FOOTER_FORMAT_VERSION {
+                return Err(MapacheError::Format(
+                    "unsupported pack footer format version".to_string(),
+                ));
+            }
+            if get_u16(&mut cur)? != 0 {
+                return Err(MapacheError::Format(
+                    "invalid pack footer flags".to_string(),
+                ));
+            }
+            if !cur.len().is_multiple_of(FOOTER_BLOB_LEN) {
+                return Err(MapacheError::Format(
+                    "pack footer has a partial blob descriptor".to_string(),
+                ));
+            }
+        }
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
-        let has_compression_marker = repo_version >= 2; // TODO(v1-removal): always true
+        // TODO(v1-removal): Remove the v1 interpretation and always honor the
+        // compression marker in the v2 footer.
+        let has_compression_marker = repo_version >= 2 || has_v2_footer_header;
 
         while !cur.is_empty() {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);

@@ -76,6 +76,13 @@ impl BundleHeader {
     }
 
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != BUNDLE_HEADER_SIZE {
+            return Err(MapacheError::Format(format!(
+                "bundle header has invalid size {}, expected {}",
+                bytes.len(),
+                BUNDLE_HEADER_SIZE
+            )));
+        }
         let mut cur = bytes;
         Ok(Self {
             magic: get_array(&mut cur)?,
@@ -107,7 +114,7 @@ impl BundleTrailer {
 
     /// Parse a trailer without ECC fields (68-byte decrypted payload).
     pub fn from_binary_no_ecc(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < BUNDLE_TRAILER_BASE_SIZE {
+        if bytes.len() != BUNDLE_TRAILER_BASE_SIZE {
             return Err(MapacheError::Format("bundle trailer too short".to_string()));
         }
         let mut cur = bytes;
@@ -126,7 +133,7 @@ impl BundleTrailer {
     /// Parse a trailer with ECC fields (80-byte decrypted payload).
     pub fn from_binary_with_ecc(bytes: &[u8]) -> Result<Self> {
         let expected = BUNDLE_TRAILER_BASE_SIZE + BUNDLE_TRAILER_ECC_EXTRA;
-        if bytes.len() < expected {
+        if bytes.len() != expected {
             return Err(MapacheError::Format(
                 "bundle v2 trailer with ECC too short".to_string(),
             ));
@@ -178,6 +185,11 @@ impl BundleIndexEntry {
         let offset = get_u64(&mut cur)?;
         let length = get_u32(&mut cur)?;
         let raw_length = get_u32(&mut cur)?;
+        if !cur.is_empty() {
+            return Err(MapacheError::Format(
+                "bundle index entry has trailing bytes".to_string(),
+            ));
+        }
         Ok(Self {
             id,
             blob_type,
@@ -218,6 +230,12 @@ impl BundleIndex {
                 &cur[..BundleIndexEntry::BINARY_SIZE],
             )?);
             cur = &cur[BundleIndexEntry::BINARY_SIZE..];
+        }
+        if !cur.is_empty() {
+            return Err(MapacheError::Format(format!(
+                "bundle index has {} trailing bytes",
+                cur.len()
+            )));
         }
         Ok(Self { entries })
     }
@@ -294,6 +312,14 @@ mod tests {
         buf.extend_from_slice(&[0u8; 5]);
         let result = BundleIndex::from_binary(&buf);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn index_from_binary_rejects_trailing_bytes() {
+        let index = BundleIndex::default();
+        let mut bytes = index.to_binary();
+        bytes.push(0);
+        assert!(BundleIndex::from_binary(&bytes).is_err());
     }
 
     #[test]
@@ -398,9 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn trailer_auto_detect_falls_back_to_no_ecc() {
-        // Build a no-ECC trailer that happens to be >= with_ecc_size
-        // by padding the magic_end bytes into the "extra" field position.
+    fn trailer_auto_detect_rejects_trailing_bytes() {
         let trailer = BundleTrailer {
             root_tree: ID::new_random(),
             index_offset: 1024,
@@ -412,10 +436,8 @@ mod tests {
             magic_end: *BUNDLE_MAGIC_END,
         };
         let mut bytes = trailer.to_binary(false);
-        // Pad with zeros to exceed the ECC trailer size so auto_detect tries
-        // ECC first. The magic_end won't match, so it falls back to no_ecc.
+        // Padding is not a valid extension area for a no-ECC trailer.
         bytes.extend_from_slice(&[0u8; 20]);
-        let restored = BundleTrailer::from_binary_auto(&bytes).unwrap();
-        assert_eq!(trailer.root_tree, restored.root_tree);
+        assert!(BundleTrailer::from_binary_auto(&bytes).is_err());
     }
 }

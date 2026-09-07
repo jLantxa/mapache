@@ -235,6 +235,9 @@ The manifest is serialized as JSON:
   "version": 2,
   "id": "b7468f6331331302b06c63b98a14e50107f9cc26683afd064c0af84eec53b3e7",
   "created_time": "2025-11-20T13:06:52.266751300+01:00",
+  "hash_algorithm": "blake3-256",
+  "compression_algorithm": "zstd",
+  "encryption_algorithm": "aes-256-gcm-siv",
   "ecc": {
     "data_shards": 100,
     "parity_shards": 2
@@ -242,8 +245,13 @@ The manifest is serialized as JSON:
 }
 ```
 
+The algorithm fields are immutable repository-wide selections. Readers reject
+values they do not support instead of guessing from the repository version.
+Repositories created before these fields existed use the v2 defaults shown
+above.
+
 The `ecc` field is optional. When present, it indicates that ECC sidecars are
-enabled for this repository. `data_shards` (K) and `parity_shards` (P) are
+enabled for pack, index, and snapshot files in this repository. `data_shards` (K) and `parity_shards` (P) are
 the Reed-Solomon parameters stored for forward compatibility: if the formula
 that maps user configuration to K/P changes in the future, old repositories
 still decode correctly using the stored values.
@@ -417,8 +425,9 @@ Index and packs use binary formats where compactness is critical.
 
 #### Pack footer format
 
-The pack footer consists of a variable-length list of metadata blob entries, each 41 bytes
-long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), a blob type
+The pack footer begins with an 8-byte header (`MPFT`, version 2, and zero
+reserved flags), followed by a variable-length list of metadata blob entries,
+each 41 bytes long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), a blob type
 byte (u8), and both the encoded length and raw length (u32) of the associated
 data blob. The trailer is a single u32 field which stores the total length of the
 entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
@@ -426,7 +435,7 @@ All data except the footer length field is zstd-compressed then encrypted.
 
 ```text
 ┌────────┬────────┬─────┬────────┬─────────────────────┐
-│ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
+│ MPFT v2 │ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
 └────────┴────────┴─────┴────────┴─────────────────────┘
 
 ┌──────────────────────────────────────────┐
@@ -492,8 +501,11 @@ parsing speed.
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0 | 4 | `num_packs` | u32 LE — number of packs (sanity limit: ≤ 1,000,000) |
-| 4 | var | `packs[]` | Repeated pack encodings |
+| 0 | 4 | `magic` | ASCII `MPIX` |
+| 4 | 2 | `format_version` | u16 LE — value `2` |
+| 6 | 2 | `flags` | u16 LE — reserved, must be zero |
+| 8 | 4 | `num_packs` | u32 LE — number of packs (sanity limit: ≤ 1,000,000) |
+| 12 | var | `packs[]` | Repeated pack encodings |
 
 **Pack encoding (repeated per pack):**
 
@@ -551,12 +563,12 @@ objects/
 Sidecars use the `MECP` (Mapache ECC Parity) format:
 
 ```text
-Header (22 bytes):
-┌──────────┬─────────┬──────────┬───────────┬───────────────┬──────────────┐
+Header (54 bytes):
+┌──────────┬─────────┬──────────┬───────────┬───────────────┬──────────────┬────────────────┐
 │ MAGIC    │ VERSION │ reserved │ K (u16)   │ original_len  │ stripe_count │
-│ b"MECP"  │ u8      │ 0        │ P (u16)   │ u64 LE        │ u32 LE       │
-└──────────┴─────────┴──────────┴───────────┴───────────────┴──────────────┘
-  4 bytes    1 byte    1 byte     2+2 bytes    8 bytes         4 bytes
+│ b"MECP"  │ u8      │ 0        │ P (u16)   │ u64 LE        │ u32 LE       │ BLAKE3 hash     │
+└──────────┴─────────┴──────────┴───────────┴───────────────┴──────────────┴────────────────┘
+  4 bytes    1 byte    1 byte     2+2 bytes    8 bytes         4 bytes       32 bytes
 
 Per stripe:
 ┌──────────────────┬──────────────────┬─────────────────────┐
@@ -577,6 +589,10 @@ CRC32 uses a 256-entry lookup table generated at compile time via `const fn`
 K and P are stored in the header for forward compatibility: if the formula
 that maps overhead to K/P changes in the future, old sidecars still decode
 correctly using the stored values.
+
+The header also stores the BLAKE3-256 hash of the exact encoded file bytes
+protected by the sidecar. Repair refuses to use a sidecar whose binding does
+not match the file being repaired.
 
 Each shard is `SHARD_SIZE` = 4096 bytes (matching the OS page size and
 mapache block size). The last shard in each stripe may be zero-padded.

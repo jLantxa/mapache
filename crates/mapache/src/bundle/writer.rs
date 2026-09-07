@@ -248,6 +248,17 @@ impl BundleWriter {
             ecc_payload.extend_from_slice(&(p as u16).to_le_bytes());
             ecc_payload.extend_from_slice(&(data_len as u64).to_le_bytes());
             ecc_payload.extend_from_slice(&(layouts.len() as u32).to_le_bytes());
+            ecc_payload.extend_from_slice(
+                ID::from_content(&{
+                    let current = file.stream_position()?;
+                    file.seek(std::io::SeekFrom::Start(data_start))?;
+                    let mut data = vec![0u8; data_len];
+                    file.read_exact(&mut data)?;
+                    file.seek(std::io::SeekFrom::Start(current))?;
+                    data
+                })
+                .as_slice(),
+            );
 
             let rs = ecc::reed_solomon::ReedSolomon::new(k, p).map_err(|_| {
                 MapacheError::Crypto(format!("invalid ECC shard count: k={k}, p={p}"))

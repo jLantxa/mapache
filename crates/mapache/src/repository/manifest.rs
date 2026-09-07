@@ -1,12 +1,16 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::common::ID;
+use crate::{common::ID, common::error::Result};
+
+pub const HASH_ALGORITHM: &str = "blake3-256";
+pub const COMPRESSION_ALGORITHM: &str = "zstd";
+pub const ENCRYPTION_ALGORITHM: &str = "aes-256-gcm-siv";
 
 /// ECC configuration for the repository.
 ///
-/// When present, all repo files (packs, index, snapshots, manifest, keys)
-/// are protected by Reed-Solomon erasure codes stored as `.ecc` sidecars.
+/// When present, pack, index, and snapshot files are protected by Reed-Solomon
+/// erasure codes stored as `.ecc` sidecars.
 ///
 /// K and P are stored explicitly for forward compatibility: if the formula
 /// changes in the future, old repos still decode correctly.
@@ -44,8 +48,26 @@ pub struct Manifest {
     version: u32,
     id: ID,
     created_time: DateTime<Local>,
+    #[serde(default = "default_hash_algorithm")]
+    hash_algorithm: String,
+    #[serde(default = "default_compression_algorithm")]
+    compression_algorithm: String,
+    #[serde(default = "default_encryption_algorithm")]
+    encryption_algorithm: String,
     #[serde(default)]
     ecc: Option<EccConfig>,
+}
+
+fn default_hash_algorithm() -> String {
+    HASH_ALGORITHM.to_owned()
+}
+
+fn default_compression_algorithm() -> String {
+    COMPRESSION_ALGORITHM.to_owned()
+}
+
+fn default_encryption_algorithm() -> String {
+    ENCRYPTION_ALGORITHM.to_owned()
 }
 
 impl Manifest {
@@ -54,6 +76,9 @@ impl Manifest {
             version,
             id: ID::new_random(),
             created_time: Local::now(),
+            hash_algorithm: default_hash_algorithm(),
+            compression_algorithm: default_compression_algorithm(),
+            encryption_algorithm: default_encryption_algorithm(),
             ecc: None,
         }
     }
@@ -63,6 +88,9 @@ impl Manifest {
             version,
             id: ID::new_random(),
             created_time: Local::now(),
+            hash_algorithm: default_hash_algorithm(),
+            compression_algorithm: default_compression_algorithm(),
+            encryption_algorithm: default_encryption_algorithm(),
             ecc: Some(ecc),
         }
     }
@@ -81,6 +109,40 @@ impl Manifest {
 
     pub fn created_time(&self) -> DateTime<Local> {
         self.created_time
+    }
+
+    pub fn hash_algorithm(&self) -> &str {
+        &self.hash_algorithm
+    }
+
+    pub fn compression_algorithm(&self) -> &str {
+        &self.compression_algorithm
+    }
+
+    pub fn encryption_algorithm(&self) -> &str {
+        &self.encryption_algorithm
+    }
+
+    pub fn validate_algorithms(&self) -> Result<()> {
+        if self.hash_algorithm != HASH_ALGORITHM {
+            return Err(crate::common::error::MapacheError::Format(format!(
+                "unsupported repository hash algorithm '{}'",
+                self.hash_algorithm
+            )));
+        }
+        if self.compression_algorithm != COMPRESSION_ALGORITHM {
+            return Err(crate::common::error::MapacheError::Format(format!(
+                "unsupported repository compression algorithm '{}'",
+                self.compression_algorithm
+            )));
+        }
+        if self.encryption_algorithm != ENCRYPTION_ALGORITHM {
+            return Err(crate::common::error::MapacheError::Format(format!(
+                "unsupported repository encryption algorithm '{}'",
+                self.encryption_algorithm
+            )));
+        }
+        Ok(())
     }
 
     pub fn ecc(&self) -> Option<&EccConfig> {

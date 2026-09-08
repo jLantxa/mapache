@@ -7,7 +7,7 @@ mod tests {
 
     use mapache::{
         backend::{BackendNode, StorageBackend, localfs::LocalFS, read_backend_dir},
-        commands::cmd_ecc::SubCmd,
+        commands::cmd_ecc::{EccError, SubCmd},
         repository::{
             manifest::EccConfig,
             repo::{INDEX_DIR, OBJECTS_DIR, Repository, SNAPSHOTS_DIR},
@@ -377,8 +377,13 @@ mod tests {
             .run(&ctx.global)
             .await;
         assert!(result.is_err(), "ecc should be rejected on v1 repos");
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("v1"), "error should mention v1: {err_msg}");
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<EccError>()
+                .is_some_and(|e| matches!(e, EccError::InvalidArg(_))),
+            "expected EccError::InvalidArg"
+        );
 
         Ok(())
     }

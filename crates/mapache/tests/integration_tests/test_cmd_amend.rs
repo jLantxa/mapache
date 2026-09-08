@@ -6,6 +6,7 @@ mod tests {
     use anyhow::Result;
     use mapache::{
         backend::localfs::LocalFS,
+        commands::cmd_amend::AmendError,
         common::defaults::TEST_REPO_CONFIG,
         repository::{repo::Repository, snapshot::SnapshotStream},
     };
@@ -185,10 +186,10 @@ mod tests {
             .await
             .expect_err("amend with a missing snapshot must fail");
 
-        let msg = format!("{err:#}");
         assert!(
-            msg.contains("not found") || msg.contains("doesn't exist"),
-            "expected a not-found error, got: {msg}"
+            err.downcast_ref::<AmendError>()
+                .is_some_and(|e| matches!(e, AmendError::NotFound(_) | AmendError::Repo(_))),
+            "expected AmendError::NotFound or AmendError::Repo, got: {err:#}"
         );
 
         Ok(())

@@ -1343,9 +1343,10 @@ mod tests {
     fn parallel_rejects_zero() {
         let err = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "0"])
             .expect_err("--parallel 0 must be rejected");
-        assert!(
-            err.to_string().contains("greater than 0"),
-            "unexpected error message: {err}"
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "unexpected error kind: {err}"
         );
     }
 

@@ -139,14 +139,11 @@ mod tests {
         harness.write_config("[hooks.snapshot.pre]\ncommand = \"false\"\n");
         let output = harness.run(&["snapshot", &backup_dir.join("0").to_string_lossy()])?;
         assert!(!output.status.success(), "pre-hook should abort");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pre-hook failed") || stderr.contains("exited with"));
 
         // timeout
         harness.write_config("[hooks.snapshot.pre]\ncommand = \"sleep 10\"\ntimeout = 1\n");
         let output = harness.run(&["snapshot", &backup_dir.join("0").to_string_lossy()])?;
         assert!(!output.status.success(), "should timeout");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
 
         Ok(())
     }

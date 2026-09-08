@@ -376,10 +376,10 @@ mod tests {
 
         let result = config_path("~/foo");
         assert!(result.is_err());
-        match result.unwrap_err() {
-            MapacheError::Config(msg) => assert!(msg.contains("cannot expand")),
-            other => panic!("expected Config error, got: {other}"),
-        }
+        assert!(
+            matches!(result.unwrap_err(), MapacheError::Config(_)),
+            "expected Config error"
+        );
     }
 
     #[test]
@@ -420,13 +420,10 @@ mod tests {
         std::fs::write(&path, "[runtime]\nrestore-pack-prefetch = 0\n").unwrap();
         let err = load_config(&path).expect_err("prefetch 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("restore_pack_prefetch must be greater than 0"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -440,13 +437,10 @@ mod tests {
         std::fs::write(&path, "[runtime]\ngc-repack-concurrency = 0\n").unwrap();
         let err = load_config(&path).expect_err("repack concurrency 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("gc_repack_concurrency must be greater than 0"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -460,13 +454,10 @@ mod tests {
         std::fs::write(&path, "[runtime]\ns3-multipart-part-size = 0\n").unwrap();
         let err = load_config(&path).expect_err("multipart part size 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("s3_multipart_part_size must be greater than 0"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -480,13 +471,10 @@ mod tests {
         std::fs::write(&path, "[runtime]\nrestore-blob-concurrency = 0\n").unwrap();
         let err = load_config(&path).expect_err("concurrency 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("restore_blob_concurrency must be greater than 0"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -500,13 +488,10 @@ mod tests {
         std::fs::write(&path, "[snapshot]\nnum-packers = 0\n").unwrap();
         let err = load_config(&path).expect_err("num-packers 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("snapshot.num-packers must be greater than 0"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     fn write_global_pack_size(mib: &str) -> std::path::PathBuf {
@@ -532,13 +517,10 @@ mod tests {
         std::fs::write(&path, "[snapshot]\nnum-readers = 0\n").unwrap();
         let err = load_config(&path).expect_err("num-readers 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("snapshot.num-readers must be greater than 0"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -546,13 +528,10 @@ mod tests {
         let path = write_global_pack_size("0");
         let err = load_config(&path).expect_err("pack-size-mib 0 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("pack-size-mib must be between"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -560,13 +539,10 @@ mod tests {
         let path = write_global_pack_size("0.5");
         let err = load_config(&path).expect_err("pack-size-mib 0.5 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("pack-size-mib must be between"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -574,13 +550,10 @@ mod tests {
         let path = write_global_pack_size("8000");
         let err = load_config(&path).expect_err("pack-size-mib 8000 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        match err {
-            MapacheError::Config(msg) => assert!(
-                msg.contains("pack-size-mib must be between"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]

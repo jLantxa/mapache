@@ -1590,7 +1590,10 @@ mod tests {
         put_u32(&mut data, 100_000_001); // claims >100M blobs but has zero blob entries
 
         let err = deserialize_index_binary(&data).expect_err("must be rejected");
-        assert!(format!("{err}").contains("exceeds sanity limit"));
+        assert!(
+            matches!(&err, MapacheError::Integrity(_)),
+            "expected Integrity, got: {err}"
+        );
     }
 
     #[test]
@@ -1602,7 +1605,10 @@ mod tests {
         put_u32(&mut data, 2_000_000); // exceeds sanity limit
 
         let err = deserialize_index_binary(&data).expect_err("must be rejected");
-        assert!(format!("{err}").contains("exceeds sanity limit"));
+        assert!(
+            matches!(&err, MapacheError::Integrity(_)),
+            "expected Integrity, got: {err}"
+        );
     }
     use super::*;
 

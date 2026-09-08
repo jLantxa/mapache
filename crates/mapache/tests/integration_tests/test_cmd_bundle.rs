@@ -1,7 +1,7 @@
 mod tests {
     use anyhow::{Context, Result};
 
-    use mapache::commands::UseSnapshot;
+    use mapache::commands::{UseSnapshot, cmd_bundle::BundleError};
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext},
@@ -486,10 +486,12 @@ mod tests {
             result.is_err(),
             "importing v2 bundle into v1 repo should fail"
         );
-        let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("cannot be imported") || msg.contains("mismatch") || msg.contains("v1"),
-            "error should mention version mismatch: {msg}"
+            result
+                .unwrap_err()
+                .downcast_ref::<BundleError>()
+                .is_some_and(|e| matches!(e, BundleError::Config(_))),
+            "expected BundleError::Config"
         );
 
         Ok(())
@@ -529,10 +531,12 @@ mod tests {
             result.is_err(),
             "importing v1 bundle into v2 repo should fail"
         );
-        let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("cannot be imported") || msg.contains("mismatch") || msg.contains("v2"),
-            "error should mention version mismatch: {msg}"
+            result
+                .unwrap_err()
+                .downcast_ref::<BundleError>()
+                .is_some_and(|e| matches!(e, BundleError::Config(_))),
+            "expected BundleError::Config"
         );
 
         Ok(())
@@ -570,10 +574,12 @@ mod tests {
             result.is_err(),
             "exporting v2 repo snapshot to v1 bundle should fail"
         );
-        let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("cannot export") || msg.contains("mismatch"),
-            "error should mention version mismatch: {msg}"
+            result
+                .unwrap_err()
+                .downcast_ref::<BundleError>()
+                .is_some_and(|e| matches!(e, BundleError::Config(_))),
+            "expected BundleError::Config"
         );
 
         Ok(())

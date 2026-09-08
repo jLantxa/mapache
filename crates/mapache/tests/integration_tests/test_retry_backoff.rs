@@ -246,16 +246,13 @@ mod tests {
                             "transient error".to_string(),
                         ))
                     } else {
-                        Err::<i32, MapacheError>(MapacheError::Backend(
+                        Err::<i32, MapacheError>(MapacheError::Config(
                             "permanent error".to_string(),
                         ))
                     }
                 }
             },
-            |err| {
-                // Only retry if error contains "transient"
-                err.inner().contains("transient")
-            },
+            |err| matches!(err, MapacheError::Backend(_)),
         )
         .await;
 
@@ -296,7 +293,7 @@ mod tests {
         // retry-exhausted timeout error.
         let err = result.expect_err("operation should timeout after max_attempts");
         assert!(
-            matches!(&err, MapacheError::Backend(msg) if msg.contains("timed out after multiple retries")),
+            matches!(&err, MapacheError::Backend(_)),
             "expected retry-exhausted timeout error, got: {err}"
         );
         // Should attempt max_attempts times

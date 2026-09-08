@@ -859,9 +859,10 @@ mod tests {
     fn packers_rejects_zero() {
         let err = SnapshotArgsParse::try_parse_from(["--packers", "0"])
             .expect_err("--packers 0 must be rejected");
-        assert!(
-            err.to_string().contains("greater than 0"),
-            "unexpected error message: {err}"
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "unexpected error kind: {err}"
         );
     }
 
@@ -869,9 +870,10 @@ mod tests {
     fn readers_rejects_zero() {
         let err = SnapshotArgsParse::try_parse_from(["--readers", "0"])
             .expect_err("--readers 0 must be rejected");
-        assert!(
-            err.to_string().contains("greater than 0"),
-            "unexpected error message: {err}"
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "unexpected error kind: {err}"
         );
     }
 

@@ -1171,10 +1171,9 @@ mod tests {
             Ok(_) => panic!("scan should fail when interrupted"),
             Err(e) => e,
         };
-        let msg = err.to_string();
         assert!(
-            msg.to_lowercase().contains("interrupt"),
-            "expected interruption error, got: {msg}"
+            matches!(&err, MapacheError::Interrupted),
+            "expected Interrupted, got: {err}"
         );
 
         // The blob written before the scan is still there; scan is read-only.
@@ -1220,10 +1219,9 @@ mod tests {
             Ok(_) => panic!("execute should fail when interrupted"),
             Err(e) => e,
         };
-        let msg = err.to_string();
         assert!(
-            msg.to_lowercase().contains("interrupt"),
-            "expected interruption error, got: {msg}"
+            matches!(&err, MapacheError::Interrupted),
+            "expected Interrupted, got: {err}"
         );
 
         // All referenced blobs must still be loadable after interruption.

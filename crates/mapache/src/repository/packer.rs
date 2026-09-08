@@ -948,8 +948,10 @@ mod tests {
         let err = Packer::parse_footer(&secure_storage, &footer_data, true, 2)
             .expect_err("offsets over u32::MAX must be rejected");
 
-        let msg = format!("{err}");
-        assert!(msg.contains("offset overflow"), "unexpected error: {msg}");
+        assert!(
+            matches!(&err, MapacheError::Integrity(_)),
+            "expected Integrity, got: {err}"
+        );
 
         Ok(())
     }

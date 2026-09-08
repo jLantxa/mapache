@@ -246,19 +246,19 @@ mod tests {
         let dst_repo_path = ctx._tmp_dir.path().join("sync_dst_v2");
         init_repo_at_version(&dst_repo_path, &ctx.auth, 2).await?;
 
-        let output = ctx.run_mapache(&["sync", "--target", &dst_repo_path.to_string_lossy()])?;
+        let err = ctx
+            .sync_builder(dst_repo_path.to_string_lossy().to_string())
+            .run(&ctx.global)
+            .await
+            .expect_err("sync between different formats should fail");
 
         assert!(
-            !output.status.success(),
-            "sync between different formats should fail\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let msg = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            msg.contains("different formats") && msg.contains("v1") && msg.contains("v2"),
-            "unexpected error message: {}",
-            msg
+            err.downcast_ref::<mapache::commands::cmd_sync::SyncError>()
+                .is_some_and(|e| matches!(
+                    e,
+                    mapache::commands::cmd_sync::SyncError::FormatMismatch(_)
+                )),
+            "expected SyncError::FormatMismatch, got: {err:#}"
         );
         Ok(())
     }

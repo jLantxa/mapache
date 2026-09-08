@@ -738,21 +738,21 @@ mod tests {
         let overflow_years = format!("{}y", i64::MAX / 365 + 1);
         let err = parse_duration_string(&overflow_years).unwrap_err();
         assert!(
-            err.to_string().contains("out of range"),
-            "expected out-of-range error, got: {err}"
+            matches!(&err, MapacheError::Format(_)),
+            "expected Format, got: {err}"
         );
         let huge_years = format!("{}y", i64::MAX / 365);
         let err = parse_duration_string(&huge_years).unwrap_err();
         assert!(
-            err.to_string().contains("out of range"),
-            "expected out-of-range error, got: {err}"
+            matches!(&err, MapacheError::Format(_)),
+            "expected Format, got: {err}"
         );
         // Non-year units must also Err (not panic) past chrono Duration limits.
         let overflow_days = format!("{}d", i64::MAX);
         let err = parse_duration_string(&overflow_days).unwrap_err();
         assert!(
-            err.to_string().contains("out of range"),
-            "expected out-of-range error, got: {err}"
+            matches!(&err, MapacheError::Format(_)),
+            "expected Format, got: {err}"
         );
         assert!(parse_duration_string("").is_err());
         assert_eq!(parse_duration_string("1y").unwrap(), Duration::days(365));

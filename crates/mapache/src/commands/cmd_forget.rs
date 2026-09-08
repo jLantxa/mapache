@@ -643,9 +643,10 @@ mod tests {
     fn keep_last_rejects_zero() {
         let err = CmdArgs::try_parse_from(["forget", "--keep-last", "0"])
             .expect_err("--keep-last 0 must be rejected");
-        assert!(
-            err.to_string().contains("greater than 0"),
-            "unexpected error message: {err}"
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "unexpected error kind: {err}"
         );
     }
 

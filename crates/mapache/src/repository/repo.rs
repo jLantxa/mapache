@@ -665,11 +665,6 @@ impl Repository {
         Ok(data)
     }
 
-    /// Load a single index file from disk by its ID (public for cold iteration).
-    pub async fn load_index_from_file_public(&self, file_id: ID) -> Result<Index> {
-        self.load_index_from_file(file_id).await
-    }
-
     /// Load a single index file from disk by its ID.
     async fn load_index_from_file(&self, file_id: ID) -> Result<Index> {
         let path = self.get_path(ContentIdType::Index, &file_id);

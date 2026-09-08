@@ -154,43 +154,19 @@ pub async fn scan(
     reporter.start_task(GcTaskKind::FindingObsoleteBlobs, None);
     let mut obsolete_blobs_count = 0;
 
-    repo.index().for_each_id(|id, locator| {
-        *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
-
-        if !plan.referenced_blobs.contains(id) {
-            pack_garbage
-                .entry(locator.pack_id)
-                .and_modify(|size| *size += locator.length as u64)
-                .or_insert(locator.length as u64);
-            obsolete_blobs_count += 1;
-            reporter.update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
-        }
-    });
-
-    // Also iterate cold indices, loading one at a time (memory bounded)
-    let repo_clone = repo.clone();
     repo.index()
-        .for_each_cold_index(
-            |file_id| {
-                let repo = repo_clone.clone();
-                Box::pin(async move { repo.load_index_from_file_public(file_id).await })
-            },
-            |index| {
-                for (id, locator) in index.iter_ids() {
-                    *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
+        .for_each_id(|id, locator| {
+            *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
 
-                    if !plan.referenced_blobs.contains(id) {
-                        pack_garbage
-                            .entry(locator.pack_id)
-                            .and_modify(|size| *size += locator.length as u64)
-                            .or_insert(locator.length as u64);
-                        obsolete_blobs_count += 1;
-                        reporter
-                            .update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
-                    }
-                }
-            },
-        )
+            if !plan.referenced_blobs.contains(id) {
+                pack_garbage
+                    .entry(locator.pack_id)
+                    .and_modify(|size| *size += locator.length as u64)
+                    .or_insert(locator.length as u64);
+                obsolete_blobs_count += 1;
+                reporter.update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
+            }
+        })
         .await;
 
     reporter.finish_task(GcTaskKind::FindingObsoleteBlobs);
@@ -399,34 +375,15 @@ impl Plan {
         // (~24 bytes per blob) but is required for the budget-based chunking below.
         let mut locators_to_repack = Vec::new();
 
-        self.repo.index().for_each_id(|id, locator| {
-            if self.referenced_blobs.contains(id) && self.obsolete_packs.contains(&locator.pack_id)
-            {
-                locators_to_repack.push((*id, locator));
-            }
-        });
-
-        // Also gather locators from cold indices, loading one at a time
-        let repo_clone = self.repo.clone();
-        let referenced_blobs = self.referenced_blobs.clone();
-        let obsolete_packs = self.obsolete_packs.clone();
         self.repo
             .index()
-            .for_each_cold_index(
-                |file_id| {
-                    let repo = repo_clone.clone();
-                    Box::pin(async move { repo.load_index_from_file_public(file_id).await })
-                },
-                |index| {
-                    for (id, locator) in index.iter_ids() {
-                        if referenced_blobs.contains(id)
-                            && obsolete_packs.contains(&locator.pack_id)
-                        {
-                            locators_to_repack.push((*id, locator));
-                        }
-                    }
-                },
-            )
+            .for_each_id(|id, locator| {
+                if self.referenced_blobs.contains(id)
+                    && self.obsolete_packs.contains(&locator.pack_id)
+                {
+                    locators_to_repack.push((*id, locator));
+                }
+            })
             .await;
 
         if locators_to_repack.is_empty() {

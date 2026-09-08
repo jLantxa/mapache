@@ -64,10 +64,6 @@
   once instead of twice, and the repository directories are listed concurrently.
   Snapshot analysis and `--full` pack footer parsing now run with bounded
   concurrency.
-- **`mapache stats` output**: The report is now rendered as aligned sections
-  and includes unreferenced blob counts (with reclaimable size) and the elapsed
-  collection time. The JSON output gains `packs.other_count`, `packs.other_bytes`,
-  `snapshots.unreferenced_blobs` and `snapshots.unreferenced_encoded_bytes`.
 - **`mapache forget` combines explicit ids with retention rules**: Naming snapshots
   on the command line no longer discards the `--keep-*` rules (including those
   coming from the config file). Both are now applied together, with keep rules

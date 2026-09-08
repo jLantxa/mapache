@@ -1042,54 +1042,6 @@ impl MasterIndex {
         }
     }
 
-    /// Iterates over cold indices one at a time, loading each from disk via the
-    /// provided async loader, invoking the callback, and dropping it before loading
-    /// the next. Memory bounded: only one cold index in RAM at a time.
-    /// Caller must hold no locks on `inner` when calling this.
-    pub async fn for_each_cold_index<F, L>(&self, load_index: L, mut f: F)
-    where
-        F: FnMut(&Index),
-        L: FnMut(ID) -> futures::future::BoxFuture<'static, Result<Index>>,
-    {
-        let mut load = load_index;
-
-        loop {
-            // Get next cold index file_id under read lock, then drop lock
-            let next_file_id = {
-                let lock = self.inner.read();
-                lock.cold_metadata.first().map(|m| m.file_id)
-            };
-
-            let file_id = match next_file_id {
-                Some(id) => id,
-                None => break,
-            };
-
-            // Remove from cold_metadata under write lock
-            {
-                let mut lock = self.inner.write();
-                lock.cold_metadata.retain(|m| m.file_id != file_id);
-                lock.lru.remove(&file_id);
-            }
-
-            // Load from disk (no lock held)
-            match load(file_id).await {
-                Ok(index) => {
-                    f(&index);
-                    // Evict back to cold instead of keeping hot
-                    let cold_meta = IndexMetadata::from_index(&index, file_id);
-                    let mut lock = self.inner.write();
-                    lock.cold_metadata.push(cold_meta);
-                }
-                Err(e) => {
-                    tracing::warn!(target: "index",
-                        "Failed to load cold index {}: {}",
-                        file_id.to_short_hex(8), e);
-                }
-            }
-        }
-    }
-
     /// Enforce the maximum number of hot indices by evicting the oldest
     /// non-pending finalized index to cold metadata.
     fn enforce_hot_limit(&self, lock: &mut MasterIndexInner) {
@@ -1269,16 +1221,82 @@ impl MasterIndex {
         Ok(total_size)
     }
 
-    pub fn for_each_id<F>(&self, mut f: F)
+    /// Invokes `f` for every blob in every index — hot and cold.
+    ///
+    /// Cold indices are loaded from disk one at a time through the configured
+    /// loader and cached in the LRU as they are consumed, so only one cold
+    /// index lives in RAM at a time and later lookups reuse the cached copy
+    /// instead of reading it again.
+    pub async fn for_each_id<F>(&self, mut f: F)
     where
         F: FnMut(&ID, BlobLocator),
     {
-        let lock = self.inner.read();
+        {
+            let lock = self.inner.read();
+            for idx in &lock.indices {
+                for (id, loc) in idx.iter_ids() {
+                    f(id, loc);
+                }
+            }
+        }
 
-        for idx in &lock.indices {
-            for (id, loc) in idx.iter_ids() {
+        // Process each cold index exactly once, without promoting it to hot.
+        let cold_ids: Vec<ID> = {
+            let lock = self.inner.read();
+            lock.cold_metadata.iter().map(|m| m.file_id).collect()
+        };
+
+        for file_id in cold_ids {
+            // Take the entry out of the cold set (and any LRU cache copy of it)
+            // while it is being processed, so a concurrent promotion cannot
+            // operate on the same index. If it is already gone (promoted by a
+            // concurrent load), skip it.
+            let (meta, cached) = {
+                let mut lock = self.inner.write();
+                let Some(pos) = lock.cold_metadata.iter().position(|m| m.file_id == file_id) else {
+                    continue;
+                };
+                let meta = lock.cold_metadata.swap_remove(pos);
+                let cached = lock.lru.remove(&file_id);
+                (meta, cached)
+            };
+
+            // Reuse the cached copy when available; otherwise load from disk.
+            let loaded = match cached {
+                Some(cached) => Some((*cached).clone()),
+                None => match self.loader.get() {
+                    Some(loader) => match loader.load_index(&meta.file_id).await {
+                        Ok(index) => Some(index),
+                        Err(e) => {
+                            tracing::warn!(target: "index",
+                                "Failed to load cold index {}: {}; keeping it in cold metadata",
+                                meta.file_id.to_short_hex(8), e);
+                            None
+                        }
+                    },
+                    None => None,
+                },
+            };
+
+            let Some(index) = loaded else {
+                let mut lock = self.inner.write();
+                lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
+                lock.cold_metadata.push(meta);
+                continue;
+            };
+
+            for (id, loc) in index.iter_ids() {
                 f(id, loc);
             }
+
+            // Restore it as the most recently used entry: cached in the LRU so
+            // future lookups reuse it, and still listed in cold metadata. The
+            // in-RAM index is only dropped when the LRU weight limit requires.
+            let weight = index.num_blobs() as u64;
+            let mut lock = self.inner.write();
+            lock.lru.insert(meta.file_id, Arc::new(index), weight);
+            lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
+            lock.cold_metadata.push(meta);
         }
     }
 
@@ -1392,7 +1410,8 @@ impl MasterIndex {
             if id.to_hex().starts_with(prefix) {
                 matched.push(*id);
             }
-        });
+        })
+        .await;
 
         if matched.len() > 1 {
             return Err(MapacheError::Format(format!(
@@ -2680,5 +2699,119 @@ mod tests {
         let locator = mi.get(&blob_id).await.expect("blob should be found");
         assert_eq!(locator.pack_id, pack_id);
         assert_eq!(loads.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_for_each_id_full_sweep_with_lazy_mode() {
+        // Mirrors the state produced by reload_master_index_with_mode in lazy
+        // mode: the newest INDEX_HOT_COUNT index files stay hot, older ones
+        // become cold metadata. Use the real LRU weight limit, not an unbounded
+        // cache.
+        struct CountingLoader {
+            indices: std::collections::HashMap<ID, Index>,
+            loads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ColdIndexLoader for CountingLoader {
+            async fn load_index(&self, file_id: &ID) -> Result<Index> {
+                self.loads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.indices.get(file_id).cloned().ok_or_else(|| {
+                    MapacheError::Format(format!("no index for {}", file_id.to_hex()))
+                })
+            }
+        }
+
+        let mi = MasterIndex::new(IndexMode::Lazy(common::defaults::DEFAULT_LRU_MAX_BLOBS));
+
+        // Two persisted index files treated as cold (older): one data, one tree.
+        let mut cold_data = Index::new();
+        let cold_data_pack = mock_id("pack_cold_data");
+        let cold_data_blob = mock_id("cold_data_blob");
+        cold_data.add_pack(
+            &cold_data_pack,
+            vec![mock_blob_desc("cold_data_blob", BlobType::Data, 0, 100)],
+        );
+        cold_data.finalize();
+        let cold_data_file = mock_id("file_cold_data");
+        mi.add_cold_metadata(IndexMetadata::from_index(&cold_data, cold_data_file));
+
+        let mut cold_tree = Index::new();
+        let cold_tree_pack = mock_id("pack_cold_tree");
+        let cold_tree_blob = mock_id("cold_tree_blob");
+        cold_tree.add_pack(
+            &cold_tree_pack,
+            vec![mock_blob_desc("cold_tree_blob", BlobType::Tree, 0, 200)],
+        );
+        cold_tree.finalize();
+        let cold_tree_file = mock_id("file_cold_tree");
+        mi.add_cold_metadata(IndexMetadata::from_index(&cold_tree, cold_tree_file));
+
+        // One hot index (newest).
+        let mut hot = Index::new();
+        let hot_pack = mock_id("pack_hot");
+        let hot_blob = mock_id("hot_blob");
+        hot.add_pack(
+            &hot_pack,
+            vec![mock_blob_desc("hot_blob", BlobType::Data, 0, 40)],
+        );
+        hot.finalize();
+        mi.add_index(hot);
+
+        let loads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        mi.set_loader(std::sync::Arc::new(CountingLoader {
+            indices: std::collections::HashMap::from([
+                (cold_data_file, cold_data),
+                (cold_tree_file, cold_tree),
+            ]),
+            loads: loads.clone(),
+        }));
+
+        // First full sweep: every blob, hot and cold, exactly once. Each cold
+        // index is fetched from disk once.
+        let mut seen = Vec::new();
+        mi.for_each_id(|id, loc| {
+            seen.push((*id, loc.pack_id));
+        })
+        .await;
+
+        assert_eq!(
+            loads.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "each cold index is read from disk exactly once"
+        );
+
+        let mut expected = vec![
+            (cold_data_blob, cold_data_pack),
+            (cold_tree_blob, cold_tree_pack),
+            (hot_blob, hot_pack),
+        ];
+        expected.sort();
+        seen.sort();
+        assert_eq!(seen, expected, "all hot and cold blobs are visited");
+
+        // A second sweep and a lookup after it reuse the LRU cache: no further
+        // disk reads.
+        mi.for_each_id(|id, loc| {
+            seen.push((*id, loc.pack_id));
+        })
+        .await;
+        assert_eq!(
+            loads.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "a repeated sweep reuses the LRU cache"
+        );
+
+        let loc = mi
+            .get(&cold_tree_blob)
+            .await
+            .expect("cold blob should remain resolvable");
+        assert_eq!(loc.pack_id, cold_tree_pack);
+        assert_eq!(
+            loads.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "lookup after the sweep reuses the LRU cache"
+        );
     }
 }

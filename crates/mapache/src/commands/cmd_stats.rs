@@ -107,8 +107,6 @@ struct SnapshotsOutput {
     referenced_encoded_bytes_data: u64,
     referenced_raw_bytes_tree: u64,
     referenced_encoded_bytes_tree: u64,
-    unreferenced_blobs: u64,
-    unreferenced_encoded_bytes: u64,
     compression_ratio_total: f32,
     compression_ratio_data: f32,
     compression_ratio_tree: f32,
@@ -395,16 +393,18 @@ async fn stats_repository(
         .saturating_add(keys.files.bytes)
         .saturating_add(manifest_size);
 
-    // Index-level summary (in memory, no I/O).
+    // Index-level summary (walks every index, hot and cold).
     spinner.set_message("scanning index");
     let mut indexed_blobs = 0u64;
     let mut indexed_encoded = 0u64;
     let mut indexed_raw = 0u64;
-    repo.index().for_each_id(|_id, loc| {
-        indexed_blobs += 1;
-        indexed_encoded = indexed_encoded.saturating_add(loc.length as u64);
-        indexed_raw = indexed_raw.saturating_add(loc.raw_length as u64);
-    });
+    repo.index()
+        .for_each_id(|_id, loc| {
+            indexed_blobs += 1;
+            indexed_encoded = indexed_encoded.saturating_add(loc.length as u64);
+            indexed_raw = indexed_raw.saturating_add(loc.raw_length as u64);
+        })
+        .await;
 
     // Snapshot-derived summary (index-only).
     let snap_stats = analyze_snapshots(repo.clone(), &spinner).await?;
@@ -434,8 +434,6 @@ async fn stats_repository(
         snap_stats.total_raw_data_size_tree,
         snap_stats.total_encoded_data_size_tree,
     );
-    let unreferenced_blobs = indexed_blobs.saturating_sub(snap_stats.num_referenced_blobs);
-    let unreferenced_bytes = indexed_encoded.saturating_sub(snap_stats.total_encoded_data_size);
 
     if json_out {
         let out = StatsOutput {
@@ -475,8 +473,6 @@ async fn stats_repository(
                 referenced_encoded_bytes_data: snap_stats.total_encoded_data_size_data,
                 referenced_raw_bytes_tree: snap_stats.total_raw_data_size_tree,
                 referenced_encoded_bytes_tree: snap_stats.total_encoded_data_size_tree,
-                unreferenced_blobs,
-                unreferenced_encoded_bytes: unreferenced_bytes,
                 compression_ratio_total: ratio_total,
                 compression_ratio_data: ratio_data,
                 compression_ratio_tree: ratio_tree,
@@ -621,16 +617,6 @@ async fn stats_repository(
         "Restorable size",
         utils::format_size_binary(snap_stats.total_restorable_bytes, 3),
     );
-    if unreferenced_blobs > 0 {
-        row(
-            "Unreferenced blobs",
-            format!(
-                "{} ({} reclaimable)",
-                utils::format_count(unreferenced_blobs, "blob", "blobs"),
-                utils::format_size_binary(unreferenced_bytes, 3)
-            ),
-        );
-    }
 
     ui::cli::log!();
     section("Keys");

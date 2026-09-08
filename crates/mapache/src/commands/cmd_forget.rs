@@ -10,17 +10,26 @@ use crate::{
         self, GlobalArgs, HookArgs, Merge, ToExitCode, cleanup::CleanupHandler, merge_opt,
         parse_tags, with_repository_lock,
     },
-    common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
+    common::{
+        ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, defaults::SHORT_SNAPSHOT_ID_LEN,
+        error::MapacheError, hooks,
+    },
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
-        retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
-        snapshot::{SnapshotEntryList, SnapshotStream},
+        retention::{
+            KeepReason, RetentionRule, apply_retention_rules_with_reasons,
+            filter_snapshots_by_hosts,
+        },
+        snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{
         self,
-        cli::{color::Colorize, log_snapshots_compact},
+        cli::{color::Colorize, log_snapshots_table},
     },
-    utils::{self, collections::IdSet},
+    utils::{
+        self,
+        collections::{IdMap, IdSet},
+    },
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -54,18 +63,21 @@ impl ToExitCode for ForgetError {
 
 // Define argument groups for mutual exclusivity and multiple selection
 #[derive(Parser, Debug, Clone, Serialize, Deserialize, Default)]
-#[clap(group = ArgGroup::new("policy").multiple(false))] // Either forget OR retention_rules, but not both
 #[clap(group = ArgGroup::new("retention_rules").multiple(true))] // Allow multiple --keep-* rules
 #[clap(
     about = "Remove snapshots from the repository",
     long_about = "Remove snapshots from the repository and apply retention policies. \
                   When applying retention rules, snapshots are kept as long as there is at \
-                  least one rule that applies."
+                  least one rule that applies. Explicitly named snapshots are removed too, \
+                  unless a retention rule keeps them."
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {
-    /// Forget specific snapshots by their IDs.
-    #[arg(value_parser, value_delimiter = ' ', group = "policy")]
+    /// Forget specific snapshots by their IDs.  May be combined with
+    /// `--keep-*` rules: keep rules take priority, so a named snapshot that
+    /// is still covered by a retention rule is kept (and a warning is
+    /// emitted).
+    #[arg(value_parser, value_delimiter = ' ')]
     pub forget: Vec<String>,
 
     /// Delete the snapshot without staging.
@@ -293,7 +305,7 @@ pub async fn run(
                 tracing::info!(target: "forget", "Post-forget GC requested");
                 if !json_output {
                     ui::cli::log!();
-                    ui::cli::log!("Running garbage collector...");
+                    ui::cli::log!("{}", "Running garbage collector...".bold());
                 }
 
                 let gc_args = commands::cmd_clean::CmdArgs {
@@ -357,10 +369,15 @@ async fn forget_phase(
     snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
     let mut ids_to_keep: IdSet<ID> = IdSet::default();
+    // Human readable explanation of the keep/remove decision, per snapshot.
+    let mut reasons: IdMap<ID, String> = IdMap::default();
+    let mut policy: Vec<String> = Vec::new();
+    // Snapshots named on the command line that a retention rule saved anyway.
+    let mut retained_by_policy: Vec<(ID, String)> = Vec::new();
 
+    let mut forget_ids: IdSet<ID> = IdSet::default();
     if !args.forget.is_empty() {
         tracing::info!(target: "forget", "Forgetting specific snapshots: {:?}", args.forget);
-        let mut forget_ids = IdSet::default();
         let mut resolved_forgets: Vec<(&String, ID)> = Vec::new();
         for prefix in &args.forget {
             let (id, _) = repo
@@ -380,52 +397,87 @@ async fn forget_phase(
                 )));
             }
         }
-        for e in &snapshots_sorted {
-            if !forget_ids.contains(&e.id) {
-                ids_to_keep.insert(e.id);
-            }
-        }
+        policy.push(format!(
+            "forget ({})",
+            utils::format_count(forget_ids.len(), "snapshot", "snapshots")
+        ));
+    }
+
+    tracing::info!(target: "forget", "Applying retention rules");
+    let mut retention_rules = Vec::new();
+    if let Some(n) = args.keep_last {
+        retention_rules.push(RetentionRule::KeepLast(n));
+    }
+    if let Some(d) = args.keep_within {
+        retention_rules.push(RetentionRule::KeepWithin(d));
+    }
+    if let Some(n) = args.keep_yearly {
+        retention_rules.push(RetentionRule::KeepYearly(n));
+    }
+    if let Some(n) = args.keep_monthly {
+        retention_rules.push(RetentionRule::KeepMonthly(n));
+    }
+    if let Some(n) = args.keep_weekly {
+        retention_rules.push(RetentionRule::KeepWeekly(n));
+    }
+    if let Some(n) = args.keep_daily {
+        retention_rules.push(RetentionRule::KeepDaily(n));
+    }
+    if let Some(n) = args.keep_hourly {
+        retention_rules.push(RetentionRule::KeepHourly(n));
+    }
+    if let Some(tags_str) = &args.keep_tags {
+        let keep_tags = parse_tags(Some(tags_str));
+        retention_rules.push(RetentionRule::KeepTags(keep_tags));
+    }
+
+    if retention_rules.is_empty() && forget_ids.is_empty() {
+        return Err(ForgetError::InvalidRule(
+            "at least one retention rule or explicit snapshot ID must be specified.".to_string(),
+        ));
+    }
+
+    policy.extend(retention_rules.iter().map(RetentionRule::label));
+    if let Some(min) = args.keep_min {
+        policy.push(format!("min({min})"));
+    }
+
+    // Without retention rules only the explicitly named snapshots are removed.
+    let keep_reasons = if retention_rules.is_empty() {
+        IdMap::default()
     } else {
-        tracing::info!(target: "forget", "Applying retention rules");
-        let mut retention_rules = Vec::new();
-        if let Some(n) = args.keep_last {
-            retention_rules.push(RetentionRule::KeepLast(n));
-        }
-        if let Some(d) = args.keep_within {
-            retention_rules.push(RetentionRule::KeepWithin(d));
-        }
-        if let Some(n) = args.keep_yearly {
-            retention_rules.push(RetentionRule::KeepYearly(n));
-        }
-        if let Some(n) = args.keep_monthly {
-            retention_rules.push(RetentionRule::KeepMonthly(n));
-        }
-        if let Some(n) = args.keep_weekly {
-            retention_rules.push(RetentionRule::KeepWeekly(n));
-        }
-        if let Some(n) = args.keep_daily {
-            retention_rules.push(RetentionRule::KeepDaily(n));
-        }
-        if let Some(n) = args.keep_hourly {
-            retention_rules.push(RetentionRule::KeepHourly(n));
-        }
-        if let Some(tags_str) = &args.keep_tags {
-            let keep_tags = parse_tags(Some(tags_str));
-            retention_rules.push(RetentionRule::KeepTags(keep_tags));
-        }
-
-        if retention_rules.is_empty() {
-            return Err(ForgetError::InvalidRule(
-                "at least one retention rule must be used.".to_string(),
-            ));
-        }
-
-        ids_to_keep = apply_retention_rules(
+        apply_retention_rules_with_reasons(
             &snapshots_sorted.iter().collect::<Vec<_>>(),
             &retention_rules,
             args.keep_min,
             Local::now(),
-        );
+        )
+    };
+
+    for entry in &snapshots_sorted {
+        // Keep rules win over an explicit removal request.
+        if let Some(rules) = keep_reasons.get(&entry.id) {
+            let label = rules
+                .iter()
+                .map(|&r| match r {
+                    KeepReason::Rule(i) => retention_rules[i].name(),
+                    KeepReason::KeepMin => "keep-min",
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            ids_to_keep.insert(entry.id);
+            if forget_ids.contains(&entry.id) {
+                retained_by_policy.push((entry.id, label.clone()));
+            }
+            reasons.insert(entry.id, label);
+        } else if forget_ids.contains(&entry.id) {
+            reasons.insert(entry.id, "selected".to_string());
+        } else if retention_rules.is_empty() {
+            ids_to_keep.insert(entry.id);
+            reasons.insert(entry.id, "not selected".to_string());
+        } else {
+            reasons.insert(entry.id, "no rule matched".to_string());
+        }
     }
 
     let mut kept_snapshots = Vec::new();
@@ -474,25 +526,72 @@ async fn forget_phase(
         ui::json::emit_static(
             FORGET_MSG,
             &MsgForget {
-                kept: kept_snapshots,
-                removed: removed_snapshots,
+                policy: &policy,
+                kept: with_reasons(&kept_snapshots, &reasons),
+                removed: with_reasons(&removed_snapshots, &reasons),
             },
         );
     } else {
         ui::cli::log!();
-        ui::cli::log!("{}", "Snapshots to keep:".bold());
-        log_snapshots_compact(&kept_snapshots);
-
-        if !removed_snapshots.is_empty() {
-            ui::cli::log!("{}", "Snapshots to remove:".bold());
-            log_snapshots_compact(&removed_snapshots);
+        if dry_run {
+            ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+            ui::cli::log!();
         }
 
-        let count_str = utils::format_count(removed_snapshots.len(), "snapshot", "snapshots");
-        if dry_run {
-            ui::cli::log!("This would remove {}", count_str);
+        if kept_snapshots.is_empty() && removed_snapshots.is_empty() {
+            ui::cli::log!("No snapshots matched the given filters.");
         } else {
-            ui::cli::log!("Removed {}", count_str);
+            ui::cli::log!("{} {}", "Policy:".bold(), policy.join(", "));
+            ui::cli::log!();
+
+            for (id, rules) in &retained_by_policy {
+                ui::cli::warning!(
+                    "snapshot {} was selected for removal but is retained by: {rules}",
+                    id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
+                );
+            }
+            if !retained_by_policy.is_empty() {
+                ui::cli::log!();
+            }
+
+            if !kept_snapshots.is_empty() {
+                ui::cli::log!(
+                    "{}",
+                    format!("Snapshots to keep ({}):", kept_snapshots.len()).bold()
+                );
+                log_snapshots_table(&kept_snapshots, Some(&reasons));
+            }
+
+            if !removed_snapshots.is_empty() {
+                ui::cli::log!(
+                    "{}",
+                    format!("Snapshots to remove ({}):", removed_snapshots.len()).bold()
+                );
+                log_snapshots_table(&removed_snapshots, Some(&reasons));
+            }
+
+            let count_str = utils::format_count(removed_snapshots.len(), "snapshot", "snapshots");
+            if removed_snapshots.is_empty() {
+                ui::cli::log!("Nothing to forget: every snapshot is covered by the policy.");
+            } else if dry_run {
+                ui::cli::log!("This would remove {}.", count_str.bold());
+            } else {
+                ui::cli::log!("Removed {}.", count_str.bold());
+                if args.force {
+                    ui::cli::log!("Snapshots were deleted permanently.");
+                } else {
+                    ui::cli::log!(
+                        "Snapshots were staged for deletion; restore them with {}.",
+                        "mapache recall".bold()
+                    );
+                }
+                if !args.run_gc {
+                    ui::cli::log!(
+                        "Run {} to reclaim the space they used.",
+                        "mapache clean".bold()
+                    );
+                }
+            }
         }
     }
 
@@ -505,9 +604,30 @@ async fn forget_phase(
 }
 
 #[derive(Serialize)]
-struct MsgForget {
-    kept: SnapshotEntryList,
-    removed: SnapshotEntryList,
+struct MsgForgetEntry<'a> {
+    #[serde(flatten)]
+    entry: &'a SnapshotEntry,
+    reason: &'a str,
+}
+
+#[derive(Serialize)]
+struct MsgForget<'a> {
+    policy: &'a [String],
+    kept: Vec<MsgForgetEntry<'a>>,
+    removed: Vec<MsgForgetEntry<'a>>,
+}
+
+fn with_reasons<'a>(
+    entries: &'a [SnapshotEntry],
+    reasons: &'a IdMap<ID, String>,
+) -> Vec<MsgForgetEntry<'a>> {
+    entries
+        .iter()
+        .map(|entry| MsgForgetEntry {
+            entry,
+            reason: reasons.get(&entry.id).map(String::as_str).unwrap_or(""),
+        })
+        .collect()
 }
 
 #[cfg(test)]

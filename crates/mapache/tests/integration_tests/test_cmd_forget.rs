@@ -3,7 +3,7 @@
 mod tests {
     use anyhow::Result;
 
-    use mapache::{repository::repo::SNAPSHOTS_DIR, utils};
+    use mapache::{commands::cmd_forget, repository::repo::SNAPSHOTS_DIR, utils};
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext},
@@ -82,6 +82,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forget_explicit_id_combines_with_retention_rules() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        for tag in ["tag1", "tag2"] {
+            ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+                .tags(tag.to_string())
+                .run(&ctx.global)
+                .await?;
+        }
+
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
+        let ids = ctx.get_snapshot_ids()?;
+
+        // Naming a snapshot must not discard the retention rules: `--keep-last 1`
+        // still applies, and it wins over the explicit request for the snapshot
+        // it covers. The other snapshot is dropped because no rule matches it.
+        ctx.forget_builder()
+            .forget(ids.clone())
+            .keep_last(1)
+            .force(true)
+            .run(&ctx.global)
+            .await?;
+
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_forget_explicit_id_with_keep_tags_preserves_tagged_snapshot() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .tags("important".to_string())
+            .run(&ctx.global)
+            .await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .tags("ephemeral".to_string())
+            .run(&ctx.global)
+            .await?;
+
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
+        let ids = ctx.get_snapshot_ids()?;
+
+        // Name both snapshots for removal, but `--keep-tags important` must
+        // protect the tagged one.  Only the untagged snapshot is removed.
+        let args = cmd_forget::CmdArgs {
+            forget: ids.clone(),
+            keep_tags: Some("important".to_string()),
+            force: true,
+            ..Default::default()
+        };
+        cmd_forget::run(&ctx.global, &args, None).await?;
+
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_forget_no_rules_no_ids_is_error() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .run(&ctx.global)
+            .await?;
+
+        // Forgetting with neither explicit IDs nor retention rules must fail.
+        let err = ctx
+            .forget_builder()
+            .run(&ctx.global)
+            .await
+            .expect_err("forget with no arguments must fail");
+
+        assert!(
+            err.downcast_ref::<cmd_forget::ForgetError>()
+                .is_some_and(|e| matches!(e, cmd_forget::ForgetError::InvalidRule(_))),
+            "expected InvalidRule, got: {err:#}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_forget_explicit_target_excluded_by_host_filter() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
@@ -109,10 +209,10 @@ mod tests {
             .await
             .expect_err("forget must fail when the explicit target is excluded by --host");
 
-        let msg = format!("{err:#}");
         assert!(
-            msg.contains("excluded by the given --host/--tags filters"),
-            "unexpected error: {msg}"
+            err.downcast_ref::<cmd_forget::ForgetError>()
+                .is_some_and(|e| matches!(e, cmd_forget::ForgetError::ForgetFailed(_))),
+            "expected ForgetFailed, got: {err:#}"
         );
 
         // No snapshot was actually forgotten.

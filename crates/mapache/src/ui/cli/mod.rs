@@ -4,13 +4,13 @@ use crate::common::error::{MapacheError, Result};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    common,
+    common::{self, ID},
     repository::{repo::Auth, snapshot::SnapshotEntryList},
     ui::cli::{
         color::Colorize,
         table::{Alignment, Table},
     },
-    utils,
+    utils::{self, collections::IdMap},
 };
 
 pub mod bundle;
@@ -22,21 +22,36 @@ pub mod table;
 
 /// Logs a list of snapshots in the form of a compact table.
 pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
-    let mut table = Table::new_with_alignments(vec![
+    log_snapshots_table(snapshots, None);
+}
+
+/// Logs a list of snapshots as a compact table, optionally appending a column
+/// explaining why each snapshot is kept or removed.
+pub fn log_snapshots_table(snapshots: &SnapshotEntryList, reasons: Option<&IdMap<ID, String>>) {
+    let mut alignments = vec![
         Alignment::Left,
         Alignment::Left,
         Alignment::Left,
         Alignment::Right,
         Alignment::Left,
-    ]);
-
-    table.set_headers(vec![
+    ];
+    let mut headers = vec![
         "ID".bold().to_string(),
         "Date ▼".bold().to_string(),
         "Host".bold().to_string(),
         "Size".bold().to_string(),
         "Tags".bold().to_string(),
-    ]);
+    ];
+    if reasons.is_some() {
+        alignments.push(Alignment::Left);
+        headers.push("Reason".bold().to_string());
+    }
+
+    let mut table = Table::new_with_alignments(alignments);
+    // Columns are already separated by a two-space gutter; extra cell padding
+    // only makes the table wider.
+    table.set_padding(0);
+    table.set_headers(headers);
 
     for entry in snapshots {
         let id_str = entry
@@ -48,7 +63,7 @@ pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
             (id_str + " (dropped)").bold().dimmed().to_string()
         };
 
-        table.add_row(vec![
+        let mut row = vec![
             id_str,
             utils::pretty_print_timestamp(&entry.snapshot.timestamp, None),
             entry.snapshot.hostname.clone().unwrap_or_default(),
@@ -60,7 +75,16 @@ pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-        ]);
+        ];
+        if let Some(reasons) = reasons {
+            row.push(
+                reasons
+                    .get(&entry.id)
+                    .map(|r| r.dimmed().to_string())
+                    .unwrap_or_default(),
+            );
+        }
+        table.add_row(row);
     }
 
     log!("{}", table.render());

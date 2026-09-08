@@ -10,7 +10,10 @@ use chrono::{
 use crate::{
     common::ID,
     repository::snapshot::{Snapshot, SnapshotEntry},
-    utils::collections::IdSet,
+    utils::{
+        self,
+        collections::{IdMap, IdSet},
+    },
 };
 
 // Snapshot retention rules.
@@ -38,6 +41,60 @@ pub enum RetentionRule {
     KeepTags(BTreeSet<String>),
 }
 
+impl RetentionRule {
+    /// Bare rule name, used in the per-snapshot reason column.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RetentionRule::KeepLast(_) => "last",
+            RetentionRule::KeepWithin(_) => "within",
+            RetentionRule::KeepYearly(_) => "yearly",
+            RetentionRule::KeepMonthly(_) => "monthly",
+            RetentionRule::KeepWeekly(_) => "weekly",
+            RetentionRule::KeepDaily(_) => "daily",
+            RetentionRule::KeepHourly(_) => "hourly",
+            RetentionRule::KeepTags(_) => "tags",
+        }
+    }
+
+    /// Rule name including its parameter, used to describe the active policy.
+    pub fn label(&self) -> String {
+        // `usize::MAX` is the parsed form of `--keep-* all`.
+        fn count(n: usize) -> String {
+            if n == usize::MAX {
+                "all".to_string()
+            } else {
+                n.to_string()
+            }
+        }
+
+        let param = match self {
+            RetentionRule::KeepLast(n)
+            | RetentionRule::KeepYearly(n)
+            | RetentionRule::KeepMonthly(n)
+            | RetentionRule::KeepWeekly(n)
+            | RetentionRule::KeepDaily(n)
+            | RetentionRule::KeepHourly(n) => count(*n),
+            RetentionRule::KeepWithin(d) => utils::pretty_print_duration_chrono(*d, 2),
+            RetentionRule::KeepTags(tags) => tags
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
+        };
+
+        format!("{}({param})", self.name())
+    }
+}
+
+/// Why a snapshot survived the retention policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeepReason {
+    /// Index into the `rules` slice passed to [`apply_retention_rules_with_reasons`].
+    Rule(usize),
+    /// Kept only to satisfy `keep_min`.
+    KeepMin,
+}
+
 /// Applies retention rules to a sorted list of snapshots and returns the IDs of snapshots to keep.
 ///
 /// `snapshots_sorted`: A vector of (ID, Snapshot) tuples, sorted in ascending order by timestamp.
@@ -49,7 +106,19 @@ pub fn apply_retention_rules(
     keep_min: Option<usize>,
     now: DateTime<Local>,
 ) -> IdSet<ID> {
-    let mut snapshots_to_keep: IdSet<ID> = IdSet::default();
+    apply_retention_rules_with_reasons(snapshots_sorted, rules, keep_min, now)
+        .into_keys()
+        .collect()
+}
+
+/// Same as [`apply_retention_rules`], but also reports which rules kept each snapshot.
+pub fn apply_retention_rules_with_reasons(
+    snapshots_sorted: &[&SnapshotEntry],
+    rules: &[RetentionRule],
+    keep_min: Option<usize>,
+    now: DateTime<Local>,
+) -> IdMap<ID, Vec<KeepReason>> {
+    let mut snapshots_to_keep: IdMap<ID, Vec<KeepReason>> = IdMap::default();
 
     // The date part of 'now' for reference
     let now_date = now.date_naive();
@@ -93,7 +162,7 @@ pub fn apply_retention_rules(
     }
 
     // Rules are applied sequentially, and the results are unioned.
-    for rule in rules {
+    for (rule_index, rule) in rules.iter().enumerate() {
         let ids_to_keep = match rule {
             RetentionRule::KeepLast(n) => {
                 // Keep the N most recent snapshots, leveraging the reverse iterator on the sorted list.
@@ -203,7 +272,12 @@ pub fn apply_retention_rules(
         };
 
         // Combine the results: if any rule dictates a snapshot must be kept, it is kept.
-        snapshots_to_keep.extend(ids_to_keep);
+        for id in ids_to_keep {
+            snapshots_to_keep
+                .entry(id)
+                .or_default()
+                .push(KeepReason::Rule(rule_index));
+        }
     }
 
     // Ensure minimum number of snapshots are kept
@@ -214,7 +288,9 @@ pub fn apply_retention_rules(
                 if snapshots_to_keep.len() >= target {
                     break;
                 }
-                snapshots_to_keep.insert(entry.id);
+                snapshots_to_keep
+                    .entry(entry.id)
+                    .or_insert_with(|| vec![KeepReason::KeepMin]);
             }
         }
     }
@@ -462,6 +538,55 @@ mod tests {
         let expected_keep_ids = create_expected_ids(&[46, 47, 48, 49]);
 
         assert_eq!(kept_ids, expected_keep_ids);
+    }
+
+    #[test]
+    fn test_reasons_report_every_matching_rule() {
+        let snapshots = create_mock_snapshots();
+        // Snapshot 0 is only reachable through its "archive" tag, snapshot 49 is
+        // the most recent one and is therefore kept by KeepLast as well.
+        let rules = vec![
+            RetentionRule::KeepLast(1),
+            RetentionRule::KeepTags(BTreeSet::from(["archive".to_string()])),
+        ];
+        let reasons = apply_retention_rules_with_reasons(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
+
+        assert_eq!(reasons[&create_id(0)], vec![KeepReason::Rule(1)]);
+        assert_eq!(reasons[&create_id(49)], vec![KeepReason::Rule(0)]);
+        assert!(!reasons.contains_key(&create_id(20)));
+    }
+
+    #[test]
+    fn test_reasons_report_keep_min() {
+        let snapshots = create_mock_snapshots();
+        let rules = vec![RetentionRule::KeepLast(1)];
+        let reasons = apply_retention_rules_with_reasons(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            Some(3),
+            test_now(),
+        );
+
+        assert_eq!(reasons.len(), 3);
+        assert_eq!(reasons[&create_id(49)], vec![KeepReason::Rule(0)]);
+        assert_eq!(reasons[&create_id(48)], vec![KeepReason::KeepMin]);
+        assert_eq!(reasons[&create_id(47)], vec![KeepReason::KeepMin]);
+    }
+
+    #[test]
+    fn test_rule_labels() {
+        assert_eq!(RetentionRule::KeepLast(10).label(), "last(10)");
+        assert_eq!(RetentionRule::KeepLast(10).name(), "last");
+        assert_eq!(RetentionRule::KeepDaily(usize::MAX).label(), "daily(all)");
+        assert_eq!(
+            RetentionRule::KeepTags(BTreeSet::from(["a".to_string(), "b".to_string()])).label(),
+            "tags(a,b)"
+        );
     }
 
     #[test]

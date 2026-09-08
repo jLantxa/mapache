@@ -68,6 +68,24 @@
   and includes unreferenced blob counts (with reclaimable size) and the elapsed
   collection time. The JSON output gains `packs.other_count`, `packs.other_bytes`,
   `snapshots.unreferenced_blobs` and `snapshots.unreferenced_encoded_bytes`.
+- **`mapache forget` combines explicit ids with retention rules**: Naming snapshots
+  on the command line no longer discards the `--keep-*` rules (including those
+  coming from the config file). Both are now applied together, with keep rules
+  taking priority: a snapshot named for removal that is still covered by a
+  retention rule is kept, and a warning reports which rule saved it. The policy
+  line lists the explicit selection as `forget (N snapshots)` alongside the
+  retention rules. Previously the `policy` argument group was declared with a
+  single member and therefore enforced nothing, so `forget <id> --keep-last 1` was
+  accepted and silently ignored the retention rules.
+- **`mapache forget` output**: The keep and remove tables now include a `Reason`
+  column naming the retention rules that kept each snapshot (`last`, `daily`,
+  `tags`, `keep-min`, ...) or why it is removed. The active policy with its
+  parameters is echoed above the tables, section headers show counts, dry runs are
+  marked with a `[DRY RUN]` banner, and the summary points at `mapache recall` and
+  `mapache clean`. The JSON output gains a top-level `policy` array and a `reason`
+  field per entry.
+- **Snapshot tables**: `log` and `forget` tables are rendered without extra cell
+  padding, making them noticeably narrower.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
   instead of flat top-level `m`, `t`, `p` fields. Old v1 keyfiles are read

@@ -17,7 +17,7 @@ use crate::{
     backend::{BackendNode, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ID, error::MapacheError, global::GlobalOpts},
-    fs::{node::NodeType, tree::SerializedNodeStream},
+    fs::tree::SerializedNodeStream,
     repository::{
         packer::Packer,
         repo::{
@@ -85,6 +85,8 @@ struct PacksOutput {
 struct IndicesOutput {
     count: usize,
     total_bytes: u64,
+    ecc_count: usize,
+    ecc_bytes: u64,
     indexed_blobs: u64,
     indexed_raw_bytes: u64,
     indexed_encoded_bytes: u64,
@@ -94,6 +96,8 @@ struct IndicesOutput {
 struct SnapshotsOutput {
     count: usize,
     total_snapshot_bytes: u64,
+    ecc_count: usize,
+    ecc_bytes: u64,
     referenced_blobs: u64,
     referenced_data_blobs: u64,
     referenced_tree_blobs: u64,
@@ -219,16 +223,27 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsEr
     .await
 }
 
+/// Result of scanning a flat repository directory.
+#[derive(Default)]
+struct DirScan {
+    files: FileGroup,
+    ecc: FileGroup,
+}
+
 /// Lists a flat repository directory, deriving file sizes from the listing
 /// itself instead of issuing one `lstat` round-trip per file.
-async fn scan_dir(backend: &dyn StorageBackend, dir: &Path) -> Result<FileGroup, StatsError> {
-    let mut group = FileGroup::default();
+/// ECC sidecars (`.ecc` extension) are classified separately.
+async fn scan_dir(backend: &dyn StorageBackend, dir: &Path) -> Result<DirScan, StatsError> {
+    let mut scan = DirScan::default();
     for node in backend.list_dir(dir).await? {
-        if let BackendNode::File(_, size) = node {
-            group.push(size);
+        if let BackendNode::File(path, size) = node {
+            match path.extension().and_then(|e| e.to_str()) {
+                Some(REPO_ECC_EXTENSION) => scan.ecc.push(size),
+                _ => scan.files.push(size),
+            }
         }
     }
-    Ok(group)
+    Ok(scan)
 }
 
 /// Recursively lists the objects directory once and classifies every entry as a
@@ -354,7 +369,7 @@ async fn stats_repository(
     // Every directory is listed once, concurrently, and sizes come straight from
     // the listing rather than a per-file lstat.
     let backend_ref = backend.as_ref();
-    let (objects, indices, snapshot_files, keys, manifest_size) = tokio::try_join!(
+    let (objects, index_scan, snapshot_scan, keys, manifest_size) = tokio::try_join!(
         scan_objects(backend_ref, repo.objects_path(), args.full),
         scan_dir(backend_ref, repo.index_path()),
         scan_dir(backend_ref, repo.snapshot_path()),
@@ -373,9 +388,11 @@ async fn stats_repository(
         .bytes
         .saturating_add(objects.ecc.bytes)
         .saturating_add(objects.other.bytes)
-        .saturating_add(indices.bytes)
-        .saturating_add(snapshot_files.bytes)
-        .saturating_add(keys.bytes)
+        .saturating_add(index_scan.files.bytes)
+        .saturating_add(index_scan.ecc.bytes)
+        .saturating_add(snapshot_scan.files.bytes)
+        .saturating_add(snapshot_scan.ecc.bytes)
+        .saturating_add(keys.files.bytes)
         .saturating_add(manifest_size);
 
     // Index-level summary (in memory, no I/O).
@@ -436,15 +453,19 @@ async fn stats_repository(
                 footer_dangling_blobs: footers.as_ref().map(|f| f.dangling),
             },
             indices: IndicesOutput {
-                count: indices.count,
-                total_bytes: indices.bytes,
+                count: index_scan.files.count,
+                total_bytes: index_scan.files.bytes,
+                ecc_count: index_scan.ecc.count,
+                ecc_bytes: index_scan.ecc.bytes,
                 indexed_blobs,
                 indexed_raw_bytes: indexed_raw,
                 indexed_encoded_bytes: indexed_encoded,
             },
             snapshots: SnapshotsOutput {
-                count: snapshot_files.count,
-                total_snapshot_bytes: snapshot_files.bytes,
+                count: snapshot_scan.files.count,
+                total_snapshot_bytes: snapshot_scan.files.bytes,
+                ecc_count: snapshot_scan.ecc.count,
+                ecc_bytes: snapshot_scan.ecc.bytes,
                 referenced_blobs: snap_stats.num_referenced_blobs,
                 referenced_data_blobs: snap_stats.num_referenced_data_blobs,
                 referenced_tree_blobs: snap_stats.num_referenced_tree_blobs,
@@ -462,8 +483,8 @@ async fn stats_repository(
                 total_restorable_bytes: snap_stats.total_restorable_bytes,
             },
             keys: KeysOutput {
-                count: keys.count,
-                total_bytes: keys.bytes,
+                count: keys.files.count,
+                total_bytes: keys.files.bytes,
             },
             manifest_bytes: manifest_size,
             total_repo_bytes: total_size,
@@ -518,8 +539,19 @@ async fn stats_repository(
     section("Index");
     row(
         "Index files",
-        count_and_size(indices.count, "file", "files", indices.bytes),
+        count_and_size(
+            index_scan.files.count,
+            "file",
+            "files",
+            index_scan.files.bytes,
+        ),
     );
+    if index_scan.ecc.count > 0 {
+        row(
+            "ECC sidecars",
+            count_and_size(index_scan.ecc.count, "file", "files", index_scan.ecc.bytes),
+        );
+    }
     row(
         "Indexed blobs",
         utils::format_count(indexed_blobs, "blob", "blobs"),
@@ -534,12 +566,23 @@ async fn stats_repository(
     row(
         "Snapshots",
         count_and_size(
-            snapshot_files.count,
+            snapshot_scan.files.count,
             "snapshot",
             "snapshots",
-            snapshot_files.bytes,
+            snapshot_scan.files.bytes,
         ),
     );
+    if snapshot_scan.ecc.count > 0 {
+        row(
+            "ECC sidecars",
+            count_and_size(
+                snapshot_scan.ecc.count,
+                "file",
+                "files",
+                snapshot_scan.ecc.bytes,
+            ),
+        );
+    }
     row(
         "Referenced blobs",
         format!(
@@ -593,7 +636,7 @@ async fn stats_repository(
     section("Keys");
     row(
         "Key files",
-        count_and_size(keys.count, "key", "keys", keys.bytes),
+        count_and_size(keys.files.count, "key", "keys", keys.files.bytes),
     );
 
     ui::cli::log!();
@@ -782,9 +825,7 @@ async fn analyze_snapshot(
             acc.add_blob(true, locator.raw_length as u64, locator.length as u64);
         }
 
-        if let NodeType::File = node.node_type
-            && let Some(blobs) = node.blobs
-        {
+        if let Some(blobs) = node.blobs {
             for blob_id in blobs {
                 if visited.insert(blob_id)
                     && let Some(locator) = index.get(&blob_id).await

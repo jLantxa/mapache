@@ -59,6 +59,15 @@
   Transferring between v1 and v2 repositories could silently mix incompatible
   storage layouts (sync) or leak v2-only features into v1 (copy).
 - **Reduced lock hold time in GC referenced blob scanning**.
+- **`mapache stats` performance**: File sizes are now derived from directory
+  listings instead of one `lstat` per file, the objects directory is scanned
+  once instead of twice, and the repository directories are listed concurrently.
+  Snapshot analysis and `--full` pack footer parsing now run with bounded
+  concurrency.
+- **`mapache stats` output**: The report is now rendered as aligned sections
+  and includes unreferenced blob counts (with reclaimable size) and the elapsed
+  collection time. The JSON output gains `packs.other_count`, `packs.other_bytes`,
+  `snapshots.unreferenced_blobs` and `snapshots.unreferenced_encoded_bytes`.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
   instead of flat top-level `m`, `t`, `p` fields. Old v1 keyfiles are read
@@ -66,6 +75,9 @@
 
 ### Fixed
 
+- **`mapache stats` accounting**: Pack counts and sizes no longer include `.ecc`,
+  `.tmp` and `.dropped` files, and ECC bytes are no longer added twice to the
+  reported total repository size.
 - **Config precedence**: CLI flags now correctly take precedence over config
   file values. Previously any value present in the config silently overrode the
   explicit command-line flag (e.g. config `keep_last=1` won over

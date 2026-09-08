@@ -2,19 +2,22 @@ use std::{io, path::PathBuf, sync::Arc, time::Instant};
 
 use clap::{Args, Subcommand};
 use indicatif::ProgressBar;
+use parking_lot::Mutex;
 
 use crate::{
     backend::{Handle, StorageBackend, WriteContents, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, error::MapacheError},
+    common::{ContentIdType, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError},
     ecc,
     repository::{
         manifest::EccConfig,
         repo::{REPO_ECC_EXTENSION, Repository},
         storage::SecureStorage,
     },
-    ui::{self, default_bar_draw_target, default_progress_style},
-    utils,
+    ui::{
+        self, default_bar_draw_target, default_progress_style, with_custom_elapsed, with_custom_eta,
+    },
+    utils::{self, rate_estimator::RateEstimator},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -365,6 +368,7 @@ async fn regenerate_sidecars(
     let k = config.data_shards as usize;
     let p = config.parity_shards as usize;
 
+    let rate_estimator = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
     let mut total = 0usize;
 
     for file_type in &[
@@ -387,11 +391,16 @@ async fn regenerate_sidecars(
         let bar =
             ProgressBar::with_draw_target(Some(files.len() as u64), default_bar_draw_target())
                 .with_style(
-                default_progress_style()
-                    .template(&format!(
-                        "[{{bar:20.cyan/white}}] Generating ECC sidecars ({label}): {{pos}}/{{len}}"
-                    ))
-                    .expect("invalid progress bar template for ecc"),
+                with_custom_eta(
+                    with_custom_elapsed(
+                        default_progress_style()
+                            .template(&format!(
+                                "[{{percent}} %] [{{bar:20.cyan/white}}] [{{custom_elapsed}}] Generating ECC sidecars ({label}): {{pos}}/{{len}} [ETA: {{custom_eta}}]"
+                            ))
+                            .expect("invalid progress bar template for ecc"),
+                    ),
+                    Arc::clone(&rate_estimator),
+                ),
             );
 
         for path in &files {
@@ -407,6 +416,7 @@ async fn regenerate_sidecars(
 
             if raw_data.is_empty() {
                 bar.inc(1);
+                rate_estimator.lock().observe(bar.position() as f64);
                 continue;
             }
 
@@ -424,6 +434,7 @@ async fn regenerate_sidecars(
 
             if raw_ecc.is_empty() {
                 bar.inc(1);
+                rate_estimator.lock().observe(bar.position() as f64);
                 continue;
             }
 
@@ -452,6 +463,7 @@ async fn regenerate_sidecars(
 
             total += 1;
             bar.inc(1);
+            rate_estimator.lock().observe(bar.position() as f64);
         }
 
         bar.finish_and_clear();

@@ -173,14 +173,14 @@ pub async fn run_with_repo(
         }
         CleanError::ScanFailed(e.to_string())
     })?;
-    tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_packs.len());
+    tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_data_packs.len() + plan.small_tree_packs.len());
 
     let total_packs = plan.total_packs;
     let referenced_blobs = plan.referenced_blobs.len();
     let referenced_packs = plan.referenced_packs.len();
     let unused_packs = plan.unused_packs.len();
     let obsolete_packs = plan.obsolete_packs.len();
-    let small_packs = plan.small_packs.len();
+    let actionable_small_packs = plan.actionable_small_packs();
     let tolerated_packs = plan.tolerated_packs.len();
 
     if !json_output {
@@ -196,21 +196,23 @@ pub async fn run_with_repo(
             referenced_packs,
             unused_packs,
             obsolete_packs,
-            small_packs,
+            actionable_small_packs,
             tolerated_packs
         );
-        let actionable = unused_packs + obsolete_packs + small_packs;
+        let actionable = unused_packs + obsolete_packs + actionable_small_packs;
         if actionable > 0 {
             ui::cli::log!(
                 "  Action: removing {} unused, repacking {} obsolete + {} small",
                 unused_packs,
                 obsolete_packs,
-                small_packs
+                actionable_small_packs
             );
         } else {
             ui::cli::log!("  Action: repository is already clean");
         }
     }
+
+    ui::cli::log!();
 
     let (added_bytes, deleted_bytes) = if args.dry_run {
         if !json_output {
@@ -248,7 +250,7 @@ pub async fn run_with_repo(
                 referenced_packs,
                 unused_packs,
                 obsolete_packs,
-                small_packs,
+                small_packs: actionable_small_packs,
                 tolerated_packs,
                 added_bytes,
                 deleted_bytes,

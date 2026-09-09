@@ -4,33 +4,34 @@
 
 ### Added
 
-- **Repository format v2**: New repository format with compact binary serialization
-  for index files, replacing JSON from v1. Tree blobs use JSON (same as v1) for
-  forward-compatible extensibility. v1 is deprecated and will be removed in a
-  future release.
-- **`mapache migrate`**: New command to convert v1 repositories to v2 format. Handles
-  re-encryption of packs, file re-indexing, and tree re-serialization. Supports
-  `--dry-run` for preview.
+- **Repository format v2**: New repository format with compact binary
+  serialization for index files, replacing JSON from v1. Tree blobs use JSON
+  (same as v1) for forward-compatible extensibility. v1 is deprecated and will
+  be removed in a future release.
+- **`mapache migrate`**: New command to convert v1 repositories to v2 format.
+  Handles re-encryption of packs, file re-indexing, and tree re-serialization.
+  Supports `--dry-run` for preview.
 - **`--format`**: New flag in `init` to select repository format version.
 - **`--compression none`**: Per-blob compression marker in v2 enables storing
   already-compressed content (video, photos, archives) without zstd overhead.
-- **Zero blob deduplication**: New `BlobType::Zero` deduplicates zero-filled regions
-  across snapshots. Zero blobs are stored in pack footers with length=0, consuming
-  no pack space.
-- **ECC (Reed-Solomon error correction)**: Optional parity-only sidecars (`.ecc` files)
-  for pack files, configured via `--ecc <PERCENT>` during `init`. Striped encoding
-  handles multi-gigabyte packs without loading the entire file into memory.
+- **Zero blob deduplication**: New `BlobType::Zero` deduplicates zero-filled
+  regions across snapshots. Zero blobs are stored in pack footers with length=0,
+  consuming no pack space.
+- **ECC (Reed-Solomon error correction)**: Optional parity-only sidecars (`.ecc`
+  files) for pack files, configured via `--ecc <PERCENT>` during `init`. Striped
+  encoding handles multi-gigabyte packs without loading the entire file into
+  memory.
 - **ECC in bundle format v2**: Bundle files now support inline Reed-Solomon ECC
   protecting the blob data section. Enabled with `--ecc <PERCENT>` during bundle
   creation. Corrupted blobs are automatically repaired during extraction.
-- **`mapache ecc`**: New command to manage ECC sidecars after repository creation.
-  Subcommands: `enable`, `disable`, `set-percent`, and `regenerate`. Allows
-  enabling ECC on existing repositories, changing the overhead percentage, or
-  regenerating all sidecars.
+- **`mapache ecc`**: New command to manage ECC sidecars after repository
+  creation. Subcommands: `enable`, `disable`, `set-percent`, and `regenerate`.
+  Allows enabling ECC on existing repositories, changing the overhead
+  percentage, or regenerating all sidecars.
 - **Verify metadata**: `mapache verify` can now check metadata files (index,
   snapshot, etc.) and repair them if ECC is enabled.
-- **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
-  for commands that don't need the full index.
+- **Lazy index loading**: Index files are now loaded on demand, reducing RAM
+  usage for commands that don't need the full index.
 - **KDF calibration**: Added `--calibrate-kdf` to allow calibrating the Argon2id
   parameters for a target run time in the running hardware. Memory is
   auto-detected (10% of RAM, clamped to 32–64 MiB).
@@ -38,17 +39,18 @@
 ### Changed
 
 - **Restorer memory**: Reduced restore memory usage by compacting the per-blob
-  planning data and eliminating redundant allocations in the pack download pipeline.
+  planning data and eliminating redundant allocations in the pack download
+  pipeline.
 - **LRU cache evicts by blob count**: In lazy mode, the cold index LRU cache now
   evicts entries based on total blob count instead of index count. This provides
-  more granular memory control — a single index with 65k blobs costs proportionally
-  more than one with 1k blobs. Configurable via `[runtime] lru-max-blobs` in the
-  TOML config (default: 1,000,000).
-- **AES-GCM-SIV nonce position**: In v2, encrypted blobs place the nonce at the end
-  (`[ct | tag | nonce]`) instead of the start. Eliminates an extra allocation and
-  memory copy during encryption.
-- **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
-  operating on v1 repositories. Consider migrating with `mapache migrate`.
+  more granular memory control — a single index with 65k blobs costs
+  proportionally more than one with 1k blobs. Configurable via
+  `[runtime] lru-max-blobs` in the TOML config (default: 1,000,000).
+- **AES-GCM-SIV nonce position**: In v2, encrypted blobs place the nonce at the
+  end (`[ct | tag | nonce]`) instead of the start. Eliminates an extra
+  allocation and memory copy during encryption.
+- **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn
+  when operating on v1 repositories. Consider migrating with `mapache migrate`.
 - **TUI repository format indicator**: The dashboard top bar now shows the
   repository format version.
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
@@ -64,34 +66,36 @@
   once instead of twice, and the repository directories are listed concurrently.
   Snapshot analysis and `--full` pack footer parsing now run with bounded
   concurrency.
-- **`mapache forget` combines explicit ids with retention rules**: Naming snapshots
-  on the command line no longer discards the `--keep-*` rules (including those
-  coming from the config file). Both are now applied together, with keep rules
-  taking priority: a snapshot named for removal that is still covered by a
-  retention rule is kept, and a warning reports which rule saved it. The policy
-  line lists the explicit selection as `forget (N snapshots)` alongside the
-  retention rules. Previously the `policy` argument group was declared with a
-  single member and therefore enforced nothing, so `forget <id> --keep-last 1` was
-  accepted and silently ignored the retention rules.
+- **`mapache forget` combines explicit ids with retention rules**: Naming
+  snapshots on the command line no longer discards the `--keep-*` rules
+  (including those coming from the config file). Both are now applied together,
+  with keep rules taking priority: a snapshot named for removal that is still
+  covered by a retention rule is kept, and a warning reports which rule saved
+  it. The policy line lists the explicit selection as `forget (N snapshots)`
+  alongside the retention rules. Previously the `policy` argument group was
+  declared with a single member and therefore enforced nothing, so
+  `forget <id> --keep-last 1` was accepted and silently ignored the retention
+  rules.
 - **`mapache forget` output**: The keep and remove tables now include a `Reason`
   column naming the retention rules that kept each snapshot (`last`, `daily`,
   `tags`, `keep-min`, ...) or why it is removed. The active policy with its
-  parameters is echoed above the tables, section headers show counts, dry runs are
-  marked with a `[DRY RUN]` banner, and the summary points at `mapache recall` and
-  `mapache clean`. The JSON output gains a top-level `policy` array and a `reason`
-  field per entry.
+  parameters is echoed above the tables, section headers show counts, dry runs
+  are marked with a `[DRY RUN]` banner, and the summary points at
+  `mapache recall` and `mapache clean`. The JSON output gains a top-level
+  `policy` array and a `reason` field per entry.
 - **Snapshot tables**: `log` and `forget` tables are rendered without extra cell
   padding, making them noticeably narrower.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
-  `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ..., "t": ..., "p": ...}`)
-  instead of flat top-level `m`, `t`, `p` fields. Old v1 keyfiles are read
-  transparently by constructing the `kdf` object from the flat fields.
+  `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ...,
+  "t": ..., "p": ...}`) instead of flat top-level `m`, `t`, `p` fields.
+  Old v1 keyfiles are read transparently by constructing the `kdf` object
+  from the flat fields.
 
 ### Fixed
 
-- **`mapache stats` accounting**: Pack counts and sizes no longer include `.ecc`,
-  `.tmp` and `.dropped` files, and ECC bytes are no longer added twice to the
-  reported total repository size.
+- **`mapache stats` accounting**: Pack counts and sizes no longer include
+  `.ecc`, `.tmp` and `.dropped` files, and ECC bytes are no longer added
+  twice to the reported total repository size.
 - **Config precedence**: CLI flags now correctly take precedence over config
   file values. Previously any value present in the config silently overrode the
   explicit command-line flag (e.g. config `keep_last=1` won over
@@ -174,13 +178,14 @@
 - **FUSE read performance**: Mounted file reads now resolve blob lengths from
   the index and binary-search the first intersecting blob, instead of loading
   and decrypting every blob from the start of the file on each syscall.
-- **Packer worker pool**: Workers that stop early after another worker reports an
-  error now return their packer to the empty pool instead of dropping it, keeping
-  the pool stable and preventing the pack-saver loop from hanging on a starved
-  pool when a pack fails.
-- **`gc` delete failures**: `gc` now counts per-object deletion failures, logs
-  and emits user-visible errors for each one, and fails the run when any object
-  could not be deleted instead of logging "Deleted N" as if everything succeeded.
+- **Packer worker pool**: Workers that stop early after another worker
+  reports an error now return their packer to the empty pool instead of
+  dropping it, keeping the pool stable and preventing the pack-saver loop
+  from hanging on a starved pool when a pack fails.
+- **`gc` delete failures**: `gc` now counts per-object deletion failures,
+  logs and emits user-visible errors for each one, and fails the run when
+  any object could not be deleted instead of logging "Deleted N" as if
+  everything succeeded.
 - **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
   were silently lost when the `Unchanged` path overwrote fresh metadata.
 - **Crash-safe renames**: Fsync the parent directory after every rename so
@@ -202,14 +207,21 @@
 - **SFTP/S3**: Non-blocking connection acquisition; stop retrying permanent
   HTTP 4xx errors. Rate limiter now throttles reads in chunks.
 - **Windows**: expand `~` when `HOME` is not set.
+- **GC small-pack repack**: `clean` no longer merges a single small data pack
+  with a single small tree pack. The pack saver keeps data and tree blobs in
+  separate packers, so repacking one of each type produces the same number of
+  packs with zero savings. Only small packs of the same blob type are merged
+  when there are 2 or more. The "Action" line no longer claims to repack packs
+  that will not be repacked, and the "Packs:" line shows 0 small when no merge
+  is possible.
 
 ## v0.6.0 (2026-07-31)
 
 ### Fixed
 
 - On Windows, files modified within the same second as the previous snapshot
-  were misclassified as unchanged, causing stale data on restore with `--verify`.
-  Fixed by using exact timestamp comparison in the archiver.
+  were misclassified as unchanged, causing stale data on restore with
+  `--verify`. Fixed by using exact timestamp comparison in the archiver.
 - Using `--keep-yearly all` (and `--keep-monthly`, `--keep-weekly`,
   `--keep-daily`, `--keep-hourly`) deleted all snapshots instead of keeping one
   per period. Fixed by short-circuiting the arithmetic overflow caused by the
@@ -360,9 +372,10 @@
 
 ### Fixes
 
-- **SFTP Backend**: Improved error reporting in the SFTP backend to show the full
-  cause chain, making it easier to diagnose authentication and connection
-  failures. Fixed a bug where some authentication errors were partially swallowed.
+- **SFTP Backend**: Improved error reporting in the SFTP backend to show the
+  full cause chain, making it easier to diagnose authentication and connection
+  failures. Fixed a bug where some authentication errors were partially
+  swallowed.
 - **S3 Backend**: Fixed a bug where paths in the S3 backend were incorrectly
   joined, potentially bypassing the prefix configuration.
 
@@ -434,7 +447,8 @@
 - **Improved Metadata Restoration**: File and directory metadata are now
   restored in a separate bottom-up pass to ensure consistency.
 - **Environment Variables**: Added support for `MAPACHE_REPOSITORY`,
-  `MAPACHE_USERNAME`, and `MAPACHE_PASSWORD` to simplify automation and scripting.
+  `MAPACHE_USERNAME`, and `MAPACHE_PASSWORD` to simplify automation and
+  scripting.
 - **Enhanced CLI UI**: Improved error and warning messages with clearer
   formatting and better cross-platform color support.
 - Added `--exclude-file` and `--include-file` to read include and exclude paths
@@ -654,8 +668,8 @@
 
 - Added a `--no-preserve-root` option to `mapache restore`.
   This option is only used together with `--delete`. By default, `--delete` does
-  not delete any node in the root directory as a protection. `--no-preserve-root`
-  explicitly overrides this protection.
+  not delete any node in the root directory as a protection.
+  `--no-preserve-root` explicitly overrides this protection.
 - Added a `--no-repack` option to `mapache clean` to disable repacking during
   garbage collection. Internally, this is equivalent to setting the tolerance
   to 100 %.

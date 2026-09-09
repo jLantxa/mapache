@@ -82,7 +82,8 @@ pub struct Plan {
     pub referenced_blobs: IdSet<ID>, // Blobs referenced by existing snapshots
     pub referenced_packs: IdSet<ID>, // Packs referenced by the referenced blobs
     pub obsolete_packs: IdSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
-    pub small_packs: IdSet<ID>,    // Small packs marked to be repacked (to merge)
+    pub small_data_packs: IdSet<ID>, // Small data packs marked to be repacked (to merge)
+    pub small_tree_packs: IdSet<ID>, // Small tree packs marked to be repacked (to merge)
     pub tolerated_packs: IdSet<ID>, // Packs containing garbage, but keep due to tolerance
     pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
     pub index_ids: IdSet<ID>,      // Current index IDs
@@ -90,6 +91,23 @@ pub struct Plan {
     /// Flag that signals GC to abort at the next safe checkpoint. Checked
     /// between phases only, so an interrupted GC leaves on-disk state intact.
     pub shutdown_signal: Arc<AtomicBool>,
+}
+
+impl Plan {
+    /// Number of small packs that will actually be repacked (groups of 2+ of the same type).
+    pub fn actionable_small_packs(&self) -> usize {
+        let data = if self.small_data_packs.len() > 1 {
+            self.small_data_packs.len()
+        } else {
+            0
+        };
+        let tree = if self.small_tree_packs.len() > 1 {
+            self.small_tree_packs.len()
+        } else {
+            0
+        };
+        data + tree
+    }
 }
 
 /// Bails out if the shutdown signal has been raised.
@@ -141,7 +159,8 @@ pub async fn scan(
         tolerated_packs: IdSet::default(),
         unused_packs,
         index_ids: repo.index().ids(),
-        small_packs: IdSet::default(),
+        small_data_packs: IdSet::default(),
+        small_tree_packs: IdSet::default(),
         object_dropped,
         shutdown_signal: shutdown_signal.clone(),
     };
@@ -149,6 +168,7 @@ pub async fn scan(
     // Count garbage bytes in each pack
     let mut kept_pack_size: IdMap<ID, u64> = IdMap::default();
     let mut pack_garbage: IdMap<ID, u64> = IdMap::default();
+    let mut pack_type: IdMap<ID, common::BlobType> = IdMap::default();
 
     // Find obsolete packs and blobs in index
     reporter.start_task(GcTaskKind::FindingObsoleteBlobs, None);
@@ -157,6 +177,9 @@ pub async fn scan(
     repo.index()
         .for_each_id(|id, locator| {
             *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
+            pack_type
+                .entry(locator.pack_id)
+                .or_insert(locator.blob_type);
 
             if !plan.referenced_blobs.contains(id) {
                 pack_garbage
@@ -176,7 +199,14 @@ pub async fn scan(
     let min_pack_size_factor = defaults::runtime().min_pack_size_factor;
     for (pack_id, size) in kept_pack_size {
         if (size as f64 / current_pack_size as f64) < min_pack_size_factor as f64 {
-            plan.small_packs.insert(pack_id);
+            match pack_type.get(&pack_id) {
+                Some(common::BlobType::Tree) => {
+                    plan.small_tree_packs.insert(pack_id);
+                }
+                _ => {
+                    plan.small_data_packs.insert(pack_id);
+                }
+            };
         }
     }
 
@@ -206,7 +236,7 @@ pub async fn scan(
         reporter.update_task(GcTaskKind::CheckingGarbageLevels, checked_packs_count);
     }
     reporter.finish_task(GcTaskKind::CheckingGarbageLevels);
-    tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small, {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
+    tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small ({} data, {} tree), {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_data_packs.len() + plan.small_tree_packs.len(), plan.small_data_packs.len(), plan.small_tree_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
 
     Ok(plan)
 }
@@ -299,9 +329,13 @@ impl Plan {
         )
         .await?;
 
-        if self.small_packs.len() > 1 {
-            tracing::debug!(target: "gc", "Marking {} small packs as obsolete for repacking", self.small_packs.len());
-            self.obsolete_packs.extend(self.small_packs.drain());
+        if self.small_data_packs.len() > 1 {
+            tracing::debug!(target: "gc", "Marking {} small data packs as obsolete for repacking", self.small_data_packs.len());
+            self.obsolete_packs.extend(self.small_data_packs.drain());
+        }
+        if self.small_tree_packs.len() > 1 {
+            tracing::debug!(target: "gc", "Marking {} small tree packs as obsolete for repacking", self.small_tree_packs.len());
+            self.obsolete_packs.extend(self.small_tree_packs.drain());
         }
 
         gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.0.clone()).await?;
@@ -956,13 +990,15 @@ mod tests {
         // Blobs b and c are orphaned. They reside in Pack 1.
         // Pack 1 should be removed, Pack 2 should stay.
 
-        // We expect exactly 4 removal operations:
+        // We expect exactly 3 removal operations:
         // - 2 index files (the old index files being replaced/cleaned up)
-        // - 2 object files (orphaned packs or similar, depends on repository structure)
+        // - 1 object file (Pack 1 containing orphaned blobs B and C)
+        // Pack 2 (small tree, no garbage) is NOT repacked because there is
+        // only one small tree pack — merging a single pack gains nothing.
         assert_eq!(
             removed_paths.len(),
-            4,
-            "Expected exactly 4 removals, got: {:?}",
+            3,
+            "Expected exactly 3 removals, got: {:?}",
             removed_paths
         );
 

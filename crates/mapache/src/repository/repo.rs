@@ -1479,9 +1479,9 @@ impl Repository {
         self.master_index.clear();
 
         let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
-        let hot_count = match index_mode {
-            IndexMode::Eager => usize::MAX, // Load all
-            IndexMode::Lazy(_) => common::defaults::INDEX_HOT_COUNT,
+        let budget = match index_mode {
+            IndexMode::Eager => u64::MAX, // Load all
+            IndexMode::Lazy(budget) => budget,
         };
 
         let indices = stream::iter(files)
@@ -1536,16 +1536,22 @@ impl Repository {
 
         let mut num_hot = 0;
         let mut num_cold = 0;
-        let total_indices: usize = indices
-            .iter()
-            .filter(|r| r.as_ref().is_ok_and(|o| o.is_some()))
-            .count();
+        let mut resident_blobs: u64 = 0;
 
-        for (i, res) in indices.into_iter().enumerate() {
+        // Process newest index files first so the most recent ones stay hot;
+        // under a blob budget the oldest indices fall back to cold metadata.
+        // At least one index is always loaded hot (its own per-index blob limit
+        // may exceed a small budget; `enforce_blob_budget` accepts that single
+        // oversized index resident).
+        for (i, res) in indices.into_iter().rev().enumerate() {
             if let Some((index, index_file, file_id)) = res? {
-                if i >= total_indices.saturating_sub(hot_count) {
+                let index_blobs = index.num_blobs() as u64;
+                let is_newest = i == 0;
+                let fits = resident_blobs.saturating_add(index_blobs) <= budget;
+                if is_newest || fits {
                     // Hot: load fully into RAM
                     self.master_index.add_index(index);
+                    resident_blobs = resident_blobs.saturating_add(index_blobs);
                     num_hot += 1;
                 } else {
                     // Cold: only store metadata for lazy loading

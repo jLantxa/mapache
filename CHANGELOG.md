@@ -41,11 +41,14 @@
 - **Restorer memory**: Reduced restore memory usage by compacting the per-blob
   planning data and eliminating redundant allocations in the pack download
   pipeline.
-- **LRU cache evicts by blob count**: In lazy mode, the cold index LRU cache now
-  evicts entries based on total blob count instead of index count. This provides
-  more granular memory control — a single index with 65k blobs costs
-  proportionally more than one with 1k blobs. Configurable via
-  `[runtime] lru-max-blobs` in the TOML config (default: 1,000,000).
+- **Lazy index eviction by blob budget**: In lazy mode, the resident (hot)
+  index pool is bounded by a soft blob budget instead of a fixed index count.
+  The least-recently-used resident index is evicted and fully unloaded from RAM
+  (only its lightweight metadata is kept) each time the pool exceeds the budget,
+  and at least one index is always kept resident even when a single index is
+  larger than the budget. Evicted indices are re-loaded from disk on the next
+  access. Configurable via `[runtime] lru-max-blobs` in the TOML config
+  (default: 1,000,000).
 - **AES-GCM-SIV nonce position**: In v2, encrypted blobs place the nonce at the
   end (`[ct | tag | nonce]`) instead of the start. Eliminates an extra
   allocation and memory copy during encryption.

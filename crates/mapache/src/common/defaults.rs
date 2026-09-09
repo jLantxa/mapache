@@ -27,11 +27,9 @@ pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const BLOBS_PER_INDEX_FILE: usize = 65535;
 
-/// Number of most recent index files to keep fully loaded in RAM (hot indices).
-pub(crate) const INDEX_HOT_COUNT: usize = 8;
-
-/// Maximum total blob count to keep in the LRU cache (lazy mode).
-/// Each loaded index contributes its blob count; eviction happens by weight, not index count.
+/// Maximum total blob count to keep resident in the hot pool (lazy mode).
+/// Each loaded index contributes its blob count; eviction happens by
+/// least-recently-used index, not index count.
 pub const DEFAULT_LRU_MAX_BLOBS: u64 = 1_000_000;
 
 /// Default index loading mode: eager (all in RAM, fastest lookups).

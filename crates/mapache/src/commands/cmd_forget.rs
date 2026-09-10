@@ -572,7 +572,7 @@ async fn forget_phase(
 
             let count_str = utils::format_count(removed_snapshots.len(), "snapshot", "snapshots");
             if removed_snapshots.is_empty() {
-                ui::cli::log!("Nothing to forget: every snapshot is covered by the policy.");
+                ui::cli::log!("Nothing to forget.");
             } else if dry_run {
                 ui::cli::log!("This would remove {}.", count_str.bold());
             } else {

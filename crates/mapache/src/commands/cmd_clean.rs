@@ -216,7 +216,7 @@ pub async fn run_with_repo(
 
     let (added_bytes, deleted_bytes) = if args.dry_run {
         if !json_output {
-            ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
+            ui::cli::log!("{}GC not executed", super::dry_run_prefix(true));
         }
         tracing::info!(target: "clean", "Dry run enabled. GC not executed.");
         (0, 0)

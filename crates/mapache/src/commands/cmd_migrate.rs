@@ -51,7 +51,15 @@ impl ToExitCode for MigrateError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Migrate repository format from v1 to v2 (binary index, nonce at end)")]
+#[clap(
+    about = "Migrate repository format from v1 to v2 (binary index, nonce at end)",
+    long_about = "Migrate a v1 repository to the v2 format.\n\n\
+        Converts the JSON index to the compact binary format, moves the\n\
+        encryption nonce from the start to the end of each message, and can\n\
+        re-encrypt existing data. Use --dry-run to preview what would change\n\
+        without writing anything. Migration of an already-v2 repository is a\n\
+        no-op. Repositories are still opened and verified after migration."
+)]
 pub struct CmdArgs {
     /// Dry run
     #[clap(long, default_value_t = false)]

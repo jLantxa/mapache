@@ -38,7 +38,13 @@ impl ToExitCode for RebuildIndexError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Rebuild the index by scanning all existing packs")]
+#[clap(
+    about = "Rebuild the index by scanning all existing packs",
+    long_about = "Rebuild the index from scratch by scanning every pack in the\n\
+        repository. This is useful to recover from a lost or corrupted index\n\
+        when the pack files themselves are still intact. Use --dry-run to\n\
+        report what would be indexed without making changes."
+)]
 pub struct CmdArgs {
     /// Dry run
     #[clap(long, default_value_t = false)]

@@ -285,7 +285,7 @@
   skipped, preserving existing bytes on disk. This significantly speeds up
   repeated restores of large files where only a fraction of the content changed.
 - **Restorer**: Ordered metadata restoration as chown, xattrs, chmod, mtime;
-  batched file restoration with a streaming pass;verify hardlink content and
+  batched file restoration with a streaming pass; verify hardlink content and
   fall back to copy on failure.
 
 ## v0.5.2 (2026-07-08)
@@ -352,7 +352,7 @@
   budget, preventing excessive memory consumption during garbage collection
   with large packs.
 
-### Fixes
+### Fixed
 
 - **Exit code on interrupt**: `snapshot`, `restore`, `sync`, `verify`, `forget`,
   `rechunk`, `amend`, and `rebuild-index` now all exit with code `130` (the
@@ -373,7 +373,7 @@
   Maintained performance by avoiding zero-initialization while ensuring
   Rust's safety guarantees.
 
-### Fixes
+### Fixed
 
 - **SFTP Backend**: Improved error reporting in the SFTP backend to show the
   full cause chain, making it easier to diagnose authentication and connection
@@ -384,7 +384,7 @@
 
 ## v0.4.1 (2026-05-31)
 
-### Fixes
+### Fixed
 
 - **Restorer Performance**: Fixed a regression introduced in v0.4.0 where
   parallel file writes within pack segments were lost, degrading restore speed.
@@ -395,14 +395,14 @@
   `--strategy newer` or `--strategy skip`. Skipped bytes are now correctly
   reported as processed.
 
-### Changes
+### Changed
 
 - **Archiver Performance**: Overlap I/O and content-defined chunking with
   compression and encryption for improved snapshot throughput.
 
 ## v0.4.0 (2026-05-28)
 
-### Changes
+### Changed
 
 - **Experimental TUI**: Introduced a modular Terminal User Interface for
   interactive repository management. Includes a dashboard, snapshot creation,
@@ -439,7 +439,7 @@
 
 ## v0.3.0 (2026-05-05)
 
-### Changes
+### Changed
 
 - **Multi-platform Build System**: Overhauled the build system to support
   static, cross-platform releases for Linux (x64/ARM), Windows, and macOS.
@@ -460,7 +460,7 @@
   added for the `init`, `snapshot`, `restore`, `verify`, `clean`, `sync`,
   `forget` and `ls` commands.
 
-### Fixes
+### Fixed
 
 - Make sure that locks are always released under normal termination.
 - Update dependencies patching some vulnerabilities.
@@ -478,11 +478,11 @@
 
 ## v0.2.3 (2026-04-01)
 
-### Fixes
+### Fixed
 
 - Minor optimizations and cosmetic fixes.
 
-### Changes
+### Changed
 
 - Improved `mapache sync`.
 - Allow snapshots with paths from multiple logical units (C:, D:, etc.).
@@ -494,11 +494,11 @@
 
 ## v0.2.2 (2026-03-22)
 
-### Fixes
+### Fixed
 
 - `mapache restore` can now be interrupted again.
 
-### Changes
+### Changed
 
 - Added a rate limiter for all backends. The upload and download rates can now
   be selected with the `--limit-upload` and `--limit-download` options.
@@ -509,7 +509,7 @@
 
 ## v0.2.1 (2026-03-08)
 
-### Fixes
+### Fixed
 
 - The LockHandle will no longer try to refresh or delete a lock in a dry
   backend as there is no lock file to delete, sparing some operations and
@@ -519,7 +519,7 @@
 - Disable permission checking in mounted snapshot. This would prevent the user
   from accessing snapshot nodes if the UID and GID differ from the user's.
 
-### Changes
+### Changed
 
 - When `mapache snapshot` cannot open a directory or file, it will print a
   warning but still continue with the snapshot.
@@ -529,7 +529,7 @@
 
 ## v0.2.0 (2026-03-02)
 
-### Fixes
+### Fixed
 
 - **Critical**: Fixed a bug in `ChunkStream` where it would fail to grow its
   buffer before reading, resulting in sub-optimal chunking and degraded
@@ -542,7 +542,7 @@
 - Fixed a bug that created the repository backend root before authenticating
   the user in the init command.
 
-### Changes
+### Changed
 
 - **Async Refactor**: The entire core has been refactored to use `tokio` for
   asynchronous I/O and concurrency. This improves performance and provides
@@ -565,7 +565,7 @@
 
 ## v0.1.8 (2026-02-05)
 
-### Changes
+### Changed
 
 - `mapache verify` now doesn't use the local cache by default. Added a
   `--with-cache` option to enable it.
@@ -579,7 +579,7 @@
 
 ## v0.1.7 (2026-01-29)
 
-### Fixes
+### Fixed
 
 - `mapache verify` is now very explicit about data corruption in the pack files.
   Before, it would log an error when a corrupt pack is found, but the logical
@@ -588,16 +588,16 @@
 - Fixed an inconsistency in the number of reported processed items in
   incremental snapshots.
 
-### Changes
+### Changed
 
-- `--read-concurency` and `--write-concurrency` in `mapache snapshot` are now
+- `--read-concurrency` and `--write-concurrency` in `mapache snapshot` are now
   called `--readers` and `--packers`.
 - `mapache find` now accepts patterns and allows finding in a selected snapshot.
 - Minor changes to the snapshot report.
 
 ## v0.1.6 (2026-01-26)
 
-### Changes
+### Changed
 
 - Improved error messages.
 - Better progress logs in `mapache sync`.
@@ -605,7 +605,7 @@
   performance.
 - Throttle UI events to improve responsiveness.
 
-### Fixes
+### Fixed
 
 - Fixed snapshot summary data missing in the snapshot metadata.
 - Fixed abbreviation of Windows paths appending a redundant separator after the
@@ -613,7 +613,7 @@
 
 ## v0.1.5 (2026-01-24)
 
-### Changes
+### Changed
 
 - Added an aggregator stage to the Archiver pipeline to receive blobs from the
   processor threads and pack them in parallel.
@@ -629,18 +629,18 @@
 
 ## v0.1.4 (2026-01-16)
 
-### Changes
+### Changed
 
 - Optimized the `verify` command massively. Removed unnecessary duplicate checks
   and parallelize verification of packs.
 
-### Fixes
+### Fixed
 
 - Fixed size reported by `rebuild-index`.
 
 ## v0.1.3 (2026-01-15)
 
-### Changes
+### Changed
 
 - Concurrency: Added a global `--retry-lock` to setup a timeout to retry
   acquiring a lock if the repository is already locked. No retries are attempted
@@ -653,7 +653,7 @@
 
 ## v0.1.2 (2026-01-11)
 
-### Changes
+### Changed
 
 - Added a `find` command to find files and directories in the repository.
 - Added a `--metadata-only` to `mapache mount` to mount snapshots with metadata
@@ -667,7 +667,7 @@
 
 ## v0.1.1 (2025-12-18)
 
-### Changes
+### Changed
 
 - Added a `--no-preserve-root` option to `mapache restore`.
   This option is only used together with `--delete`. By default, `--delete` does
@@ -677,13 +677,13 @@
   garbage collection. Internally, this is equivalent to setting the tolerance
   to 100 %.
 
-### Fixes
+### Fixed
 
 - Read-only files can now be renamed and deleted in Windows 10.
 
 ## v0.1.0 (2025-11-27)
 
-### Changes
+### Changed
 
 - Added a `rechunk` command to reprocess all files in all snapshot and rechunk
   them with the current chunker and parameters. The snapshots are rewritten,
@@ -700,21 +700,21 @@
 
 ## v0.1.0-beta.5 (2025-11-14)
 
-### Changes
+### Changed
 
 - Abort snapshot early if a fatal error occurs.
 - Run file system scan concurrently with the snapshot task.
 - Added a new experimental chunker. This chunker is not used by default. To
   enable the new chunker, build mapache with the `custom-chunker` feature.
 
-### Fixes
+### Fixed
 
 - Failing to read a symlink's target is not an error. Mapache stores all the
   metadata it can and continue.
 
 ## v0.1.0-beta.4 (2025-11-01)
 
-### Changes
+### Changed
 
 - Delete all .tmp files from the repository during GC.
 - Best effort metadata restoring. Failing to restore metadata is not an error,
@@ -728,7 +728,7 @@
 - Added a `recall` command to recover 'forgotten' (dropped) snapshots. `mapache
   log` can now also list dropped snapshots.
 
-### Fixes
+### Fixed
 
 - Fixed calculation of file hashes (regression). The hash of a file is
   calculated after the contents are (potentially) encoded.
@@ -738,7 +738,7 @@
 
 ## v0.1.0-beta.3a (2025-10-27)
 
-### Changes
+### Changed
 
 - Support ssh keys for dst backend in `cmd_sync`.
 - Minor optimizations to the Archiver.
@@ -752,7 +752,7 @@
 
 ## v0.1.0-beta.2a (2025-10-12)
 
-### Changes
+### Changed
 
 - Don't emit a warning for the first snapshot.
 - Made FUSE a feature. The `mount` command can be disabled during compilation on
@@ -765,7 +765,7 @@
 - Delete expired logs when acquiring a new lock. Implemented try-and-check to
   detect conflicts.
 
-### Fixes
+### Fixed
 
 - Fail if no source paths are provided as arguments for `cmd_snapshots`.
 - Append ID to snapshot folder in by_date directory in the FUSE mount to
@@ -777,7 +777,7 @@
 
 ## v0.1.0-beta.1 (2025-09-28)
 
-### Fixes
+### Fixed
 
 - Create restore target only once.
 - Don't fail if directory was already restored.
@@ -795,11 +795,11 @@
   deleted.
 - Added a sync command to synchronize a repository in a different backend.
 
-### Changes
+### Changed
 
 - `--resolution` option in `cmd_restore` is now called `--strategy`
 
-### Fixes
+### Fixed
 
 - Report skipped nodes when restoring (increment processed items and bytes
   counters).

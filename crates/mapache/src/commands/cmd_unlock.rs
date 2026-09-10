@@ -27,7 +27,14 @@ impl ToExitCode for UnlockError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Remove existing locks")]
+#[clap(
+    about = "Remove existing locks",
+    long_about = "Remove existing repository locks.\n\n\
+        Locks are acquired by long-running operations to prevent concurrent\n\
+        modification. If a previous operation crashed or was killed, a stale\n\
+        lock can block new commands. Use --force to remove a lock even when it\n\
+        appears to be held by an active process."
+)]
 pub struct CmdArgs {
     #[clap(short, long, default_value_t = false)]
     pub force: bool,

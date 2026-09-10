@@ -100,7 +100,13 @@ pub enum KeySubcommand {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Create and manage keys")]
+#[clap(
+    about = "Create and manage keys",
+    long_about = "Manage the encryption keys of a repository.\n\n\
+        Subcommands: list, add, delete, change-password and export. Keys protect\n\
+        the repository's master key with a password-derived Argon2id key; losing\n\
+        the password and keyfile means losing access to the data."
+)]
 pub struct CmdArgs {
     #[command(subcommand)]
     pub subcommand: KeySubcommand,

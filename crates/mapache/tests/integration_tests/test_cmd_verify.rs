@@ -16,7 +16,7 @@ mod tests {
         },
         repository::{
             manifest::EccConfig,
-            repo::{INDEX_DIR, OBJECTS_DIR, Repository},
+            repo::{INDEX_DIR, OBJECTS_DIR, Repository, SNAPSHOTS_DIR},
         },
     };
 
@@ -358,6 +358,92 @@ mod tests {
             .run(&ctx.global)
             .await
             .context("verify --repair should succeed after ECC repair")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_verify_ecc_metadata_repair() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init repo with ECC enabled (50% overhead).
+        let ecc_config = EccConfig::from_overhead(50);
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
+        let _ = Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            &ctx.auth,
+            None,
+            backend.clone(),
+            ecc_config,
+            false,
+        )
+        .await
+        .context("Failed to init repo with ECC")?;
+
+        // Snapshot some data.
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("file.txt"),
+            backup_data_tmp_path.join("0"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await
+        .context("snapshot failed")?;
+
+        // Verify should pass initially.
+        ctx.verify_builder()
+            .run(&ctx.global)
+            .await
+            .context("initial verify should pass")?;
+
+        // Find a snapshot file (not its .ecc sidecar) and corrupt it.
+        let snapshots_dir = PathBuf::from(SNAPSHOTS_DIR);
+        let entries = read_backend_dir(backend.as_ref(), &snapshots_dir).await?;
+        let mut snapshot_path: Option<PathBuf> = None;
+        for entry in entries {
+            if let BackendNode::File(path, _) = entry {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+                if let Some(name) = name
+                    && !name.ends_with(".ecc")
+                    && !name.ends_with(".tmp")
+                {
+                    snapshot_path = Some(path);
+                    break;
+                }
+            }
+        }
+        let snapshot_path = snapshot_path.context("no snapshot file found")?;
+
+        // Flip a byte in the middle of the snapshot file.
+        let handle = Handle::new(&snapshot_path);
+        let mut data = backend.read(&handle, 0, 0).await?.to_vec();
+        assert!(!data.is_empty(), "snapshot file should not be empty");
+        let mid = data.len() / 2;
+        data[mid] ^= 0xFF;
+        backend.write(&handle, WriteContents::Owned(data)).await?;
+
+        // Verify without repair should fail (metadata bit-rot detected).
+        let result = ctx.verify_builder().run(&ctx.global).await;
+        assert!(
+            result.is_err(),
+            "verify should fail after snapshot file corruption"
+        );
+
+        // Verify with repair should succeed (ECC fixes the metadata file).
+        ctx.verify_builder()
+            .repair(true)
+            .run(&ctx.global)
+            .await
+            .context("verify --repair should succeed after ECC metadata repair")?;
+
+        // The repaired snapshot file must be usable again.
+        ctx.verify_builder()
+            .run(&ctx.global)
+            .await
+            .context("verify should pass after metadata repair")?;
 
         Ok(())
     }

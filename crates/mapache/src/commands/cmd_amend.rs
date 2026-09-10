@@ -58,7 +58,13 @@ impl ToExitCode for AmendError {
 #[clap(group = ArgGroup::new("snapshot_group").multiple(false))]
 #[clap(group = ArgGroup::new("tags_group").multiple(false))]
 #[clap(group = ArgGroup::new("description_group").multiple(false))]
-#[clap(about = "Amend an existing snapshot")]
+#[clap(
+    about = "Amend an existing snapshot",
+    long_about = "Amend an existing snapshot's metadata: tags, description, or exclude paths.\n\n\
+        By default amends the most recent snapshot. Use a snapshot ID to amend a\n\
+        specific one, or --all to apply the changes to every snapshot. The amended\n\
+        snapshot is rewritten; use --keep-old to retain the original."
+)]
 pub struct CmdArgs {
     /// The ID of the snapshot to amend, or 'latest' to amend the most recent snapshot.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest, group = "snapshot_group")]

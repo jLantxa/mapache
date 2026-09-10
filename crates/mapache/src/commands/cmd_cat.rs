@@ -31,7 +31,14 @@ impl ToExitCode for CatError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Print repository objects")]
+#[clap(
+    about = "Print repository objects",
+    long_about = "Print the raw contents of internal repository objects.\n\n\
+        Supported objects: manifest, snapshot:ID, pack:ID, blob:ID, tree:ID,\n\
+        index:ID, key:ID, lock:ID. The output is the decoded (decompressed and\n\
+        decrypted) representation of the object, useful for debugging and\n\
+        inspecting a repository."
+)]
 pub struct CmdArgs {
     /// Object to print:
     /// [manifest|snapshot:ID|pack:ID|blob:ID|tree:ID|index:ID|key:ID|lock:ID].

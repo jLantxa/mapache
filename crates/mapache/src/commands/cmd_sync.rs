@@ -60,7 +60,14 @@ impl ToExitCode for SyncError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Synchronize a repository in a different location")]
+#[clap(
+    about = "Synchronize a repository in a different location",
+    long_about = "Synchronize the current repository with another repository at --target.\n\n\
+        Compares the snapshots present in both repositories and copies the\n\
+        missing data to the target, making it a full replica. Use --delete to\n\
+        also remove files from the target that are not present in the source,\n\
+        and --dry-run to preview the changes without copying anything."
+)]
 pub struct CmdArgs {
     /// Destination path
     #[clap(long = "target", value_parser)]
@@ -602,33 +609,23 @@ async fn diff(
     let mut num_to_copy = 0;
     let mut num_to_delete = 0;
 
-    let mut processed_nodes_count: usize = 0;
     loop {
         match (src_iter.peek(), dst_iter.peek()) {
             (Some(src_node), Some(dst_node)) => match src_node.path().cmp(dst_node.path()) {
                 std::cmp::Ordering::Less => {
-                    to_copy.push(
-                        src_iter
-                            .next()
-                            .expect("src_iter has next (peek returned Some)"),
-                    );
+                    // SAFETY: peek() guarantees next() is Some.
+                    let src = src_iter.next().expect("peek returned Some");
+                    to_copy.push(src);
                     num_to_copy += 1;
                 }
                 std::cmp::Ordering::Greater => {
-                    to_delete.push(
-                        dst_iter
-                            .next()
-                            .expect("dst_iter has next (peek returned Some)"),
-                    );
+                    let dst = dst_iter.next().expect("peek returned Some");
+                    to_delete.push(dst);
                     num_to_delete += 1;
                 }
                 std::cmp::Ordering::Equal => {
-                    let src = src_iter
-                        .next()
-                        .expect("src_iter has next (peek returned Some)");
-                    let dst = dst_iter
-                        .next()
-                        .expect("dst_iter has next (peek returned Some)");
+                    let src = src_iter.next().expect("peek returned Some");
+                    let dst = dst_iter.next().expect("peek returned Some");
                     match (&src, &dst) {
                         (BackendNode::File(_, _), BackendNode::File(_, _)) => {
                             if src != dst {
@@ -650,34 +647,23 @@ async fn diff(
                 }
             },
             (Some(_), None) => {
-                to_copy.push(
-                    src_iter
-                        .next()
-                        .expect("src_iter has next (peek returned Some)"),
-                );
+                let src = src_iter.next().expect("peek returned Some");
+                to_copy.push(src);
                 num_to_copy += 1;
             }
             (None, Some(_)) => {
-                to_delete.push(
-                    dst_iter
-                        .next()
-                        .expect("dst_iter has next (peek returned Some)"),
-                );
+                let dst = dst_iter.next().expect("peek returned Some");
+                to_delete.push(dst);
                 num_to_delete += 1;
             }
             (None, None) => break,
         }
-
-        // Throttle UI updates to once every 100 changes.
-        processed_nodes_count += 1;
-        if processed_nodes_count.is_multiple_of(100) {
-            spinner.set_message(format!(
-                "Calculating differences: {} to copy, {} to delete",
-                num_to_copy, num_to_delete
-            ));
-        }
     }
 
+    spinner.set_message(format!(
+        "Calculating differences: {} to copy, {} to delete",
+        num_to_copy, num_to_delete
+    ));
     to_delete.sort_unstable_by(reverse_cmp);
     spinner.finish_and_clear();
 

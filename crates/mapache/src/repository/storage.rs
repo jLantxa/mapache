@@ -1,7 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use aes_gcm_siv::aead::{AeadInOut, inout::InOutBuf};
-use aes_gcm_siv::{Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
+use aes_gcm_siv::{
+    aead::{AeadInOut, inout::InOutBuf},
+    {Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead},
+};
 use argon2::Argon2;
 use parking_lot::Mutex;
 use zeroize::Zeroizing;
@@ -14,6 +16,33 @@ use crate::{
 
 const AES_GCM_NONCE_LEN: usize = 12;
 const AES_GCM_TAG_LEN: usize = 16;
+
+/// Compress `data` into a pre-allocated buffer using the zstd context.
+///
+/// # Safety
+///
+/// Uses uninitialized memory as a scratch buffer for zstd, which overwrites
+/// all `bound` bytes on success. On error the Vec is dropped without being read.
+#[allow(clippy::uninit_vec)]
+fn compress_to_zstd_buffer(
+    ctx: &mut EncodingContext,
+    data: &[u8],
+    bound: usize,
+) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(bound);
+    // SAFETY: u8 accepts any bit pattern, so uninitialized bytes are valid.
+    // The buffer is immediately handed to zstd, which writes up to `bound`
+    // bytes; on error the Vec is dropped without being read.
+    unsafe {
+        out.set_len(bound);
+    }
+    let n = ctx
+        .compressor
+        .compress_to_buffer(data, &mut out)
+        .map_err(|e| MapacheError::Compression(format!("zstd failed: {e}")))?;
+    out.truncate(n);
+    Ok(out)
+}
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
@@ -87,48 +116,22 @@ impl SecureStorage {
         Ok(EncodingContext::new(compressor))
     }
 
-    #[allow(clippy::uninit_vec)]
     fn transform_into(&self, ctx: Option<&mut EncodingContext>, data: &[u8]) -> Result<Vec<u8>> {
         self.transform_into_inner(ctx, data, self.nonce_at_end())
     }
 
-    #[allow(clippy::uninit_vec)]
     fn transform_into_inner(
         &self,
         ctx: Option<&mut EncodingContext>,
         data: &[u8],
         nonce_at_end: bool,
     ) -> Result<Vec<u8>> {
-        let bound = if ctx.is_some() {
-            zstd::zstd_safe::compress_bound(data.len())
+        let mut out = if let Some(c) = ctx {
+            let bound = zstd::zstd_safe::compress_bound(data.len());
+            compress_to_zstd_buffer(c, data, bound)?
         } else {
-            data.len()
+            data.to_vec()
         };
-
-        let has_cipher = self.cipher.is_some();
-        let overhead = if has_cipher {
-            AES_GCM_TAG_LEN + AES_GCM_NONCE_LEN
-        } else {
-            0
-        };
-        let mut out = Vec::with_capacity(bound + overhead);
-
-        if let Some(c) = ctx {
-            unsafe {
-                // SAFETY: u8 accepts any bit pattern. We set the length to `bound`
-                // to obtain a mutable slice of the reserved capacity without zero-initializing.
-                // This memory is immediately passed to the zstd compressor which
-                // overwrites it. On error, the Vec is dropped.
-                out.set_len(bound);
-            }
-            let n = c
-                .compressor
-                .compress_to_buffer(data, &mut out)
-                .map_err(|e| MapacheError::Compression(format!("zstd failed: {e}")))?;
-            out.truncate(n);
-        } else {
-            out.extend_from_slice(data);
-        }
 
         if let Some(cipher) = &self.cipher {
             // Deterministic nonce derived from the plaintext's BLAKE3 content
@@ -143,7 +146,7 @@ impl SecureStorage {
                 .map_err(|_| {
                     MapacheError::Internal("content hash is shorter than the nonce".to_string())
                 })?;
-            let nonce = Nonce::try_from(&nonce_bytes[..]).expect("nonce length is always 12");
+            let nonce = Nonce::from(nonce_bytes);
             // InOutBuf shares input/output memory — zero-copy in-place encryption.
             // (The nonce-at-start v1 branch below allocates an extra Vec.)
             let tag = cipher
@@ -176,33 +179,13 @@ impl SecureStorage {
     }
 
     /// Compress using a reusable context. Returns owned Vec.
-    #[allow(clippy::uninit_vec)]
     pub(crate) fn compress_managed(
         &self,
         ctx: &mut EncodingContext,
         data: &[u8],
     ) -> Result<Vec<u8>> {
         let bound = zstd::zstd_safe::compress_bound(data.len());
-        let mut out = Vec::with_capacity(bound);
-
-        // SAFETY: u8 accepts any bit pattern. We set the length to `bound` to
-        // obtain a mutable slice of the reserved capacity without zero-initializing.
-        // This memory is immediately passed to the zstd compressor which
-        // overwrites it. On error, the Vec is dropped.
-        unsafe {
-            out.set_len(bound);
-        }
-
-        let n = ctx
-            .compressor
-            .compress_to_buffer(data, &mut out)
-            .map_err(|e| MapacheError::Compression(format!("zstd failed: {e}")))?;
-
-        // SAFETY: `compress_to_buffer` successfully wrote `n` bytes.
-        unsafe {
-            out.set_len(n);
-        }
-        Ok(out)
+        compress_to_zstd_buffer(ctx, data, bound)
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {

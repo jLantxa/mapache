@@ -51,7 +51,14 @@ impl ToExitCode for LsError {
 }
 
 #[derive(Args, Debug)]
-#[clap(about = "List nodes in the repository")]
+#[clap(
+    about = "List nodes in the repository",
+    long_about = "List the contents of a directory inside a snapshot.\n\n\
+        Select the snapshot by ID (or prefix) or use `latest` for the most\n\
+        recent one, and a --path inside it. Use --long for a detailed listing,\n\
+        --recursive to descend into subdirectories, and --human-readable for\n\
+        sized output."
+)]
 pub struct CmdArgs {
     /// Snapshot ID (prefix) or 'latest' for the most recent snapshots.
     #[clap(value_parser, default_value_t = UseSnapshot::Latest)]

@@ -250,14 +250,8 @@ pub(crate) fn process_item_sync(
         }
     };
 
-    if diff_type != NodeDiff::Deleted {
-        report_node_diff(
-            &out.as_ref()
-                .expect("non-Deleted branch always returns Some")
-                .node,
-            diff_type,
-            ctx.progress,
-        );
+    if let Some(ref node) = out {
+        report_node_diff(&node.node, diff_type, ctx.progress);
         ctx.progress.processed_node();
         emit_event(
             ctx.event_sender,

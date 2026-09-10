@@ -59,7 +59,13 @@ impl ToExitCode for StatsError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Show repository statistics")]
+#[clap(
+    about = "Show repository statistics",
+    long_about = "Show statistics about the repository: number of blobs, snapshots,\n\
+        packs, raw and encoded sizes, deduplication savings and ECC overhead.\n\n\
+        Use --full to also parse pack footers and report physical statistics,\n\
+        which is more accurate but slower on large repositories."
+)]
 pub struct CmdArgs {
     /// Parse pack footers for physical statistics (expensive)
     #[clap(long, default_value_t = false)]

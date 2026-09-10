@@ -27,7 +27,12 @@ impl ToExitCode for TuiError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Launch interactive terminal user interface")]
+#[clap(
+    about = "Launch interactive terminal user interface",
+    long_about = "Launch an interactive terminal user interface for managing the\n\
+        repository: browse snapshots and files, create new snapshots, restore\n\
+        data and manage retention policies."
+)]
 pub struct CmdArgs;
 
 pub async fn run(

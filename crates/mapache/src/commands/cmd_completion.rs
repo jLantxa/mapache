@@ -20,7 +20,13 @@ impl ToExitCode for CompletionError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Generate autocompletion scripts")]
+#[clap(
+    about = "Generate autocompletion scripts",
+    long_about = "Generate a shell autocompletion script for mapache and write it to\n\
+        the directory given by --path. Supported shells include bash, zsh, fish\n\
+        and powershell. Once generated, source the script from your shell\n\
+        configuration to enable tab completion."
+)]
 pub struct CmdArgs {
     /// Shell type (bash, zsh, fish, powershell, etc.)
     #[clap(long, value_parser)]

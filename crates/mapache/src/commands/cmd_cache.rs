@@ -39,7 +39,14 @@ impl ToExitCode for CacheError {
 }
 
 #[derive(Args, Debug)]
-#[clap(about = "List and cleanup cache directories")]
+#[clap(
+    about = "List and cleanup cache directories",
+    long_about = "List the local cache directories created by mapache (used to stage\n\
+        data before upload), or delete specific ones.\n\n\
+        Without options, prints the cache folders and their sizes. Use --delete\n\
+        with one or more cache identifiers to remove only those, or --clear to\n\
+        remove all cached data."
+)]
 pub struct CmdArgs {
     /// List of cache folder prefixes to delete
     #[clap(long = "delete", num_args = 1..)]

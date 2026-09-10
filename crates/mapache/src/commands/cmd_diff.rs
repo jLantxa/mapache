@@ -41,7 +41,12 @@ impl ToExitCode for DiffError {
 }
 
 #[derive(Args, Debug)]
-#[clap(about = "Show differences between snapshots")]
+#[clap(
+    about = "Show differences between snapshots",
+    long_about = "Show the differences between two snapshots.\n\n\
+        Takes the source and target snapshot IDs (or prefixes) and reports which\n\
+        nodes were added, changed, or removed between them."
+)]
 pub struct CmdArgs {
     #[arg(value_parser)]
     pub source_snapshot_id: String,

@@ -44,7 +44,14 @@ impl ToExitCode for MountError {
 }
 
 #[derive(Args, Debug)]
-#[clap(about = "Mount the repository or a .mapache bundle as a file system")]
+#[clap(
+    about = "Mount the repository or a .mapache bundle as a file system",
+    long_about = "Mount a repository or a .mapache bundle as a read-only file system,\n\
+        making snapshots browsable through the OS file explorer.\n\n\
+        Pass a mount point as the positional argument. Use --bundle to force\n\
+        mounting a bundle file, --allow-other to let other users access the\n\
+        mount, and --metadata-only to avoid loading file contents. Linux only."
+)]
 pub struct CmdArgs {
     /// Mount point
     #[arg(value_parser)]

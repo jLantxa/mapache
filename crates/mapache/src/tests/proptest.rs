@@ -56,7 +56,7 @@ proptest! {
             paths: vec!["/data".into()],
             hostname: Some(hostname),
             username: Some(username),
-            version: Some("0.5.2".to_string()),
+            version: Some("proptest".to_string()),
             tags: Default::default(),
             description: None,
             summary: Default::default(),

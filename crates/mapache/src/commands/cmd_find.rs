@@ -43,7 +43,14 @@ impl ToExitCode for FindError {
 }
 
 #[derive(Args, Debug)]
-#[clap(about = "Find files and directories in the repository")]
+#[clap(
+    about = "Find files and directories in the repository",
+    long_about = "Search for files or directories matching a pattern.\n\n\
+        Searches all snapshots by default; restrict to a single snapshot with\n\
+        --snapshot (an ID, a prefix, or `latest`). Patterns without a '/'\n\
+        match recursively in every subdirectory; use a leading '/' to anchor\n\
+        the search at the root of the snapshot."
+)]
 pub struct CmdArgs {
     /// Target
     #[arg()]

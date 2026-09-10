@@ -39,7 +39,13 @@ impl ToExitCode for LogError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Show all snapshots present in the repository")]
+#[clap(
+    about = "Show all snapshots present in the repository",
+    long_about = "Show the list of snapshots in the repository.\n\n\
+        By default only active snapshots are listed. Use --dropped to show only\n\
+        dropped (forgotten) snapshots, --all for both, or pass a snapshot ID to\n\
+        inspect a single snapshot in detail."
+)]
 #[clap(group = ArgGroup::new("filter").multiple(false))]
 pub struct CmdArgs {
     /// Show a single snapshot with a given ID

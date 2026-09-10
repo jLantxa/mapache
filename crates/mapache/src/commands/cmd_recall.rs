@@ -30,7 +30,12 @@ impl ToExitCode for RecallError {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[clap(about = "Recall forgotten snapshots")]
+#[clap(
+    about = "Recall forgotten snapshots",
+    long_about = "Recall a snapshot that was previously forgotten (removed from the\n\
+        repository). Takes the snapshot ID or a prefix. The recalled snapshot\n\
+        becomes active again and its data is made available for restore."
+)]
 pub struct CmdArgs {
     #[arg(value_parser)]
     pub id: String,

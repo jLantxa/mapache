@@ -42,7 +42,12 @@ impl ToExitCode for DumpError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Print the contents of a file from a snapshot to stdout")]
+#[clap(
+    about = "Print the contents of a file from a snapshot to stdout",
+    long_about = "Print the contents of a single file from a snapshot to stdout.\n\n\
+        Select the snapshot by ID (or prefix) or use `latest` for the most\n\
+        recent one, and pass the file's path inside the snapshot with --path."
+)]
 pub struct CmdArgs {
     /// Snapshot ID (prefix) or 'latest'
     #[clap(value_parser, default_value_t = UseSnapshot::Latest)]

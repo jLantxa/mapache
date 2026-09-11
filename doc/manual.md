@@ -999,6 +999,8 @@ Shows:
 - **Snapshots**: count, total snapshot metadata size
 - **Snapshot reference summary**: referenced blobs (data + tree), raw/encoded
   sizes, compression ratios, total restorable size
+- **Unreferenced blobs** (shown only if >0): blobs tracked in the index but
+  not referenced by any snapshot, with their total reclaimable encoded size
 - **Keys**: count, total size
 - **Manifest**: size
 - **Total repository size**
@@ -1142,6 +1144,7 @@ mapache verify --read-packs --parallel 8   # Parallel verification
 mapache verify --repair                    # Repair corrupt packs via ECC
 mapache verify --fail-early                # Stop on first error
 mapache verify --with-cache                # Use local cache
+mapache verify --dump-pack-blobs packs.txt # Dump every blob descriptor to file
 ```
 
 #### Logical Verification (default)
@@ -1180,6 +1183,16 @@ Seven outcome cases per pack:
 
 `--sample <PCT>` verifies only a random percentage of packs. Useful for
 periodic integrity checks on large repositories.
+
+#### Dump pack blobs (`--dump-pack-blobs`)
+
+`--dump-pack-blobs <FILE>` writes every blob descriptor from every pack footer
+to a plain-text file. Each line contains `<blob_id_hex> <blob_type> <pack_id_hex>`
+for one descriptor. The flag runs with bounded memory (one pack at a time),
+so it is safe on large repositories.
+
+Useful for auditing what each pack physically contains, detecting phantom
+descriptors, or identifying unreferenced blobs offline with `sort | uniq -w 64`.
 
 ---
 
@@ -1742,6 +1755,7 @@ mapache verify -r <URL>
   --with-cache            Use local cache (disabled by default)
   --fail-early            Stop on first error
   --sample <%>            Verify random sample of packs (e.g., 10.5%)
+  --dump-pack-blobs <FILE> Dump all blob descriptors to a plain-text file
   --pre-hook <CMD>        Shell command to run before verify (overrides config)
   --post-hook <CMD>       Shell command to run after verify (overrides config)
 ```

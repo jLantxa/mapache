@@ -114,6 +114,8 @@ struct SnapshotsOutput {
     referenced_encoded_bytes_data: u64,
     referenced_raw_bytes_tree: u64,
     referenced_encoded_bytes_tree: u64,
+    unreferenced_blobs: u64,
+    unreferenced_encoded_bytes: u64,
     compression_ratio_total: f32,
     compression_ratio_data: f32,
     compression_ratio_tree: f32,
@@ -449,6 +451,14 @@ async fn stats_repository(
 
     spinner.finish_and_clear();
 
+    // Blobs tracked in the index but not referenced by any snapshot. With the
+    // index now covering hot and cold files, this converges to zero after a
+    // clean run (default tolerance only tolerates garbage in a pack, it never
+    // counts blobs the repo has forgotten).
+    let unreferenced_blobs = indexed_blobs.saturating_sub(snap_stats.num_referenced_blobs);
+    let unreferenced_encoded_bytes =
+        indexed_encoded.saturating_sub(snap_stats.total_encoded_data_size);
+
     let (ratio_total, ratio_data, ratio_tree) = compression_ratios(
         snap_stats.total_raw_data_size,
         snap_stats.total_encoded_data_size,
@@ -496,6 +506,8 @@ async fn stats_repository(
                 referenced_encoded_bytes_data: snap_stats.total_encoded_data_size_data,
                 referenced_raw_bytes_tree: snap_stats.total_raw_data_size_tree,
                 referenced_encoded_bytes_tree: snap_stats.total_encoded_data_size_tree,
+                unreferenced_blobs,
+                unreferenced_encoded_bytes,
                 compression_ratio_total: ratio_total,
                 compression_ratio_data: ratio_data,
                 compression_ratio_tree: ratio_tree,
@@ -644,6 +656,16 @@ async fn stats_repository(
         "Restorable size",
         utils::format_size_binary(snap_stats.total_restorable_bytes, 3),
     );
+    if unreferenced_blobs > 0 {
+        row(
+            "Unreferenced blobs",
+            format!(
+                "{} ({} reclaimable)",
+                utils::format_count(unreferenced_blobs, "blob", "blobs"),
+                utils::format_size_binary(unreferenced_encoded_bytes, 3)
+            ),
+        );
+    }
 
     ui::cli::log!();
     section("Keys");

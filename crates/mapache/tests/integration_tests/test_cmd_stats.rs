@@ -39,6 +39,14 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&stdout)?;
         assert_eq!(json["msg_type"], "stats");
         assert_eq!(json["snapshots"]["count"], 1);
+        assert_eq!(
+            json["snapshots"]["unreferenced_blobs"], 0,
+            "after a snapshot every indexed blob is referenced"
+        );
+        assert_eq!(
+            json["snapshots"]["unreferenced_encoded_bytes"], 0,
+            "after a snapshot there is no reclaimable unreferenced data"
+        );
 
         Ok(())
     }

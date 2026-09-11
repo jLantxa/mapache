@@ -35,6 +35,15 @@
 - **KDF calibration**: Added `--calibrate-kdf` to allow calibrating the Argon2id
   parameters for a target run time in the running hardware. Memory is
   auto-detected (10% of RAM, clamped to 32–64 MiB).
+- **`mapache verify --dump-pack-blobs <FILE>`**: Writes every pack blob
+  descriptor as one line per blob: `<blob_id_hex> <blob_type> <pack_id_hex>`.
+  Streams pack by pack with bounded memory, so it is safe on large
+  repositories. Useful for auditing what each pack physically contains.
+- **`mapache stats` unreferenced blobs**: The Snapshots section reports blobs
+  tracked in the index but not referenced by any snapshot, with the reclaimable
+  encoded bytes. The row is only shown when the count is non-zero. The metric
+  lands reliably at zero after `clean` now that GC detects cross-pack phantom
+  blob descriptors and stats walk cold indices too.
 
 ### Changed
 

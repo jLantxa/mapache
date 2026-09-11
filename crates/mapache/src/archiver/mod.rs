@@ -688,12 +688,133 @@ mod tests {
             mock::{BackendOp, MockBackend, MockEffect},
         },
         common::{ContentIdType, ID, defaults::TEST_REPO_CONFIG},
-        fs::calculate_lcp,
+        fs::{calculate_lcp, tree::Tree},
         repository::repo::{Auth, THIS_REPOSITORY_VERSION},
         ui::events::noop_sender,
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_archiver_detects_incremental_node_diffs_from_parent_snapshot() -> Result<()> {
+        let auth = Auth {
+            username: "user".to_string(),
+            password: Zeroizing::new("pass".to_string()),
+        };
+        let backend = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+
+        repo.init_pack_saver(1)?;
+
+        let tmp = tempdir()?;
+        let kept = tmp.path().join("kept.txt");
+        let changed = tmp.path().join("changed.txt");
+        let new_file = tmp.path().join("new.txt");
+        let new_dir = tmp.path().join("new_dir");
+        let kept_dir = tmp.path().join("kept_dir");
+        let removed = tmp.path().join("removed.txt");
+        let removed_dir = tmp.path().join("removed_dir");
+        fs::write(&kept, b"kept")?;
+        fs::write(&changed, b"before")?;
+        fs::write(&removed, b"removed")?;
+        fs::create_dir(&kept_dir)?;
+        fs::create_dir(&removed_dir)?;
+        fs::write(removed_dir.join("nested.txt"), b"nested")?;
+
+        let snapshot_root_path = calculate_lcp(&[tmp.path().to_path_buf()], false);
+        let source_paths = vec![tmp.path().to_path_buf()];
+
+        let first_snapshot = snapshot(
+            repo.clone(),
+            SnapshotOptions {
+                absolute_source_paths: source_paths.clone(),
+                snapshot_root_path: snapshot_root_path.clone(),
+                exclude_paths: Vec::new(),
+                parent_snapshot: None,
+                tags: BTreeSet::new(),
+                description: None,
+                no_scan: false,
+                with_atime: false,
+                stdin: false,
+            },
+            1,
+            noop_sender(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        fs::write(&changed, b"after with a different size")?;
+        fs::write(&new_file, b"new")?;
+        fs::create_dir(&new_dir)?;
+        fs::remove_file(&removed)?;
+        fs::remove_dir_all(&removed_dir)?;
+        repo.init_pack_saver(1)?;
+
+        let parent_snapshot = SnapshotPair {
+            id: ID::default(),
+            snapshot: first_snapshot,
+        };
+
+        let second_snapshot = snapshot(
+            repo.clone(),
+            SnapshotOptions {
+                absolute_source_paths: source_paths,
+                snapshot_root_path,
+                exclude_paths: Vec::new(),
+                parent_snapshot: Some(&parent_snapshot),
+                tags: BTreeSet::new(),
+                description: None,
+                no_scan: false,
+                with_atime: false,
+                stdin: false,
+            },
+            1,
+            noop_sender(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        assert_eq!(second_snapshot.summary.diff_counts.new_files, 1);
+        assert_eq!(second_snapshot.summary.diff_counts.new_dirs, 1);
+        assert_eq!(second_snapshot.summary.diff_counts.changed_files, 1);
+        assert_eq!(second_snapshot.summary.diff_counts.deleted_files, 2);
+        assert_eq!(second_snapshot.summary.diff_counts.deleted_dirs, 1);
+        assert_eq!(second_snapshot.summary.diff_counts.unchanged_files, 1);
+        assert!(second_snapshot.summary.diff_counts.unchanged_dirs >= 1);
+
+        let root_tree = Tree::load_from_repo(repo.as_ref(), &second_snapshot.tree).await?;
+        let tmp_node = root_tree
+            .nodes
+            .iter()
+            .find(|node| node.name == tmp.path().file_name().unwrap().to_string_lossy())
+            .expect("snapshot root child should exist");
+        let tmp_tree_id = tmp_node.tree.expect("source directory should have a tree");
+        let tmp_tree = Tree::load_from_repo(repo.as_ref(), &tmp_tree_id).await?;
+        let names: Vec<_> = tmp_tree
+            .nodes
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["changed.txt", "kept.txt", "kept_dir", "new.txt", "new_dir"]
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_archiver_atomic_ordering() -> Result<()> {

@@ -250,8 +250,14 @@ pub(crate) fn process_item_sync(
         }
     };
 
-    if let Some(ref node) = out {
-        report_node_diff(&node.node, diff_type, ctx.progress);
+    let reported_node = out.as_ref().map(|node| &node.node).or_else(|| {
+        matches!(diff_type, NodeDiff::Deleted)
+            .then(|| prev_node.map(|node| &node.node))
+            .flatten()
+    });
+
+    if let Some(node) = reported_node {
+        report_node_diff(node, diff_type, ctx.progress);
         ctx.progress.processed_node();
         emit_event(
             ctx.event_sender,

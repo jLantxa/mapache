@@ -1174,8 +1174,17 @@ impl MasterIndex {
         lock.bloom_filter = Some(bf);
     }
 
-    /// Adds a blob ID to the set of blobs that are waiting to be packed.
-    /// Returns `true` if the ID did not exist in the set and was inserted; `false` otherwise.
+    /// Atomically claims a blob ID for packing.
+    ///
+    /// Returns `true` if the ID was successfully claimed (not previously known);
+    /// `false` if the blob is already pending or already in the index.
+    ///
+    /// This MUST be called **before** encoding and sending the blob to the
+    /// packer. The old pattern (check `contains`, then encode, then
+    /// `add_pending_blob`) had a TOCTOU race: two threads could both pass the
+    /// `contains` check, both encode and send the same blob, and the pack
+    /// footer would end up with duplicate entries while the index deduplicated
+    /// to one — wasting space and confusing stats/GC.
     pub fn add_pending_blob(&self, id: ID) -> bool {
         // Fast path: check if it's already in pending_blobs or in the index (read-only)
         if self.pending_blobs.contains(&id) {
@@ -1190,7 +1199,17 @@ impl MasterIndex {
         }
 
         // Try to insert into pending_blobs. This is sharded so it's low contention.
+        // Only one thread can win the insert for a given ID.
         self.pending_blobs.insert(id)
+    }
+
+    /// Removes a blob ID from the pending set.
+    ///
+    /// Used for error cleanup: if `add_pending_blob` succeeded but the
+    /// subsequent send to the packer failed, the blob must be unclaimed so
+    /// a retry can re-attempt.
+    pub fn remove_pending_blob(&self, id: &ID) {
+        self.pending_blobs.remove(id);
     }
 
     /// Processes a newly created pack of blobs. It removes these blobs from the

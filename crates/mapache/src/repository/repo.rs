@@ -567,8 +567,15 @@ impl Repository {
             SaveID::WithID(id) => id,
         };
 
-        // Fast path for existing blobs
-        if self.master_index.contains(&id) {
+        // Atomically claim this blob. If it's already pending (another thread
+        // is encoding the same content) or already in the index, skip.
+        //
+        // This MUST happen before any encoding or channel send. The old pattern
+        // (check `contains`, then encode+send, then `add_pending_blob`) had a
+        // TOCTOU race: two threads could both pass `contains`, both encode and
+        // send the same blob, and the pack footer would end up with duplicate
+        // entries while the index deduplicated to one.
+        if !self.master_index.add_pending_blob(id) {
             return Ok(id);
         }
 
@@ -599,9 +606,10 @@ impl Repository {
                 raw_length,
                 compressed: false,
             })
-            .map_err(|_| MapacheError::Repo("packer channel closed".to_string()))?;
-
-            self.master_index.add_pending_blob(id);
+            .map_err(|e| {
+                self.master_index.remove_pending_blob(&id);
+                MapacheError::Repo(format!("packer channel closed: {e}"))
+            })?;
 
             return Ok(id);
         }
@@ -631,11 +639,10 @@ impl Repository {
             raw_length,
             compressed,
         })
-        .map_err(|_| MapacheError::Repo("packer channel closed".to_string()))?;
-
-        // Only mark as pending after the packer confirmed receipt,
-        // so a send failure doesn't orphan the blob.
-        self.master_index.add_pending_blob(id);
+        .map_err(|e| {
+            self.master_index.remove_pending_blob(&id);
+            MapacheError::Repo(format!("packer channel closed: {e}"))
+        })?;
 
         Ok(id)
     }
@@ -1910,6 +1917,101 @@ mod tests {
             let expected = format!("concurrent blob {}", i);
             assert_eq!(data, expected.as_bytes(), "blob {} should match", i);
         }
+
+        Ok(())
+    }
+
+    /// Regression test for the TOCTOU race in `encode_and_save_blob`.
+    ///
+    /// Many *OS threads* save the *same* content concurrently, gated by a
+    /// barrier so they all pass the `contains`/`add_pending_blob` gate at about
+    /// the same time, and use a large payload so the encoding window (between
+    /// the gate and the packer send in the old buggy code) is wide. Before the
+    /// fix, several threads could all send the same blob, producing duplicate
+    /// descriptors in the pack footer while the index deduplicated to a single
+    /// entry. The test counts footer descriptors after flush and asserts
+    /// exactly one exists.
+    #[tokio::test]
+    async fn test_concurrent_same_blob_no_duplicate_footer_entries() -> Result<()> {
+        use crate::repository::packer::Packer;
+
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, secure_storage) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        repo.init_pack_saver(8)?;
+
+        // Large identical payload: widens the window between the gate check and
+        // `add_pending_blob` in the old code, making the race deterministic.
+        let data = vec![0xABu8; 4 * 1024 * 1024];
+        let expected_id = ID::from_content(&data);
+
+        const CONCURRENCY: usize = 16;
+        let barrier = Arc::new(std::sync::Barrier::new(CONCURRENCY));
+
+        let ids: Vec<ID> = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for _ in 0..CONCURRENCY {
+                let r = repo.clone();
+                let data = &data;
+                let barrier = barrier.clone();
+                handles.push(scope.spawn(move || {
+                    barrier.wait();
+                    let id = r.encode_and_save_blob(
+                        BlobType::Data,
+                        WriteContents::Borrowed(data),
+                        SaveID::CalculateID,
+                    )?;
+                    Ok::<_, MapacheError>(id)
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("scoped thread panicked"))
+                .collect::<Result<Vec<_>>>()
+                .expect("blob save should not fail")
+        });
+
+        assert_eq!(ids.len(), CONCURRENCY);
+        for id in &ids {
+            assert_eq!(
+                *id, expected_id,
+                "all tasks must compute the same content ID"
+            );
+        }
+
+        let stats = repo.flush_and_finalize_pack_saver().await?;
+        assert!(stats.blobs > 0, "should have saved blobs");
+
+        // Every pack footer combined must contain exactly one descriptor for the ID.
+        let packs = repo.list_packs().await?;
+        let mut total_entries = 0usize;
+        for pack_id in packs {
+            let descriptors = Packer::parse_pack_footer(
+                repo.as_ref(),
+                repo.backend().as_ref(),
+                secure_storage.as_ref(),
+                &pack_id,
+                repo.nonce_at_end(),
+            )
+            .await?;
+            total_entries += descriptors.iter().filter(|d| d.id == expected_id).count();
+        }
+
+        assert_eq!(
+            total_entries, 1,
+            "duplicate pack footer entries for the same blob ID: {total_entries} found"
+        );
 
         Ok(())
     }

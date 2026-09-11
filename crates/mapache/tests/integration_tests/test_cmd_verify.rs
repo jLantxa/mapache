@@ -447,4 +447,56 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_verify_dump_pack_blobs() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
+
+        let dump_path = ctx._tmp_dir.path().join("pack_blobs.txt");
+
+        ctx.verify_builder()
+            .dump_pack_blobs(dump_path.clone())
+            .run(&ctx.global)
+            .await
+            .context("verify with --dump-pack-blobs should succeed")?;
+
+        let contents = std::fs::read_to_string(&dump_path)?;
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert!(!lines.is_empty(), "dump file should not be empty");
+
+        for line in &lines {
+            let parts: Vec<&str> = line.split(' ').collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "each line should have 3 fields (id type pack_id): {line}"
+            );
+            // blob id should be 64 hex chars (sha-256)
+            assert_eq!(parts[0].len(), 64, "blob id should be 64 hex chars: {line}");
+            // blob type must be one of the known pack-stored types
+            assert!(
+                matches!(parts[1], "Data" | "Tree" | "Zero"),
+                "unexpected blob type: {line}"
+            );
+            // pack id should also be 64 hex chars
+            assert_eq!(parts[2].len(), 64, "pack id should be 64 hex chars: {line}");
+        }
+
+        Ok(())
+    }
 }

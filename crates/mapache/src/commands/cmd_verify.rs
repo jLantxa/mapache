@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -9,7 +9,7 @@ use std::{
 };
 
 use clap::Args;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressState};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -24,6 +24,7 @@ use crate::{
     fs::tree::SerializedNodeStream,
     repository::{
         lock::LockHandle,
+        packer::Packer,
         repo::Repository,
         snapshot::SnapshotStream,
         storage::SecureStorage,
@@ -239,6 +240,12 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub repair: bool,
 
+    /// Dump every blob descriptor found in the pack footers to a plain-text
+    /// file. Each line: `<blob_id> <type> <pack_id>`. Useful to cross-check
+    /// packs against the index (e.g. locate phantom descriptors).
+    #[clap(long, value_name = "FILE")]
+    pub dump_pack_blobs: Option<PathBuf>,
+
     #[clap(flatten)]
     pub hook_args: HookArgs,
 }
@@ -419,6 +426,10 @@ pub async fn run_with_repo(
 
     let stats = VerifyStats::new();
     let packs_all = repo.list_packs().await?;
+
+    if let Some(dump_path) = args.dump_pack_blobs.as_ref() {
+        dump_pack_blobs(repo.clone(), secure_storage.clone(), &packs_all, dump_path).await?;
+    }
 
     // Sampling (Optional)
     let mut packs_to_verify = packs_all.iter().cloned().collect::<Vec<_>>();
@@ -846,6 +857,115 @@ async fn verify_metadata_files(
         );
     }
     ui::cli::log!();
+
+    Ok(())
+}
+
+/// Concurrency for the pack footer dump.
+const PACK_FOOTER_DUMP_CONCURRENCY: usize = 8;
+
+/// Dumps every blob descriptor found in the repository's pack footers to a
+/// plain-text file, one line per descriptor:
+///
+/// ```text
+/// <blob_id_hex> <type> <pack_id_hex>
+/// ```
+///
+/// Padding descriptors are skipped (already filtered out by the footer parser).
+/// Lines are written as soon as each pack footer is parsed, so the memory
+/// footprint stays bounded to a single pack regardless of repository size; the
+/// output is not sorted (packs complete out of order). Duplicates are kept
+/// intact on purpose, so the file can be cross-checked against the index to
+/// spot phantom descriptor entries that the index-based scan cannot see.
+async fn dump_pack_blobs(
+    repo: Arc<Repository>,
+    secure_storage: Arc<SecureStorage>,
+    pack_ids: &IdSet<ID>,
+    path: &Path,
+) -> Result<(), VerifyError> {
+    let pack_ids: Vec<ID> = pack_ids.iter().copied().collect();
+    let total = pack_ids.len();
+
+    ui::cli::log!(
+        "{} dumping blob descriptors from {} packs to {}",
+        "Pack blobs:".bold().cyan(),
+        total,
+        path.display()
+    );
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(VerifyError::Io)?;
+    }
+    let file = std::fs::File::create(path).map_err(VerifyError::Io)?;
+    let writer = Arc::new(parking_lot::Mutex::new(io::BufWriter::new(file)));
+
+    let progress = ProgressBar::new(total as u64);
+    progress.set_draw_target(default_bar_draw_target());
+    progress.set_style(default_progress_style());
+    progress.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+    progress.set_message("dumping");
+    let done = AtomicUsize::new(0);
+
+    futures::stream::iter(pack_ids)
+        .map(|pack_id| {
+            let repo = repo.clone();
+            let backend = repo.backend();
+            let secure_storage = secure_storage.clone();
+            let writer = writer.clone();
+            let progress = progress.clone();
+            let done = &done;
+            async move {
+                let descriptors = Packer::parse_pack_footer(
+                    repo.as_ref(),
+                    backend.as_ref(),
+                    secure_storage.as_ref(),
+                    &pack_id,
+                    secure_storage.nonce_at_end(),
+                )
+                .await
+                .map_err(|e| {
+                    VerifyError::VerifyFailed(format!(
+                        "failed to parse footer for pack {}: {}",
+                        pack_id.to_hex(),
+                        e.inner()
+                    ))
+                })?;
+
+                let mut lines = descriptors
+                    .iter()
+                    .map(|d| format!("{} {:?} {}", d.id.to_hex(), d.blob_type, pack_id.to_hex()))
+                    .collect::<Vec<_>>();
+                if lines.is_empty() {
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    progress.set_message(format!("{n}/{total} packs"));
+                    progress.inc(1);
+                    return Ok::<_, VerifyError>(());
+                }
+                lines.push(String::new());
+
+                // Serialize writes through the lock: a single contiguous write is
+                // atomic, so concurrent tasks never interleave lines mid-line.
+                let mut writer = writer.lock();
+                writer
+                    .write_all(lines.join("\n").as_bytes())
+                    .map_err(VerifyError::Io)?;
+
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                progress.set_message(format!("{n}/{total} packs"));
+                progress.inc(1);
+                Ok::<_, VerifyError>(())
+            }
+        })
+        .buffer_unordered(PACK_FOOTER_DUMP_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    progress.finish_and_clear();
+    let mut writer = writer.lock();
+    writer.flush().map_err(VerifyError::Io)?;
+    drop(writer);
 
     Ok(())
 }

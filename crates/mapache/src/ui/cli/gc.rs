@@ -73,6 +73,9 @@ fn start_new_bar(state: &CliGcState, kind: GcTaskKind, total: Option<u64>) {
                 GcTaskKind::CheckingGarbageLevels => {
                     "{spinner:.cyan} Checking garbage levels ({pos} / {len} packs)"
                 }
+                GcTaskKind::FindingDuplicateBlobs => {
+                    "{spinner:.cyan} Checking pack footers for duplicates ({pos} / {len} packs)"
+                }
                 GcTaskKind::DeletingUnusedPacks => {
                     "[{percent} %] [{bar:20.cyan/white}] Deleting unused packs: {pos} / {len}"
                 }

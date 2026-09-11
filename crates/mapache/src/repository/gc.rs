@@ -19,6 +19,7 @@ use crate::{
     repository::{
         index::BlobLocator,
         loader,
+        packer::Packer,
         repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
@@ -39,6 +40,8 @@ const GC_DELETE_CONCURRENCY: usize = 16;
 const GC_DELETE_SMALL_CONCURRENCY: usize = 8;
 /// Concurrency for listing directories when scanning for dropped files.
 const GC_DROPPED_SCAN_CONCURRENCY: usize = 4;
+/// Concurrency for parsing pack footers while detecting duplicate descriptors.
+const GC_DUP_SCAN_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 struct GcReporter(EventSender);
@@ -236,9 +239,117 @@ pub async fn scan(
         reporter.update_task(GcTaskKind::CheckingGarbageLevels, checked_packs_count);
     }
     reporter.finish_task(GcTaskKind::CheckingGarbageLevels);
+
+    // Detect packs whose footer lists the same blob ID more than once. A legacy
+    // TOCTOU race in the blob save path could record one blob twice in a pack's
+    // footer while the index kept a single reference, so the phantom entries
+    // are invisible to the index-based scan above. Such packs must be repacked
+    // to drop the duplicates.
+    reporter.start_task(
+        GcTaskKind::FindingDuplicateBlobs,
+        Some(keep_packs.len() as u64),
+    );
+    check_shutdown(&shutdown_signal)?;
+    let candidate_packs: Vec<ID> = keep_packs.iter().copied().collect();
+    let duplicate_packs =
+        find_packs_with_duplicate_footers(repo.clone(), &candidate_packs, shutdown_signal.clone())
+            .await?;
+    for pack_id in &duplicate_packs {
+        tracing::info!(
+            target: "gc",
+            "Pack {} has duplicate blob descriptors; scheduling repack",
+            pack_id.to_short_hex(8)
+        );
+        keep_packs.remove(pack_id);
+        plan.obsolete_packs.insert(*pack_id);
+    }
+    reporter.finish_task(GcTaskKind::FindingDuplicateBlobs);
+    if !duplicate_packs.is_empty() {
+        reporter.log(format!(
+            "Found {} packs with duplicate blob descriptors; they will be repacked",
+            duplicate_packs.len()
+        ));
+    }
+
     tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small ({} data, {} tree), {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_data_packs.len() + plan.small_tree_packs.len(), plan.small_data_packs.len(), plan.small_tree_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
 
     Ok(plan)
+}
+
+/// Parses the footer of every candidate pack and returns the set of packs that
+/// contain a descriptor whose authoritative copy (per the index) lives
+/// elsewhere, or that list the same blob ID more than once in their own footer.
+///
+/// A legacy TOCTOU race in the blob save path could write the same blob into a
+/// pack footer while the index kept a single reference to a copy in another
+/// pack (or another offset in the same pack). That phantom descriptor is
+/// invisible to the index-based scan, so the pack must be repacked to drop it.
+async fn find_packs_with_duplicate_footers(
+    repo: Arc<Repository>,
+    pack_ids: &[ID],
+    shutdown_signal: Arc<AtomicBool>,
+) -> Result<IdSet<ID>> {
+    let backend = repo.backend();
+    let secure_storage = repo.secure_storage();
+    let index = repo.index();
+    let nonce_at_end = repo.nonce_at_end();
+
+    let duplicates: IdSet<ID> = futures::stream::iter(pack_ids.iter().copied())
+        .map(|pack_id| {
+            let repo = repo.clone();
+            let backend = backend.clone();
+            let secure_storage = secure_storage.clone();
+            let index = index.clone();
+            let shutdown_signal = shutdown_signal.clone();
+            async move {
+                check_shutdown(&shutdown_signal)?;
+                let descriptors = Packer::parse_pack_footer(
+                    repo.as_ref(),
+                    backend.as_ref(),
+                    secure_storage.as_ref(),
+                    &pack_id,
+                    nonce_at_end,
+                )
+                .await
+                .map_err(|e| {
+                    MapacheError::Integrity(format!(
+                        "failed to parse footer for pack {}: {}",
+                        pack_id.to_hex(),
+                        e.inner()
+                    ))
+                })?;
+
+                let mut seen = IdSet::default();
+                let mut has_phantom = false;
+                for d in descriptors {
+                    // Same ID twice in this pack's footer (identical descriptors,
+                    // e.g. zero blobs that all share offset 0).
+                    if seen.contains(&d.id) {
+                        has_phantom = true;
+                        break;
+                    }
+                    seen.insert(d.id);
+
+                    // The authoritative copy per the index lives in another pack
+                    // or at another offset — this descriptor is a phantom.
+                    if let Some(loc) = index.get(&d.id).await
+                        && (loc.pack_id != pack_id || loc.offset != d.offset)
+                    {
+                        has_phantom = true;
+                        break;
+                    }
+                }
+                Ok::<_, MapacheError>((pack_id, has_phantom))
+            }
+        })
+        .buffer_unordered(GC_DUP_SCAN_CONCURRENCY)
+        .try_filter_map(|(pack_id, has_phantom)| async move {
+            Ok(if has_phantom { Some(pack_id) } else { None })
+        })
+        .try_collect()
+        .await?;
+
+    Ok(duplicates)
 }
 
 /// Delete a set of objects from the repository in parallel, reporting
@@ -909,6 +1020,248 @@ mod tests {
         repo.save_file(&SaveID::CalculateID, &snapshot_bytes, hint, None)
             .await?;
         repo.reload_master_index().await?;
+        Ok(())
+    }
+
+    /// Writes a pack directly to the backend with the given (id, payload) pairs.
+    /// Bypasses the repo save path so the caller controls the footer contents
+    /// exactly (used to simulate legacy corrupt/duplicate footers). Returns the
+    /// pack ID and its descriptors for index registration.
+    async fn write_raw_pack(
+        repo: &Arc<Repository>,
+        blobs: Vec<(ID, &[u8])>,
+    ) -> Result<(ID, Vec<crate::repository::packer::PackedBlobDescriptor>)> {
+        let secure_storage = repo.secure_storage();
+        let compressed = true;
+        let mut packer = Packer::new(1024, secure_storage)?;
+        for (id, data) in blobs {
+            let encoded = if compressed {
+                repo.secure_storage().encode(data)?
+            } else {
+                repo.secure_storage().encrypt(data)?
+            };
+            packer.add_blob(id, BlobType::Data, &encoded, data.len() as u64, compressed)?;
+        }
+        let flushed = packer
+            .finalize()?
+            .ok_or_else(|| MapacheError::Internal("packer produced no pack".to_string()))?;
+        let descriptors = flushed.descriptors.clone();
+        repo.save_file(
+            &SaveID::WithID(flushed.id),
+            &flushed.data,
+            StorageHint {
+                file_type: ContentIdType::Pack,
+                is_metadata: false,
+            },
+            None,
+        )
+        .await?;
+        Ok((flushed.id, descriptors))
+    }
+
+    /// Packs whose footer contains the same blob ID twice (a legacy TOCTOU race
+    /// produced these) must be detected and scheduled for repack.
+    #[tokio::test]
+    async fn test_scan_detects_duplicate_footer_entries() -> Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        let id_a = ID::from_content(b"same blob content");
+        let id_b = ID::from_content(b"other blob content");
+
+        let (dup_pack, _) = write_raw_pack(&repo, vec![(id_a, b"aaa"), (id_a, b"aaa")]).await?;
+        let (clean_pack, _) = write_raw_pack(&repo, vec![(id_a, b"aaa"), (id_b, b"bbb")]).await?;
+
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let duplicates =
+            find_packs_with_duplicate_footers(repo.clone(), &[dup_pack, clean_pack], shutdown)
+                .await?;
+
+        assert!(
+            duplicates.contains(&dup_pack),
+            "pack with duplicate descriptor was not detected"
+        );
+        assert!(
+            !duplicates.contains(&clean_pack),
+            "clean pack was wrongly flagged as duplicate"
+        );
+        Ok(())
+    }
+
+    /// End-to-end: a referenced pack with duplicate footer descriptors is added
+    /// to the GC plan's obsolete set so a run of `clean` repacks and repairs it.
+    #[tokio::test]
+    async fn test_scan_marks_duplicate_pack_as_obsolete() -> Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaaa"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![make_node("a.txt", vec![blob_a])]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        // A legacy race also wrote blob A twice into a separate pack. Register
+        // it in the index so it becomes a *referenced* pack whose footer still
+        // contains the phantom duplicate descriptor.
+        let (dup_pack, descriptors) =
+            write_raw_pack(&repo, vec![(blob_a, b"aaaa"), (blob_a, b"aaaa")]).await?;
+        repo.index().add_pack(&repo, &dup_pack, descriptors).await?;
+
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
+
+        assert!(
+            plan.obsolete_packs.contains(&dup_pack),
+            "duplicate pack must be scheduled for repack"
+        );
+
+        Ok(())
+    }
+
+    /// End-to-end cross-pack phantom: blob `a`'s authoritative copy is in one
+    /// pack while a second, also-referenced pack still carries a phantom copy of
+    /// `a`. The phantom pack must be repacked; the authoritative pack must not.
+    #[tokio::test]
+    async fn test_scan_marks_cross_pack_phantom_as_obsolete() -> Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbb"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![
+            make_node("a.txt", vec![blob_a]),
+            make_node("b.txt", vec![blob_b]),
+        ]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        // Pack P: legit copy of b + phantom copy of a. Pack Q: authoritative a.
+        let (pack_p, desc_p) =
+            write_raw_pack(&repo, vec![(blob_b, b"bbb"), (blob_a, b"aaa")]).await?;
+        let (pack_q, desc_q) = write_raw_pack(&repo, vec![(blob_a, b"aaa")]).await?;
+
+        // Register P first, then Q, so `a`'s index locator resolves to Q.
+        repo.index().add_pack(&repo, &pack_p, desc_p).await?;
+        repo.index().add_pack(&repo, &pack_q, desc_q).await?;
+
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
+
+        assert!(
+            plan.obsolete_packs.contains(&pack_p),
+            "pack with phantom descriptor must be repacked"
+        );
+        assert!(
+            !plan.obsolete_packs.contains(&pack_q),
+            "pack holding the authoritative copy must not be repacked"
+        );
+
+        Ok(())
+    }
+
+    /// Full clean cycle: after the phantom pack is marked obsolete, executing the
+    /// plan repacks it and the phantom descriptor disappears from the footers
+    /// while the authoritative blob copy keeps loading.
+    #[tokio::test]
+    async fn test_clean_execute_removes_phantom_descriptors() -> Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbb"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![
+            make_node("a.txt", vec![blob_a]),
+            make_node("b.txt", vec![blob_b]),
+        ]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        // Legit copy of b + phantom copy of a in pack_p; authoritative a in pack_q.
+        let (pack_p, desc_p) =
+            write_raw_pack(&repo, vec![(blob_b, b"bbb"), (blob_a, b"aaa")]).await?;
+        let (pack_q, desc_q) = write_raw_pack(&repo, vec![(blob_a, b"aaa")]).await?;
+        repo.index().add_pack(&repo, &pack_p, desc_p).await?;
+        repo.index().add_pack(&repo, &pack_q, desc_q).await?;
+
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
+        assert!(
+            plan.obsolete_packs.contains(&pack_p),
+            "precondition: phantom pack must be scheduled for repack"
+        );
+
+        plan.execute(noop_sender()).await?;
+
+        // The phantom pack must be gone.
+        let packs = repo.list_packs().await?;
+        assert!(!packs.contains(&pack_p), "phantom pack must be deleted");
+
+        // Both blobs load correctly after the repack.
+        assert_eq!(repo.load_blob(&blob_a).await?, b"aaa");
+        assert_eq!(repo.load_blob(&blob_b).await?, b"bbb");
+
+        // Across all remaining footers, `a` appears exactly once.
+        let secure_storage = repo.secure_storage();
+        let mut a_entries = 0usize;
+        for pack_id in packs {
+            let descriptors = Packer::parse_pack_footer(
+                repo.as_ref(),
+                repo.backend().as_ref(),
+                secure_storage.as_ref(),
+                &pack_id,
+                repo.nonce_at_end(),
+            )
+            .await?;
+            a_entries += descriptors.iter().filter(|d| d.id == blob_a).count();
+        }
+        assert_eq!(
+            a_entries, 1,
+            "phantom descriptor must be removed after clean, found {a_entries}"
+        );
+
         Ok(())
     }
 

@@ -371,6 +371,7 @@ impl VerifyBuilder {
                 fail_early: false,
                 sample: None,
                 repair: false,
+                dump_pack_blobs: None,
                 hook_args: Default::default(),
             },
         }
@@ -378,6 +379,11 @@ impl VerifyBuilder {
 
     pub fn read_packs(mut self, read_packs: bool) -> Self {
         self.args.read_packs = read_packs;
+        self
+    }
+
+    pub fn dump_pack_blobs(mut self, path: PathBuf) -> Self {
+        self.args.dump_pack_blobs = Some(path);
         self
     }
 

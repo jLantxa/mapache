@@ -120,6 +120,7 @@ pub enum GcTaskKind {
     SearchingReferencedBlobs,
     FindingObsoleteBlobs,
     CheckingGarbageLevels,
+    FindingDuplicateBlobs,
     DeletingUnusedPacks,
     RepackingBlobs,
     DeletingOldIndices,

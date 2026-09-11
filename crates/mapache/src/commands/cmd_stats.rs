@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     io,
     path::{Path, PathBuf},
@@ -166,6 +167,7 @@ struct FooterScan {
     encoded_bytes: u64,
     raw_bytes: u64,
     dangling: usize,
+    duplicate_blobs: usize,
 }
 
 /// Compute compression ratios (raw / encoded) for total, data, and tree sizes.
@@ -323,13 +325,27 @@ async fn scan_pack_footers(
 
                 let index = repo.index();
                 let mut scan = FooterScan::default();
+                let mut seen = HashMap::new();
                 for d in descriptors.iter() {
+                    // Count duplicates BEFORE updating `seen` so the metric is the
+                    // number of phantom descriptor entries (extra footer lines).
+                    let entry = seen.entry(d.id).or_insert(0_usize);
+                    *entry += 1;
+                    if *entry > 1 {
+                        // Same ID twice in this pack's footer.
+                        scan.duplicate_blobs += 1;
+                    } else if !index.contains(&d.id) {
+                        scan.dangling += 1;
+                    } else if let Some(loc) = index.get(&d.id).await
+                        && (loc.pack_id != pack_id || loc.offset != d.offset)
+                    {
+                        // Phantom: the authoritative copy lives in another pack
+                        // or at another offset.
+                        scan.duplicate_blobs += 1;
+                    }
                     scan.blobs += 1;
                     scan.encoded_bytes = scan.encoded_bytes.saturating_add(d.length as u64);
                     scan.raw_bytes = scan.raw_bytes.saturating_add(d.raw_length as u64);
-                    if !index.contains(&d.id) {
-                        scan.dangling += 1;
-                    }
                 }
 
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -348,6 +364,7 @@ async fn scan_pack_footers(
             acc.encoded_bytes = acc.encoded_bytes.saturating_add(s.encoded_bytes);
             acc.raw_bytes = acc.raw_bytes.saturating_add(s.raw_bytes);
             acc.dangling += s.dangling;
+            acc.duplicate_blobs += s.duplicate_blobs;
             acc
         }))
 }
@@ -535,6 +552,10 @@ async fn stats_repository(
                 dangling
             },
         );
+        if footers.duplicate_blobs > 0 {
+            let dupes = utils::format_count(footers.duplicate_blobs, "blob", "blobs");
+            row("Footer duplicate blobs", dupes.red().bold().to_string());
+        }
     }
 
     ui::cli::log!();

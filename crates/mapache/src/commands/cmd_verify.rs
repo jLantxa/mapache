@@ -1403,7 +1403,7 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
 
     if !report.read_packs {
         ui::cli::log!(
-            "{} {} {}.\n",
+            "{} {} {}.",
             "Note:".bold().dimmed(),
             "Only references were checked. To verify data integrity, run this command with"
                 .dimmed(),
@@ -1412,7 +1412,7 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
     }
 
     ui::cli::log!(
-        "{} Verified {} and {} in {}",
+        "\n{} Verified {} and {} in {}",
         "[SUCCESS]".bold().green(),
         utils::format_count(report.num_snapshots_total, "snapshot", "snapshots"),
         utils::format_count(

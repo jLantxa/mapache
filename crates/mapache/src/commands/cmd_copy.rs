@@ -330,7 +330,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
         );
     } else {
         ui::cli::log!(
-            "Finished in {}",
+            "\nFinished in {}",
             utils::pretty_print_duration(start.elapsed())
         );
     }

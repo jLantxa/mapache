@@ -525,7 +525,7 @@ pub(crate) async fn run_with_repo(
         let prefix = super::dry_run_prefix(dry_run);
         if skipped > 0 {
             ui::cli::log!(
-                "{}Restored {} ({}) in {} with {} and {}, {} skipped",
+                "\n{}Restored {} ({}) in {} with {} and {}, {} skipped",
                 prefix,
                 utils::format_count(items, "item", "items"),
                 utils::format_size_binary(bytes, 3),
@@ -536,7 +536,7 @@ pub(crate) async fn run_with_repo(
             );
         } else {
             ui::cli::log!(
-                "{}Restored {} ({}) in {} with {} and {}",
+                "\n{}Restored {} ({}) in {} with {} and {}",
                 prefix,
                 utils::format_count(items, "item", "items"),
                 utils::format_size_binary(bytes, 3),

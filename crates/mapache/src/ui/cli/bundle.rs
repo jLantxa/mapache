@@ -54,6 +54,7 @@ impl BundleCliState {
         }
         self.items_bar.finish_and_clear();
         self.data_bar.finish_and_clear();
+        let _ = self.mp.clear();
     }
 }
 

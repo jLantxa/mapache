@@ -562,8 +562,11 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         tracing::warn!(target: "bundle", "Scanner task panicked: {e}");
     }
 
+    let summary = progress.summary();
+
     match pipeline_result {
         Ok(result) => {
+            event_sender(Event::Backup(BackupEvent::Finished(summary.clone())));
             writer_finalize(
                 bundle_writer.as_ref(),
                 result.root_tree_id,
@@ -573,14 +576,12 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             .await?;
         }
         Err(e) => {
+            event_sender(Event::Backup(BackupEvent::Finished(summary)));
             drop(bundle_writer);
             let _ = tokio::fs::remove_file(output).await;
             return Err(BundleError::Repo(e));
         }
     }
-
-    let summary = progress.summary();
-    event_sender(Event::Backup(BackupEvent::Finished(summary)));
 
     Ok(())
 }
@@ -897,7 +898,7 @@ async fn export_snapshot_impl(
         ]);
 
         cli::log!("{}", data_table.render());
-        cli::log!("Snapshot exported successfully");
+        cli::log!("\nSnapshot exported successfully");
     }
 
     tracing::info!(target: "bundle", "Bundle export completed (size={}, blobs={})", final_size, total);

@@ -261,6 +261,8 @@ pub async fn run_with_repo(
     } else {
         let net_deleted_bytes = deleted_bytes as i64 - added_bytes as i64;
 
+        ui::cli::log!();
+
         if net_deleted_bytes == 0 && added_bytes == 0 {
             ui::cli::log!(
                 "{} Repository is already clean — no action needed",

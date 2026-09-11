@@ -128,7 +128,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), Rechun
             repo.flush_and_finalize_pack_saver().await?;
 
             ui::cli::log!(
-                "Finished in {}",
+                "\nFinished in {}",
                 utils::pretty_print_duration(start.elapsed())
             );
             tracing::info!(target: "rechunk", "Rechunk command completed in {:?}", start.elapsed());

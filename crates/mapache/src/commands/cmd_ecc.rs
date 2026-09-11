@@ -150,7 +150,7 @@ async fn cmd_enable(
     repo.save_manifest(&manifest).await?;
 
     ui::cli::log!(
-        "Done. Generated {} sidecars in {}",
+        "\nDone. Generated {} sidecars in {}",
         count,
         utils::pretty_print_duration(start.elapsed()),
     );
@@ -187,7 +187,7 @@ async fn cmd_disable(
     let count = delete_all_sidecars(backend, cleanup_handler).await?;
 
     ui::cli::log!(
-        "Done. Removed {} sidecars in {}",
+        "\nDone. Removed {} sidecars in {}",
         count,
         utils::pretty_print_duration(start.elapsed()),
     );
@@ -229,7 +229,7 @@ async fn cmd_set_percent(
     }
 
     ui::cli::log!(
-        "Done. Generated {} sidecars in {}",
+        "\nDone. Generated {} sidecars in {}",
         count,
         utils::pretty_print_duration(start.elapsed()),
     );
@@ -270,7 +270,7 @@ async fn cmd_regenerate(
         regenerate_sidecars(repo, backend, secure_storage, &config, cleanup_handler).await?;
 
     ui::cli::log!(
-        "Done. Generated {} sidecars in {}",
+        "\nDone. Generated {} sidecars in {}",
         count,
         utils::pretty_print_duration(start.elapsed()),
     );

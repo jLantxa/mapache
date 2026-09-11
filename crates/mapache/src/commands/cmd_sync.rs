@@ -296,7 +296,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         );
     } else {
         ui::cli::log!(
-            "Finished in {}",
+            "\nFinished in {}",
             utils::pretty_print_duration(start.elapsed())
         );
     }

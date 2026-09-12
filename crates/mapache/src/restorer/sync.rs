@@ -49,8 +49,12 @@ pub async fn delete_nodes(
         ))
     })?;
 
-    if !opts.no_preserve_root {
-        let _ = tree_stream.next().await;
+    if !opts.no_preserve_root
+        && let Some(Err(e)) = tree_stream.next().await
+    {
+        return Err(MapacheError::Internal(format!(
+            "failed to read snapshot tree root: {e}"
+        )));
     }
 
     while let Some(item_result) = tree_stream.next().await {

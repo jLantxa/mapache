@@ -32,6 +32,8 @@ pub(crate) enum Error {
     InvalidShardLength,
     /// Matrix is singular and cannot be inverted.
     SingularMatrix,
+    /// A shard listed as available is missing.
+    ShardDataMissing(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -46,6 +48,7 @@ impl std::fmt::Display for Error {
             Error::InvalidShardCount(n) => write!(f, "invalid shard count: {n}"),
             Error::InvalidShardLength => write!(f, "shard length must be non-zero"),
             Error::SingularMatrix => write!(f, "singular matrix"),
+            Error::ShardDataMissing(n) => write!(f, "shard data missing: {n}"),
         }
     }
 }
@@ -287,7 +290,7 @@ impl ReedSolomon {
                     }
                     let shard_data = shards[shard_idx]
                         .as_ref()
-                        .expect("shard is present in `available`");
+                        .ok_or(Error::ShardDataMissing(shard_idx))?;
                     Galois::mul_add_scalar(&mut result, coeff, shard_data);
                 }
                 shards[missing_idx] = Some(result);

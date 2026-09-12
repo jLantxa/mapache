@@ -3,16 +3,13 @@
 //! All items in this module are temporary and should be removed when v1 is deprecated.
 // TODO(v1-removal): Remove this entire module.
 
-use std::collections::{HashMap, HashSet};
-
 use crate::{
     archiver::processor::is_all_zero,
     backend::{Handle, StorageBackend},
     common::{
-        BlobType, ContentIdType, ID, defaults,
+        BlobType, ContentIdType, ID,
         error::{MapacheError, Result},
     },
-    fs::tree::Tree,
     repository::{
         packer::{PackedBlobDescriptor, Packer},
         repo::Repository,
@@ -22,18 +19,16 @@ use crate::{
 
 /// Re-encrypt a single pack from `old_nonce_at_end` to `new_nonce_at_end` position.
 ///
-/// Tree blobs are NOT re-serialized here (JSON→binary is handled separately in
-/// `update_tree_hierarchy`) because re-serialization changes blob IDs, which
-/// cascades through the tree hierarchy. Instead, tree plaintext data is collected
-/// in the returned HashMap for later processing.
-pub async fn re_encrypt_pack(
+/// v2 uses the same JSON tree serialization as v1, so tree blobs are re-encrypted
+/// in place and the tree hierarchy is left untouched.
+pub(crate) async fn re_encrypt_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
     old_pack_id: &ID,
     old_nonce_at_end: bool,
     new_nonce_at_end: bool,
-) -> Result<(ID, Vec<PackedBlobDescriptor>, HashMap<ID, Vec<u8>>)> {
+) -> Result<(ID, Vec<PackedBlobDescriptor>)> {
     let old_path = repo.get_path(ContentIdType::Pack, old_pack_id);
     let old_handle = Handle::new(&old_path);
 
@@ -72,7 +67,6 @@ pub async fn re_encrypt_pack(
 
     let mut new_data = Vec::with_capacity(data_section_end);
     let mut new_offset = 0u32;
-    let mut tree_plaintexts: HashMap<ID, Vec<u8>> = HashMap::new();
 
     for desc in &mut descriptors {
         if matches!(desc.blob_type, BlobType::Padding) {
@@ -102,11 +96,6 @@ pub async fn re_encrypt_pack(
             desc.offset = 0;
             desc.length = 0;
         } else {
-            if matches!(desc.blob_type, BlobType::Tree) {
-                let decompressed = secure_storage.decompress(&plaintext)?;
-                tree_plaintexts.insert(desc.id, decompressed);
-            }
-
             let re_encrypted =
                 secure_storage.re_encrypt(blob_encrypted, old_nonce_at_end, new_nonce_at_end)?;
             desc.offset = new_offset;
@@ -149,24 +138,25 @@ pub async fn re_encrypt_pack(
     let new_handle = Handle::new(&new_path);
     backend.write(&new_handle, new_pack.into()).await?;
 
-    Ok((new_id, descriptors, tree_plaintexts))
+    Ok((new_id, descriptors))
 }
 
-/// Validate that a pack can be read and decrypted.
-pub async fn validate_pack(
+/// Parse a pack's footer and return its blob descriptors.
+///
+/// Used by dry runs to report accurate blob counts; also validates that the
+/// pack footer can be read and decrypted.
+pub(crate) async fn read_pack_descriptors(
     repo: &Repository,
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
     pack_id: &ID,
     nonce_at_end: bool,
-) -> Result<usize> {
-    let descriptors =
-        Packer::parse_pack_footer(repo, backend, secure_storage, pack_id, nonce_at_end).await?;
-    Ok(descriptors.len())
+) -> Result<Vec<PackedBlobDescriptor>> {
+    Packer::parse_pack_footer(repo, backend, secure_storage, pack_id, nonce_at_end).await
 }
 
 /// Re-encrypt a standalone file (snapshot, index, etc.).
-pub async fn re_encrypt_file(
+pub(crate) async fn re_encrypt_file(
     params: &ReEncryptParams<'_>,
     file_type: ContentIdType,
     old_id: &ID,
@@ -196,143 +186,10 @@ pub async fn re_encrypt_file(
 }
 
 /// Parameters for re-encryption during migration.
-pub struct ReEncryptParams<'a> {
-    pub repo: &'a Repository,
-    pub backend: &'a dyn StorageBackend,
-    pub secure_storage: &'a SecureStorage,
-    pub old_nonce_at_end: bool,
-    pub new_nonce_at_end: bool,
-}
-
-/// Re-encrypt a snapshot and update its root tree ID.
-pub async fn re_encrypt_snapshot(
-    params: &ReEncryptParams<'_>,
-    old_id: &ID,
-    new_root_tree_id: ID,
-) -> Result<ID> {
-    let old_path = params.repo.get_path(ContentIdType::Snapshot, old_id);
-    let data = params.backend.read(&Handle::new(&old_path), 0, 0).await?;
-
-    let decrypted = params
-        .secure_storage
-        .decrypt_inner(&data, params.old_nonce_at_end)?
-        .into_owned();
-    let decompressed = params.secure_storage.decompress(&decrypted)?;
-    let mut snapshot: crate::repository::snapshot::Snapshot =
-        serde_json::from_slice(&decompressed)?;
-    snapshot.tree = new_root_tree_id;
-
-    let reserialized = serde_json::to_vec(&snapshot)?;
-    let mut ctx = params.secure_storage.get_encoding_context()?;
-    let re_encrypted = params.secure_storage.encode_with_nonce_position(
-        &mut ctx,
-        &reserialized,
-        params.new_nonce_at_end,
-    )?;
-
-    let new_id = ID::from_content(&re_encrypted);
-    let new_path = params.repo.get_path(ContentIdType::Snapshot, &new_id);
-    let new_handle = Handle::new(&new_path);
-    params
-        .backend
-        .write(&new_handle, re_encrypted.into())
-        .await?;
-    Ok(new_id)
-}
-
-/// Re-serialize a tree hierarchy from JSON to binary.
-///
-/// Uses DFS post-order traversal: children are always re-serialized before
-/// their parents, so sub-tree references can be updated in a single pass.
-///
-/// Returns:
-/// - `root_map`: old root tree ID → new root tree ID (both are plaintext-hash IDs)
-/// - `trees`: (new_id, binary_data) for each re-serialized tree
-#[allow(clippy::type_complexity)]
-pub fn update_tree_hierarchy(
-    tree_plaintexts: &HashMap<ID, Vec<u8>>,
-    root_tree_ids: &[ID],
-) -> Result<(HashMap<ID, ID>, Vec<(ID, Vec<u8>)>)> {
-    let mut id_map: HashMap<ID, ID> = HashMap::new();
-    let mut new_trees: Vec<(ID, Vec<u8>)> = Vec::new();
-    let mut visited: HashSet<ID> = HashSet::new();
-
-    fn dfs(
-        tree_id: ID,
-        tree_plaintexts: &HashMap<ID, Vec<u8>>,
-        id_map: &mut HashMap<ID, ID>,
-        new_trees: &mut Vec<(ID, Vec<u8>)>,
-        visited: &mut HashSet<ID>,
-    ) -> Result<()> {
-        if !visited.insert(tree_id) {
-            return Ok(());
-        }
-        let Some(plaintext) = tree_plaintexts.get(&tree_id) else {
-            return Ok(());
-        };
-        let mut tree: Tree = serde_json::from_slice(plaintext)?;
-
-        for node in &tree.nodes {
-            if let Some(sub_id) = node.tree {
-                dfs(sub_id, tree_plaintexts, id_map, new_trees, visited)?;
-            }
-        }
-
-        for node in &mut tree.nodes {
-            if let Some(sub_id) = &node.tree
-                && let Some(&new_sub_id) = id_map.get(sub_id)
-            {
-                node.tree = Some(new_sub_id);
-            }
-        }
-
-        let binary = serde_json::to_vec(&tree).map_err(MapacheError::Serialization)?;
-        let new_id = ID::from_content(&binary);
-        id_map.insert(tree_id, new_id);
-        new_trees.push((new_id, binary));
-        Ok(())
-    }
-
-    for &root_id in root_tree_ids {
-        dfs(
-            root_id,
-            tree_plaintexts,
-            &mut id_map,
-            &mut new_trees,
-            &mut visited,
-        )?;
-    }
-
-    let mut root_map = HashMap::new();
-    for &root_id in root_tree_ids {
-        if let Some(&new_id) = id_map.get(&root_id) {
-            root_map.insert(root_id, new_id);
-        }
-    }
-
-    new_trees.sort_by_key(|(id, _)| *id);
-    Ok((root_map, new_trees))
-}
-
-/// Create a pack from pre-encoded blobs, write it to the backend, and return
-/// the pack id + descriptors for index registration.
-pub async fn create_pack_from_blobs(
-    repo: &Repository,
-    backend: &dyn StorageBackend,
-    secure_storage: &std::sync::Arc<SecureStorage>,
-    blobs: &[(ID, BlobType, Vec<u8>, u64)],
-) -> Result<Option<(ID, Vec<PackedBlobDescriptor>)>> {
-    let mut packer = Packer::new(defaults::DEFAULT_PACK_SIZE as usize, secure_storage.clone())?;
-    for (id, blob_type, encoded, raw_size) in blobs {
-        packer.add_blob(*id, *blob_type, encoded, *raw_size, true)?;
-    }
-    let flushed = match packer.finalize()? {
-        Some(f) => f,
-        None => return Ok(None),
-    };
-    let path = repo.get_path(ContentIdType::Pack, &flushed.id);
-    backend
-        .write(&Handle::new(&path), flushed.data.into())
-        .await?;
-    Ok(Some((flushed.id, flushed.descriptors)))
+pub(crate) struct ReEncryptParams<'a> {
+    pub(crate) repo: &'a Repository,
+    pub(crate) backend: &'a dyn StorageBackend,
+    pub(crate) secure_storage: &'a SecureStorage,
+    pub(crate) old_nonce_at_end: bool,
+    pub(crate) new_nonce_at_end: bool,
 }

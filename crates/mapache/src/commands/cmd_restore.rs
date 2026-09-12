@@ -100,7 +100,7 @@ impl std::fmt::Display for Strategy {
         Use --dry-run to simulate the restoration and detect errors before\n\
         writing any files."
 )]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]

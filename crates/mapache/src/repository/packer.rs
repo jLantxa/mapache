@@ -83,16 +83,6 @@ pub struct PackedBlobDescriptor {
     pub compressed: bool,
 }
 
-/// A structure representing the completely processed and flushed contents of a `Packer`.
-#[derive(Debug)]
-pub struct FlushedPack {
-    pub id: ID,
-    pub data: Vec<u8>,
-    pub descriptors: Vec<PackedBlobDescriptor>,
-    pub raw_size: u64,
-    pub meta_size: u64,
-}
-
 /// Internal struct to pass summary data back from the heavy-lifting function
 struct PackFinalizationResult {
     id: ID,
@@ -101,6 +91,15 @@ struct PackFinalizationResult {
     raw_size: u64,
     meta_size: u64,
     encoded_size: u64,
+}
+
+/// A completely processed and flushed pack, used by unit tests that write raw
+/// packs directly to the backend.
+#[cfg(test)]
+pub(crate) struct FlushedPack {
+    pub(crate) id: ID,
+    pub(crate) data: Vec<u8>,
+    pub(crate) descriptors: Vec<PackedBlobDescriptor>,
 }
 
 /// The `Packer` is an in-memory buffer designed to efficiently accumulate multiple blob objects.
@@ -244,15 +243,16 @@ impl Packer {
         }))
     }
 
-    /// Finalize the pack and return the result (public for migration use).
+    /// Finalize the pack and return the result.
+    ///
+    /// Test-only: used by unit tests to obtain a `FlushedPack`.
+    #[cfg(test)]
     pub(crate) fn finalize(&mut self) -> Result<Option<FlushedPack>> {
         self.finalize_and_extract().map(|opt| {
             opt.map(|r| FlushedPack {
                 id: r.id,
                 data: r.data,
                 descriptors: r.descriptors,
-                raw_size: r.raw_size,
-                meta_size: r.meta_size,
             })
         })
     }

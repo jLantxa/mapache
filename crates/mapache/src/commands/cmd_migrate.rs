@@ -1,6 +1,6 @@
 // TODO(v1-removal): Remove this entire command.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     io,
     sync::{
         Arc,
@@ -177,7 +177,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                             )
                         } else {
                             Some(
-                                migration::validate_pack(
+                                migration::read_pack_descriptors(
                                     repo.as_ref(),
                                     backend.as_ref(),
                                     secure_storage.as_ref(),
@@ -185,7 +185,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                                     old_nonce_at_end,
                                 )
                                 .await
-                                .map(|_blob_count| (*pack_id, Vec::new(), HashMap::new())),
+                                .map(|descriptors| (*pack_id, descriptors)),
                             )
                         };
 
@@ -208,7 +208,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             for (old_id, res) in results {
                 match res {
                     None => {}
-                    Some(Ok((new_id, descriptors, _tree_plaintexts))) => {
+                    Some(Ok((new_id, descriptors))) => {
                         pack_map.push((*old_id, new_id, descriptors));
                     }
                     Some(Err(e)) => {

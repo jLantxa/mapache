@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="jLantxa/mapache"
+REPO="jlantxa/mapache"
 VERSION="${VERSION:-latest}"
 
 # ---- resolve latest version ----

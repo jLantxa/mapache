@@ -94,7 +94,7 @@ impl ToExitCode for SnapshotError {
         Files are split using content-defined chunking, deduplicated across\n\
         snapshots, compressed with zstd, and encrypted with AES-256-GCM-SIV.\n"
 )]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// List of paths to backup
     #[clap(value_parser)]

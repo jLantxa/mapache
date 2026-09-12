@@ -12,7 +12,7 @@ works.
 
 ## Reporting Bugs / Requesting Features
 
-Open an [issue](https://github.com/jLantxa/mapache/issues) and describe the
+Open an [issue](https://github.com/jlantxa/mapache/issues) and describe the
 problem or suggestion. Helpful details to include:
 
 - Version of mapache (`mapache --version`).

@@ -1,8 +1,8 @@
 # Design (Repository Format v2)
 
-> **Deprecated format:** For the v1 repository format, see
-> [design_v1.md](design_v1.md). The `mapache migrate` command converts v1
-> repositories to v2.
+> **Note:** Mapache uses self-contained, independent format specifications.
+> This document describes one such format from first principles; no other
+> format version is referenced here.
 
 ## Introduction
 
@@ -134,7 +134,7 @@ data and tree blobs are stored **without** compression (still encrypted), which
 is useful for content that is already compressed (video, photos, archives).
 Metadata (footers, index, snapshots) is always compressed with the default
 level, regardless of this flag. `none` requires the per-blob compression
-marker in the pack footer (available in all formats).
+marker in the pack footer.
 
 Security is a non-negotiable aspect of mapache by design. **Everything** except
 for a handful of bytes is encrypted. Encryption cannot be disabled or opted-out.
@@ -702,8 +702,8 @@ name and its parameters. The `algorithm` discriminator allows extending to
 additional KDFs in the future without changing the on-disk format. Currently the
 only supported value is `"argon2id"`.
 
-> **Note:** The top-level `m`, `t`, `p` fields are deprecated (v1 format) and
-> will be removed in a future version. New keyfiles always write the `kdf`
+> **Note:** The top-level `m`, `t`, `p` fields are deprecated and will be
+> removed in a future version. New keyfiles always write the `kdf`
 > object. Old keyfiles without `kdf` are read by constructing the `kdf` object
 > from the flat fields.
 

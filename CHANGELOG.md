@@ -9,7 +9,7 @@
   (same as v1) for forward-compatible extensibility. v1 is deprecated and will
   be removed in a future release.
 - **`mapache migrate`**: New command to convert v1 repositories to v2 format.
-  Handles re-encryption of packs, file re-indexing, and tree re-serialization.
+  Re-encrypts packs, re-indexes files, and rebuilds the binary index.
   Supports `--dry-run` for preview.
 - **`--format`**: New flag in `init` to select repository format version.
 - **`--compression none`**: Per-blob compression marker in v2 enables storing

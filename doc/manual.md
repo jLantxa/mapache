@@ -51,7 +51,9 @@ Key properties:
 - **Snapshots** — Every backup is a point-in-time snapshot. Snapshots are
   logically independent (no "full vs. incremental" chain) but share underlying
   data blobs.
-- **Portable** — Single statically-linked binary with zero runtime dependencies.
+- **Portable** — Single self-contained binary with no runtime dependencies
+  (statically linked on Linux and Windows; macOS binaries link Apple's system
+  libraries).
 - **Backends** — Local filesystem, SFTP, and S3-compatible object storage.
 - **Verifiable** — Built-in integrity verification at every level.
 
@@ -68,7 +70,7 @@ mission-critical data.
 ### Quick Install (Linux, macOS, Windows)
 
 ```bash
-curl -fsSL https://github.com/jLantxa/mapache/raw/main/tools/install.sh | sh
+curl -fsSL https://github.com/jlantxa/mapache/raw/main/tools/install.sh | sh
 ```
 
 Downloads the latest release binary for your platform and installs it to
@@ -78,7 +80,8 @@ Downloads the latest release binary for your platform and installs it to
 
 Download binaries from the
 [Releases page](https://github.com/jlantxa/mapache/releases).
-All binaries are statically linked and require no dependencies.
+Linux and Windows binaries are statically linked and require no dependencies;
+macOS binaries link Apple's system libraries.
 
 ### Build from Source
 
@@ -196,6 +199,11 @@ of its raw content. This means:
 - Identical content produces the same hash → deduplication.
 - Any change in content produces a different hash → integrity verification.
 
+Zero-filled regions are deduplicated separately from chunking: mapache
+recognizes all-zero content and stores only a marker (a `Zero` blob with
+length 0 in the pack footer) instead of the bytes. Any number of zero regions —
+in one file or across many — share the same marker and consume no pack space.
+
 ### Pack Files
 
 Blobs are not stored individually. They are grouped into **pack files**
@@ -208,6 +216,17 @@ sizes.
 The index maps blob IDs to their physical location (pack ID + offset + length).
 It is the source of truth — any blob not in the index is considered non-existent
 and subject to garbage collection.
+
+#### Index Loading Modes
+
+By default (and with `--index-mode eager`) all index files are loaded into RAM
+for the fastest lookups. With `--index-mode lazy`, mapache keeps only the most
+recently used indices resident — a "hot pool" bounded by
+`runtime.lru-max-blobs` (default 1,000,000 blobs) — and tracks the rest as
+lightweight cold entries, loading them from disk on demand. Lazy mode reduces
+RAM usage on large repositories at the cost of re-reading cold indices; it can
+be set per-command with `--index-mode` or globally in the `[global]` config
+section.
 
 ### Snapshots
 
@@ -248,7 +267,7 @@ a parity-only sidecar (`.ecc` file) that stores redundant parity shards.
 Key properties:
 
 - **No data duplication** — sidecars store only parity shards, not the original
-  data. A 50% ECC overhead adds ~25% storage cost.
+  data. A 50% ECC overhead adds ~50% of the data size in parity storage.
 - **Per-stripe processing** — data is split into stripes of up to 200 shards.
   Each stripe is independently encoded, limiting memory to ~800 KB regardless
   of pack size.
@@ -304,6 +323,7 @@ compression-level = "fast"
 retry-lock = "5m"
 limit-upload = "10 MiB/s"
 limit-download = "50 MiB/s"
+index-mode = "eager"
 
 [snapshot]
 paths = ["/home/user/Documents"]
@@ -522,7 +542,7 @@ on clean shutdown. If a process crashes, stale locks may remain. By default,
 ### `cache` — Manage Local Cache
 
 ```bash
-mapache cache list
+mapache cache
 mapache cache --delete <PREFIX> [<PREFIX>...]
 mapache cache --clear
 ```
@@ -1152,6 +1172,12 @@ mapache verify --dump-pack-blobs packs.txt # Dump every blob descriptor to file
 - Checks that every snapshot references known tree blobs.
 - Checks that every indexed blob points to an existing pack file.
 - Verifies snapshot tree traversal integrity.
+
+#### Metadata Verification
+
+Index, snapshot, and manifest files are always checked: each one is read back
+and validated against its content hash. With `--repair` and ECC enabled, a
+corrupt metadata file is repaired from its parity sidecar when possible.
 
 #### Physical Verification (`--read-packs`)
 

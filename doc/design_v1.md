@@ -1,8 +1,7 @@
-# Design (Repository Format v1 — Deprecated)
+# Design (Repository Format v1)
 
-> **⚠ Deprecated:** This document describes repository format v1, which is
-> deprecated and will be unsupported in a future release. For the current
-> format, see [design_v2.md](design_v2.md). To migrate a v1 repository, run
+> **Note:** This document describes repository format v1, which is deprecated
+> and will be unsupported in a future release. To migrate a v1 repository, run
 > `mapache migrate --repo <path>`.
 
 ## Introduction

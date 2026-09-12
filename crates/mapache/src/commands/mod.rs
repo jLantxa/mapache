@@ -178,6 +178,7 @@ pub struct CliGlobalArgs {
 
     /// Pack target size in MiB
     #[clap(long = "pack-size", value_parser = pack_size_parser)]
+    #[serde(rename = "pack-size", alias = "pack-size-mib")]
     pub pack_size_mib: Option<f32>,
 
     /// Path to a KeyFile
@@ -202,7 +203,11 @@ pub struct CliGlobalArgs {
 
     /// Compression level [none|fastest|fast|balanced|better|best|level:val]
     #[clap(long = "compression", value_parser = parse_compression_level)]
-    #[serde(deserialize_with = "deserialize_compression_opt")]
+    #[serde(
+        rename = "compression",
+        alias = "compression-level",
+        deserialize_with = "deserialize_compression_opt"
+    )]
     pub compression_level: Option<Compression>,
 
     /// Retry acquiring a lock if the repository is already locked. Takes a duration

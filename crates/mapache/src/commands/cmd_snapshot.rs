@@ -117,6 +117,7 @@ pub struct CmdArgs {
 
     /// Tags
     #[clap(long = "tags", value_parser)]
+    #[serde(rename = "tags", alias = "tags-str")]
     pub tags_str: Option<String>,
 
     /// Snapshot description
@@ -142,10 +143,12 @@ pub struct CmdArgs {
 
     /// Number of files to process in parallel. Must be greater than 0.
     #[clap(long = "readers", value_parser = parse_readers)]
+    #[serde(rename = "readers", alias = "num-readers")]
     pub num_readers: Option<usize>,
 
     /// Number of writer threads. Must be greater than 0.
     #[clap(long = "packers", value_parser = parse_packers)]
+    #[serde(rename = "packers", alias = "num-packers")]
     pub num_packers: Option<usize>,
 
     /// Dry run

@@ -86,10 +86,12 @@ pub struct CmdArgs {
 
     /// Only consider snapshots with any tag from the list: tag[,tag,...]
     #[arg(long = "tags", value_parser)]
+    #[serde(rename = "tags", alias = "tags-str")]
     pub tags_str: Option<String>,
 
     /// Only consider snapshots from these hosts.
     #[arg(long = "host", value_parser)]
+    #[serde(rename = "host", alias = "hosts")]
     pub hosts: Vec<String>,
 
     /// Keep the last N snapshots. N must be greater than 0 or "all".
@@ -143,6 +145,7 @@ pub struct CmdArgs {
     // -- Garbage collector --
     /// Run the garbage collector after this command
     #[arg(long = "clean")]
+    #[serde(rename = "clean", alias = "run-gc")]
     pub run_gc: bool,
 
     /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a

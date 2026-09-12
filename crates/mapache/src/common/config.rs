@@ -329,12 +329,12 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
     if let Some(snapshot) = &config.snapshot {
         if snapshot.num_packers == Some(0) {
             return Err(MapacheError::Config(
-                "snapshot.num-packers must be greater than 0".into(),
+                "snapshot.packers must be greater than 0".into(),
             ));
         }
         if snapshot.num_readers == Some(0) {
             return Err(MapacheError::Config(
-                "snapshot.num-readers must be greater than 0".into(),
+                "snapshot.readers must be greater than 0".into(),
             ));
         }
     }
@@ -346,7 +346,7 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
     {
         // Match CLI `--pack-size` range (rejects 0 and out-of-range).
         return Err(MapacheError::Config(format!(
-            "global.pack-size-mib must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
+            "global.pack-size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
         )));
     }
 
@@ -520,8 +520,8 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("mapache.toml");
-        std::fs::write(&path, "[snapshot]\nnum-packers = 0\n").unwrap();
-        let err = load_config(&path).expect_err("num-packers 0 must be rejected");
+        std::fs::write(&path, "[snapshot]\npackers = 0\n").unwrap();
+        let err = load_config(&path).expect_err("packers 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             matches!(&err, MapacheError::Config(_)),
@@ -537,7 +537,7 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("mapache.toml");
-        std::fs::write(&path, format!("[global]\npack-size-mib = {mib}\n")).unwrap();
+        std::fs::write(&path, format!("[global]\npack-size = {mib}\n")).unwrap();
         path
     }
 
@@ -549,8 +549,8 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("mapache.toml");
-        std::fs::write(&path, "[snapshot]\nnum-readers = 0\n").unwrap();
-        let err = load_config(&path).expect_err("num-readers 0 must be rejected");
+        std::fs::write(&path, "[snapshot]\nreaders = 0\n").unwrap();
+        let err = load_config(&path).expect_err("readers 0 must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             matches!(&err, MapacheError::Config(_)),
@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn pack_size_mib_zero_is_rejected() {
         let path = write_global_pack_size("0");
-        let err = load_config(&path).expect_err("pack-size-mib 0 must be rejected");
+        let err = load_config(&path).expect_err("pack-size 0 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert!(
             matches!(&err, MapacheError::Config(_)),
@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn pack_size_mib_below_min_is_rejected() {
         let path = write_global_pack_size("0.5");
-        let err = load_config(&path).expect_err("pack-size-mib 0.5 must be rejected");
+        let err = load_config(&path).expect_err("pack-size 0.5 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert!(
             matches!(&err, MapacheError::Config(_)),
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn pack_size_mib_above_max_is_rejected() {
         let path = write_global_pack_size("8000");
-        let err = load_config(&path).expect_err("pack-size-mib 8000 must be rejected");
+        let err = load_config(&path).expect_err("pack-size 8000 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert!(
             matches!(&err, MapacheError::Config(_)),
@@ -594,9 +594,86 @@ mod tests {
     #[test]
     fn pack_size_mib_in_range_is_accepted() {
         let path = write_global_pack_size("16");
-        let cfg = load_config(&path).expect("pack-size-mib 16 must load");
+        let cfg = load_config(&path).expect("pack-size 16 must load");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert_eq!(cfg.global.unwrap().pack_size_mib, Some(16.0));
+    }
+
+    fn write_global_compression(tag: &str, line: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mapache-compression-{tag}-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, format!("[global]\n{line}\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn compression_key_matches_cli_flag() {
+        let path = write_global_compression("flag", r#"compression = "best""#);
+        let cfg = load_config(&path).expect("compression key must load");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert!(matches!(
+            cfg.global.unwrap().compression_level,
+            Some(crate::commands::Compression::Best)
+        ));
+    }
+
+    #[test]
+    fn compression_level_legacy_key_is_accepted() {
+        let path = write_global_compression("legacy", r#"compression-level = "fast""#);
+        let cfg = load_config(&path).expect("compression-level alias must load");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert!(matches!(
+            cfg.global.unwrap().compression_level,
+            Some(crate::commands::Compression::Fast)
+        ));
+    }
+
+    #[test]
+    fn cli_flag_names_are_accepted_in_config() {
+        let dir = std::env::temp_dir().join(format!("mapache-cli-names-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(
+            &path,
+            "[global]\npack-size = 16\n[snapshot]\ntags = \"work\"\nreaders = 4\npackers = 4\n[forget]\ntags = \"work\"\nhost = [\"laptop\"]\nclean = true\n",
+        )
+        .unwrap();
+        let cfg = load_config(&path).expect("CLI flag names must load");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(cfg.global.unwrap().pack_size_mib, Some(16.0));
+        let snapshot = cfg.snapshot.expect("snapshot section present");
+        assert_eq!(snapshot.tags_str.as_deref(), Some("work"));
+        assert_eq!(snapshot.num_readers, Some(4));
+        assert_eq!(snapshot.num_packers, Some(4));
+        let forget = cfg.forget.expect("forget section present");
+        assert_eq!(forget.tags_str.as_deref(), Some("work"));
+        assert_eq!(forget.hosts.as_slice(), &["laptop".to_string()]);
+        assert!(forget.run_gc);
+    }
+
+    #[test]
+    fn legacy_config_keys_are_still_accepted() {
+        let dir = std::env::temp_dir().join(format!("mapache-legacy-keys-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(
+            &path,
+            "[global]\npack-size-mib = 16\n[snapshot]\ntags-str = \"work\"\nnum-readers = 4\nnum-packers = 4\n[forget]\ntags-str = \"work\"\nhosts = [\"laptop\"]\nrun-gc = true\n",
+        )
+        .unwrap();
+        let cfg = load_config(&path).expect("legacy keys must load via aliases");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(cfg.global.unwrap().pack_size_mib, Some(16.0));
+        let snapshot = cfg.snapshot.expect("snapshot section present");
+        assert_eq!(snapshot.tags_str.as_deref(), Some("work"));
+        assert_eq!(snapshot.num_readers, Some(4));
+        assert_eq!(snapshot.num_packers, Some(4));
+        let forget = cfg.forget.expect("forget section present");
+        assert_eq!(forget.tags_str.as_deref(), Some("work"));
+        assert_eq!(forget.hosts.as_slice(), &["laptop".to_string()]);
+        assert!(forget.run_gc);
     }
 
     fn assert_zero_runtime_field_rejected(field: &str) {

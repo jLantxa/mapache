@@ -316,10 +316,10 @@ no-cache = false
 ssh-privatekey = "~/.ssh/id_ed25519"
 ssh-known-hosts = "~/.ssh/known_hosts"
 auth-file = "~/.mapache/auth"
-pack-size-mib = 16.0
+pack-size = 16.0
 key-file = "~/.mapache/repo.key"
 quiet = false
-compression-level = "fast"
+compression = "fast"
 retry-lock = "5m"
 limit-upload = "10 MiB/s"
 limit-download = "50 MiB/s"
@@ -328,10 +328,10 @@ index-mode = "eager"
 [snapshot]
 paths = ["/home/user/Documents"]
 exclude = ["**/node_modules", "**/.git"]
-tags-str = "work,important"
+tags = "work,important"
 skip-if-unchanged = false
-num-readers = 4
-num-packers = 4
+readers = 4
+packers = 4
 
 [restore]
 strategy = "newer"
@@ -1575,11 +1575,11 @@ avoids wasting space on content that does not compress. Each blob stores a
 single *compressed/uncompressed* marker, so restoring, verifying, or migrating
 the repository requires no extra configuration. Metadata (footers, index,
 snapshots) is always compressed regardless of this setting. `none` is also
-available in the TOML config as `compression-level = "none"`.
+available in the TOML config as `compression = "none"`.
 
 > **Note:** `none` requires repository format v2. The v1 format always stores
 > blobs zstd-compressed and has no per-blob compression marker, so using
-> `--compression none` (or `compression-level = "none"`) against a v1
+> `--compression none` (or `compression = "none"`) against a v1
 > repository fails — migrate it to v2 first (`mapache migrate -r <URL>`).
 
 ### Bandwidth Limit Format

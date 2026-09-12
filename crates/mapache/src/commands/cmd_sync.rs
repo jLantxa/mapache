@@ -551,11 +551,10 @@ async fn sync_backends(
     // Finally, synchronize the manifest file to ensure repo validity at destination
     let manifest_path = std::path::Path::new(repo::MANIFEST_PATH);
     let handle = Handle::new(manifest_path);
-    if let Ok(data) = src_backend.read(&handle, 0, 0).await {
-        dst_backend
-            .write(&handle, backend::WriteContents::Owned(data))
-            .await?;
-    }
+    let data = src_backend.read(&handle, 0, 0).await?;
+    dst_backend
+        .write(&handle, backend::WriteContents::Owned(data))
+        .await?;
 
     Ok(())
 }

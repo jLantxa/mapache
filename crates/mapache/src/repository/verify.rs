@@ -230,8 +230,9 @@ pub async fn verify_metadata_file(
     // Read the file from disk.
     let raw_data = match backend.read(&Handle::new(&file_path), 0, 0).await {
         Ok(d) => d,
-        Err(_) => {
+        Err(e) => {
             // File unreadable — not necessarily bit-rot, could be missing.
+            tracing::warn!(target: "verify", "metadata file {} could not be read: {e}", file_path.display());
             return Ok(stats);
         }
     };

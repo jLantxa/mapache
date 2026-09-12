@@ -71,7 +71,7 @@ impl ToExitCode for ForgetError {
                   least one rule that applies. Explicitly named snapshots are removed too, \
                   unless a retention rule keeps them."
 )]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// Forget specific snapshots by their IDs.  May be combined with
     /// `--keep-*` rules: keep rules take priority, so a named snapshot that

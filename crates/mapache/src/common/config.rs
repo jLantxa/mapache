@@ -289,6 +289,41 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
                 "runtime.s3_multipart_part_size must be greater than 0".into(),
             ));
         }
+        if runtime.s3_multipart_threshold == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.s3_multipart_threshold must be greater than 0".into(),
+            ));
+        }
+        if runtime.restore_max_open_files == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.restore_max_open_files must be greater than 0".into(),
+            ));
+        }
+        if runtime.restore_decoded_budget == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.restore_decoded_budget must be greater than 0".into(),
+            ));
+        }
+        if runtime.restore_pack_segment_max_size == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.restore_pack_segment_max_size must be greater than 0".into(),
+            ));
+        }
+        if runtime.gc_decoded_budget == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.gc_decoded_budget must be greater than 0".into(),
+            ));
+        }
+        if runtime.blobs_per_index_file == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.blobs_per_index_file must be greater than 0".into(),
+            ));
+        }
+        if runtime.lru_max_blobs == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.lru_max_blobs must be greater than 0".into(),
+            ));
+        }
     }
 
     if let Some(snapshot) = &config.snapshot {
@@ -562,5 +597,55 @@ mod tests {
         let cfg = load_config(&path).expect("pack-size-mib 16 must load");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert_eq!(cfg.global.unwrap().pack_size_mib, Some(16.0));
+    }
+
+    fn assert_zero_runtime_field_rejected(field: &str) {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-runtime-zero-{field}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, format!("[runtime]\n{field} = 0\n")).unwrap();
+        let err = load_config(&path).expect_err(&format!("{field} = 0 must be rejected"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_zero_values_are_rejected() {
+        for field in [
+            "s3-multipart-threshold",
+            "restore-max-open-files",
+            "restore-decoded-budget",
+            "restore-pack-segment-max-size",
+            "gc-decoded-budget",
+            "blobs-per-index-file",
+            "lru-max-blobs",
+        ] {
+            assert_zero_runtime_field_rejected(field);
+        }
+    }
+
+    #[test]
+    fn unknown_global_and_command_fields_are_rejected() {
+        let dir =
+            std::env::temp_dir().join(format!("mapache-unknown-fields-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(
+            &path,
+            "[global]\ntypo-option = true\n[snapshot]\nunknown-key = 42\n",
+        )
+        .unwrap();
+        let err = load_config(&path).expect_err("unknown fields must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 }

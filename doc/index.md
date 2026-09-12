@@ -40,4 +40,4 @@ mapache restore --target /tmp/restore -r /path/to/repo
 - **FUSE mount** — Browse snapshot contents as a mounted filesystem (Unix).
 - **Retention policies** — Hourly, daily, weekly, monthly and yearly rules. Filter by host and tag.
 - **Multi-client** — Non-exclusive locking allows multiple hosts to back up to the same repository.
-- **Portable** — Linux, macOS, Windows and Android. Single statically-linked binary for each platform.
+- **Portable** — Linux, macOS, Windows and Android. Single self-contained binary for each platform (statically linked on Linux and Windows).

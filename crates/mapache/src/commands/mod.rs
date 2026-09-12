@@ -151,7 +151,7 @@ pub struct WithGlobal<T: clap::Args> {
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CliGlobalArgs {
     /// Repository path
     #[clap(short, long)]

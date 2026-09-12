@@ -15,21 +15,17 @@ new project. As with any tool managing critical data, users should perform
 their own validation before relying it for primary backups.
 
 > **⚠️ Development build warning:** The `main` branch contains active
-> development towards the new **v2 repository format**. This format is
-> **unstable and may change without notice** until the next release. Support
-> for **v1 repositories may be incomplete or broken** in development builds.
-> A migration command (`mapache migrate`) will be provided to upgrade v1
-> repositories to v2 in a future release.
->
-> **If you are building from source, use a tagged release or an official
-> binary instead of `main` unless you are prepared for breaking changes.**
+> development and may include breaking changes between releases. The `mapache
+> migrate` command is available but its behavior may still be refined. If you
+> are building from source, use a tagged release or an official binary instead
+> of `main` unless you are prepared for breaking changes.
 
 ## Documentation
 
 Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.github.io/mapache/)**.
 
 - [Manual](https://jlantxa.github.io/mapache/manual.html) — complete usage reference
-- [Design](https://jlantxa.github.io/mapache/design.html) — repository format and architecture
+- [Design](https://jlantxa.github.io/mapache/design_v2.html) — repository format and architecture
 - [Design v1 (Deprecated)](https://jlantxa.github.io/mapache/design_v1.html) — legacy v1 format specification
 
 ## Key Features
@@ -40,8 +36,9 @@ Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.githu
   and machines. Only new data is stored.
 - **Encryption:** AES-256-GCM-SIV with Argon2id key derivation. Data is
   never stored or transmitted in the clear.
-- **Zero-config operation:** single statically-linked binary, no
-  dependencies. Point it at a directory and run.
+- **Zero-config operation:** single self-contained binary with no runtime
+  dependencies (statically linked on Linux and Windows; macOS binaries link
+  Apple's system libraries). Point it at a directory and run.
 - **Backends:** local filesystem, SFTP, and S3-compatible object storage.
 - **Terminal UI:** interactive TUI with dashboard, snapshot and restore
   wizards, file explorer, diff viewer, and search across snapshots.
@@ -106,7 +103,7 @@ Workloads:
 **Quick install** (Linux, macOS, Windows):
 
 ```bash
-curl -fsSL https://github.com/jLantxa/mapache/raw/main/tools/install.sh | sh
+curl -fsSL https://github.com/jlantxa/mapache/raw/main/tools/install.sh | sh
 ```
 
 Or compile from source with the [Rust toolchain]:

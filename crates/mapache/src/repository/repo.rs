@@ -54,7 +54,9 @@ const OBJECTS_DIR_FANOUT: usize = 2;
 
 pub fn warn_v1_deprecated() {
     ui::cli::warning!(
-        "Repository format v1 is deprecated and will be unsupported in a future release.\n\
+        "Repository format v1 is deprecated and will be removed in a future release.\n\
+        Creating new v1 repositories will be disabled soon; existing repositories can still be \
+        read until v1 support is removed entirely.\n\
         Consider migrating to v2: `mapache migrate --repo <repo-path>`\n"
     );
 }
@@ -463,6 +465,10 @@ impl Repository {
         let master_index = Arc::new(MasterIndex::new(config.index_mode));
 
         let repo_version = manifest.version();
+
+        if repo_version == 1 {
+            warn_v1_deprecated();
+        }
 
         let repo = Repository {
             manifest,

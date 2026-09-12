@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::{
     archiver::{processor, processor::ReusableBuffers, progress::SnapshotProgress},
-    common::error::Result,
+    common::error::{MapacheError, Result},
     common::traits::BlobSaver,
     fs::tree::{NodeDiff, StreamNode},
     ui::events::EventSender,
@@ -44,10 +44,17 @@ pub(crate) struct ChunkerPool {
 }
 
 impl ChunkerPool {
-    pub(crate) fn new(num_threads: usize) -> Self {
-        let (sender, job_receiver) = crossbeam_channel::bounded::<ChunkerPoolMsg>(num_threads * 4);
-        let (result_sender, receiver) =
-            crossbeam_channel::bounded::<ChunkerResult>(num_threads * 4);
+    pub(crate) fn new(num_threads: usize) -> Result<Self> {
+        if num_threads == 0 {
+            return Err(MapacheError::Config(
+                "chunker workers must be greater than 0".to_string(),
+            ));
+        }
+        let channel_capacity = num_threads
+            .checked_mul(4)
+            .ok_or_else(|| MapacheError::Config("chunker worker count is too large".to_string()))?;
+        let (sender, job_receiver) = crossbeam_channel::bounded(channel_capacity);
+        let (result_sender, receiver) = crossbeam_channel::bounded(channel_capacity);
 
         let job_receiver = Arc::new(job_receiver);
 
@@ -123,6 +130,20 @@ impl ChunkerPool {
             });
         }
 
-        Self { sender, receiver }
+        Ok(Self { sender, receiver })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_workers() {
+        assert!(matches!(
+            ChunkerPool::new(0),
+            Err(MapacheError::Config(message))
+                if message == "chunker workers must be greater than 0"
+        ));
     }
 }

@@ -219,6 +219,17 @@ impl BundleReader {
             ));
         }
 
+        validate_section_range("index", trailer.index_offset, trailer.index_len, file_len)?;
+        validate_section_range(
+            "manifest",
+            trailer.manifest_offset,
+            trailer.manifest_len,
+            file_len,
+        )?;
+        if trailer.ecc_len > 0 {
+            validate_section_range("ECC", trailer.ecc_offset, trailer.ecc_len, file_len)?;
+        }
+
         // Read and decrypt the index.
         file.seek(SeekFrom::Start(trailer.index_offset))?;
         let mut encrypted_index = vec![0u8; trailer.index_len as usize];
@@ -369,6 +380,20 @@ impl BundleReader {
     pub fn index(&self) -> &BundleIndex {
         &self.index
     }
+}
+
+fn validate_section_range(name: &str, offset: u64, length: u32, file_len: u64) -> Result<()> {
+    let end = offset.checked_add(length as u64).ok_or_else(|| {
+        MapacheError::Format(format!(
+            "bundle {name} section range overflows: offset {offset}, length {length}"
+        ))
+    })?;
+    if end > file_len {
+        return Err(MapacheError::Format(format!(
+            "bundle {name} section ends at {end}, beyond file length {file_len}"
+        )));
+    }
+    Ok(())
 }
 
 pub async fn scan_bundle_tree<L>(loader: Arc<L>, tree_id: &ID) -> Result<(usize, u64)>
@@ -793,5 +818,18 @@ mod tests {
             ),
             Ok(_) => panic!("expected bundle open to fail"),
         }
+    }
+
+    #[test]
+    fn test_section_range_validation_rejects_overflow_and_out_of_bounds() {
+        assert!(matches!(
+            validate_section_range("index", u64::MAX, 1, u64::MAX),
+            Err(MapacheError::Format(_))
+        ));
+        assert!(matches!(
+            validate_section_range("manifest", 90, 11, 100),
+            Err(MapacheError::Format(_))
+        ));
+        assert!(validate_section_range("index", 90, 10, 100).is_ok());
     }
 }

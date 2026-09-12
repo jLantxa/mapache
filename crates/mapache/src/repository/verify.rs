@@ -402,7 +402,10 @@ async fn verify_pack_inline(
                     }
 
                     let start = desc.offset as usize;
-                    let end = start + desc.length as usize;
+                    let Some(end) = start.checked_add(desc.length as usize) else {
+                        corrupt.push(desc.id);
+                        return (v, corrupt, bytes);
+                    };
 
                     if end > raw_data.len() {
                         corrupt.push(desc.id);

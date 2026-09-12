@@ -95,6 +95,13 @@ impl Stash {
     }
 
     pub(super) fn get_attr_by_name(&self, parent: INodeNo, name: &str) -> Option<FileAttr> {
+        if name == "." {
+            return self.get_attr(parent);
+        }
+        if name == ".." {
+            let parent_node = self.nodes.get(&parent)?;
+            return self.get_attr(parent_node.parent);
+        }
         if let Some(&ino) = self.path_cache.get(&(parent, name.to_string())) {
             return self.get_attr(ino);
         }
@@ -281,7 +288,7 @@ pub(super) fn node_to_fileattr(ino: INodeNo, parent_time: SystemTime, node: &Nod
         ctime: node.metadata.created_time.unwrap_or(parent_time),
         crtime: node.metadata.created_time.unwrap_or(parent_time),
         kind,
-        perm: node.metadata.mode.unwrap_or(0o755) as u16,
+        perm: (node.metadata.mode.unwrap_or(0o755) & 0o7777) as u16,
         nlink: if kind == fuser::FileType::Directory {
             2
         } else {

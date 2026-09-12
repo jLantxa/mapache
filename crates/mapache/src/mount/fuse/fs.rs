@@ -102,16 +102,31 @@ impl MapacheFS<dyn BlobLoader> {
     pub fn unmount(mountpoint: &Path) -> Result<()> {
         tracing::info!(target: "fuse", "Unmounting {:?}", mountpoint);
         #[cfg(target_os = "linux")]
-        let mut cmd = std::process::Command::new("/usr/bin/fusermount");
+        let mut cmd = if std::path::Path::new("/usr/bin/fusermount").exists() {
+            std::process::Command::new("/usr/bin/fusermount")
+        } else if std::path::Path::new("/usr/bin/fusermount3").exists() {
+            std::process::Command::new("/usr/bin/fusermount3")
+        } else {
+            std::process::Command::new("fusermount")
+        };
         #[cfg(target_os = "linux")]
         cmd.arg("-u");
 
         #[cfg(target_os = "macos")]
         let mut cmd = std::process::Command::new("/usr/sbin/umount");
 
-        cmd.arg(mountpoint).output().map_err(|e| {
+        let output = cmd.arg(mountpoint).output().map_err(|e| {
             MapacheError::Fuse(format!("failed to unmount {}: {e}", mountpoint.display()))
         })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MapacheError::Fuse(format!(
+                "failed to unmount {}: {}",
+                mountpoint.display(),
+                stderr.trim()
+            )));
+        }
 
         Ok(())
     }
@@ -354,7 +369,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
                         NodeKind::File { blobs } => blobs.clone(),
                         _ => return Err(MapacheError::Internal("not a file".to_string())),
                     },
-                    None => return Err(MapacheError::Internal("not found".to_string())),
+                    None => return Err(MapacheError::NotFound("not found".to_string())),
                 }
             };
 
@@ -388,7 +403,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
                 let mut prefix = Vec::with_capacity(lengths.len() + 1);
                 prefix.push(0u64);
                 for len in &lengths {
-                    prefix.push(prefix[prefix.len() - 1] + len);
+                    prefix.push(prefix[prefix.len() - 1].saturating_add(*len));
                 }
                 let start_blob = prefix
                     .partition_point(|&start| start <= offset)
@@ -458,7 +473,9 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
         match result {
             Ok(data) => reply.data(&data),
             Err(e) => {
-                if e.to_string() == "Not found" {
+                if matches!(e, MapacheError::NotFound(_))
+                    || e.to_string().eq_ignore_ascii_case("not found")
+                {
                     reply.error(Errno::ENOENT);
                 } else {
                     ui::cli::error!("Failed to read data for ino {}: {}", ino, e.to_string());

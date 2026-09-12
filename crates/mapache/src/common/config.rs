@@ -324,6 +324,13 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
                 "runtime.lru_max_blobs must be greater than 0".into(),
             ));
         }
+        if let Some(factor) = runtime.min_pack_size_factor
+            && (!factor.is_finite() || !(0.0..=1.0).contains(&factor))
+        {
+            return Err(MapacheError::Config(
+                "runtime.min_pack_size_factor must be finite and between 0 and 1".into(),
+            ));
+        }
     }
 
     if let Some(snapshot) = &config.snapshot {
@@ -705,6 +712,37 @@ mod tests {
         ] {
             assert_zero_runtime_field_rejected(field);
         }
+    }
+
+    #[test]
+    fn min_pack_size_factor_must_be_between_zero_and_one() {
+        for value in ["-0.1", "1.1", "nan"] {
+            let dir = std::env::temp_dir().join(format!(
+                "mapache-min-pack-factor-{}-{}",
+                value.replace('.', "_"),
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("mapache.toml");
+            std::fs::write(
+                &path,
+                format!("[runtime]\nmin-pack-size-factor = {value}\n"),
+            )
+            .unwrap();
+            let err = load_config(&path).expect_err("invalid pack factor must be rejected");
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(matches!(err, MapacheError::Config(_)));
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-min-pack-factor-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[runtime]\nmin-pack-size-factor = 0\n").unwrap();
+        assert!(load_config(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

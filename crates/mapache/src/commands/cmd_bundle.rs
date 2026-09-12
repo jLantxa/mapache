@@ -566,7 +566,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
 
     match pipeline_result {
         Ok(result) => {
-            event_sender(Event::Backup(BackupEvent::Finished(summary.clone())));
             writer_finalize(
                 bundle_writer.as_ref(),
                 result.root_tree_id,
@@ -574,6 +573,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
                 &progress,
             )
             .await?;
+            event_sender(Event::Backup(BackupEvent::Finished(summary.clone())));
         }
         Err(e) => {
             event_sender(Event::Backup(BackupEvent::Finished(summary)));
@@ -1420,10 +1420,10 @@ where
     );
 
     let mp_clone = mountpoint.to_path_buf();
-    let mount_res = tokio::task::spawn_blocking(move || mount_fn(&mp_clone));
+    let mut mount_res = tokio::task::spawn_blocking(move || mount_fn(&mp_clone));
 
     tokio::select! {
-        res = mount_res => {
+        res = &mut mount_res => {
             res.map_err(|e| E::from(MapacheError::task_panicked("mount", e)))??;
         }
         _ = async {
@@ -1437,6 +1437,7 @@ where
             cli::log!("Interrupt received. Unmounting...");
             tracing::info!(target: "mount", "Interrupt received. Unmounting {:?}", mountpoint);
             let _ = MapacheFS::<dyn BlobLoader>::unmount(mountpoint);
+            let _ = mount_res.await;
         }
     }
     tracing::info!(target: "mount", "Mount loop finished");

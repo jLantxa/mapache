@@ -461,11 +461,6 @@ pub(crate) async fn run_with_repo(
     }
     restore_result.map_err(|e| RestoreError::RestoreFailed(e.inner()))?;
 
-    emit_event(
-        &counters.event_sender,
-        Event::Restore(RestoreEvent::Finished),
-    );
-
     if delete {
         tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
         let delete_result = restorer::delete_nodes(
@@ -490,6 +485,11 @@ pub(crate) async fn run_with_repo(
         delete_result
             .map_err(|e| RestoreError::RestoreFailed(format!("delete failed: {}", e.inner())))?;
     }
+
+    emit_event(
+        &counters.event_sender,
+        Event::Restore(RestoreEvent::Finished),
+    );
 
     tracing::info!(target: "restore", "Restore command completed");
     let errs = counters.error_count.load(Ordering::Relaxed);

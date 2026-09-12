@@ -240,13 +240,14 @@ pub(crate) async fn restore_packs(
                     .blobs
                     .iter()
                     .all(|(_, loc, _)| loc.blob_type == BlobType::Tree);
+                let (read_offset, read_length) = segment.read_range()?;
 
                 let segment_data = repo
                     .backend()
                     .read(
                         &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
-                        segment.min_offset as isize,
-                        segment.source_len() as usize,
+                        read_offset,
+                        read_length,
                     )
                     .await
                     .map_err(|e| {
@@ -292,8 +293,23 @@ pub(crate) async fn restore_packs(
                                         blob_offset, min_offset
                                     )));
                                 }
-                                let start = (blob_offset - min_offset) as usize;
-                                let end = start + locator.length as usize;
+                                let start = usize::try_from(blob_offset - min_offset).map_err(|_| {
+                                    MapacheError::Format(format!(
+                                        "blob offset {} does not fit in usize",
+                                        blob_offset
+                                    ))
+                                })?;
+                                let length = usize::try_from(locator.length).map_err(|_| {
+                                    MapacheError::Format(format!(
+                                        "blob length {} does not fit in usize",
+                                        locator.length
+                                    ))
+                                })?;
+                                let end = start.checked_add(length).ok_or_else(|| {
+                                    MapacheError::Format(format!(
+                                        "blob range overflows usize: offset {start}, length {length}"
+                                    ))
+                                })?;
                                 if end > data_arc_inner.len() {
                                     return Err(MapacheError::Format(format!(
                                         "blob end {} exceeds segment data length {}",

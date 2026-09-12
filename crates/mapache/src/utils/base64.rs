@@ -34,9 +34,14 @@ pub(crate) fn decode(input: &str) -> Result<Vec<u8>> {
     let out_len = input.len() / 4 * 3 - padding;
     let mut out = Vec::with_capacity(out_len);
 
-    for chunk in input.as_bytes().chunks(4) {
+    let chunks = input.as_bytes().chunks(4);
+    let chunk_count = input.len() / 4;
+    for (chunk_index, chunk) in chunks.enumerate() {
         let mut buf = [0u32; 4];
         for (i, &c) in chunk.iter().enumerate() {
+            if c == b'=' && (chunk_index + 1 != chunk_count || i < 2) {
+                return Err(MapacheError::Format("invalid base64 padding".to_string()));
+            }
             buf[i] = match c {
                 b'A'..=b'Z' => (c - b'A') as u32,
                 b'a'..=b'z' => (c - b'a' + 26) as u32,
@@ -51,6 +56,9 @@ pub(crate) fn decode(input: &str) -> Result<Vec<u8>> {
                     )));
                 }
             };
+        }
+        if chunk[2] == b'=' && chunk[3] != b'=' {
+            return Err(MapacheError::Format("invalid base64 padding".to_string()));
         }
         let triple = (buf[0] << 18) | (buf[1] << 12) | (buf[2] << 6) | buf[3];
         out.push((triple >> 16) as u8);
@@ -111,6 +119,13 @@ mod tests {
     #[test]
     fn test_invalid_char() {
         assert!(decode("!!!").is_err());
+    }
+
+    #[test]
+    fn test_invalid_padding() {
+        for value in ["====", "Zg=A", "Z=g=", "Zg==Zg=="] {
+            assert!(decode(value).is_err(), "accepted invalid padding: {value}");
+        }
     }
 
     #[test]

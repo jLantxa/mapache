@@ -21,7 +21,23 @@ pub struct PackSegment<T> {
 
 impl<T> PackSegment<T> {
     pub fn source_len(&self) -> u64 {
-        self.max_offset - self.min_offset
+        self.max_offset.saturating_sub(self.min_offset)
+    }
+
+    pub fn read_range(&self) -> Result<(isize, usize)> {
+        let read_offset = isize::try_from(self.min_offset).map_err(|_| {
+            MapacheError::Format(format!(
+                "pack offset {} does not fit in isize",
+                self.min_offset
+            ))
+        })?;
+        let read_length = usize::try_from(self.source_len()).map_err(|_| {
+            MapacheError::Format(format!(
+                "pack segment length {} does not fit in usize",
+                self.source_len()
+            ))
+        })?;
+        Ok((read_offset, read_length))
     }
 }
 
@@ -98,13 +114,14 @@ pub async fn download_pack_segments<T: Send + 'static>(
                     .blobs
                     .iter()
                     .all(|(_, loc, _)| loc.blob_type == BlobType::Tree);
+                let (read_offset, read_length) = segment.read_range()?;
 
                 let data = repo
                     .backend()
                     .read(
                         &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
-                        segment.min_offset as isize,
-                        segment.source_len() as usize,
+                        read_offset,
+                        read_length,
                     )
                     .await
                     .map_err(|e| {
@@ -189,8 +206,23 @@ impl BlobLoader {
                         blob_offset, segment.min_offset
                     )));
                 }
-                let start = (blob_offset - segment.min_offset) as usize;
-                let end = start + loc.length as usize;
+                let start = usize::try_from(blob_offset - segment.min_offset).map_err(|_| {
+                    MapacheError::Integrity(format!(
+                        "Blob offset {} does not fit in usize",
+                        blob_offset
+                    ))
+                })?;
+                let length = usize::try_from(loc.length).map_err(|_| {
+                    MapacheError::Integrity(format!(
+                        "Blob length {} does not fit in usize",
+                        loc.length
+                    ))
+                })?;
+                let end = start.checked_add(length).ok_or_else(|| {
+                    MapacheError::Integrity(format!(
+                        "Blob range overflows usize: offset {start}, length {length}"
+                    ))
+                })?;
                 if end > data.len() {
                     return Err(MapacheError::Integrity(format!(
                         "Blob end {} exceeds segment data length {}",

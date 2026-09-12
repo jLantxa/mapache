@@ -1271,7 +1271,18 @@ impl MasterIndex {
         }
 
         if let Some(mut idx) = index_to_persist {
-            let size = idx.persist(repo, repo.repo_version()).await?;
+            let size = match idx.persist(repo, repo.repo_version()).await {
+                Ok(size) => size,
+                Err(e) => {
+                    let mut lock = self.inner.write();
+                    let instance_id = idx.instance_id;
+                    lock.indices.push(idx);
+                    if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                        Self::record_touch(&mut lock, instance_id);
+                    }
+                    return Err(e);
+                }
+            };
             // Put the persisted index back with updated status.
             let mut lock = self.inner.write();
             let instance_id = idx.instance_id;
@@ -1323,8 +1334,22 @@ impl MasterIndex {
             tracing::info!(target: "index", "Persisting {} indices", num_to_persist);
         }
 
-        for mut idx in indices_to_persist {
-            let size = idx.persist(repo, repo_version).await?;
+        let mut iter = indices_to_persist.into_iter();
+        while let Some(mut idx) = iter.next() {
+            let size = match idx.persist(repo, repo_version).await {
+                Ok(size) => size,
+                Err(e) => {
+                    let mut lock = self.inner.write();
+                    for remaining in std::iter::once(idx).chain(iter) {
+                        let instance_id = remaining.instance_id;
+                        lock.indices.push(remaining);
+                        if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                            Self::record_touch(&mut lock, instance_id);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
             total_size += size;
 
             // Put the persisted index back.
@@ -1731,6 +1756,19 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use crate::{
+        backend::{
+            StorageBackend,
+            mock::{BackendOp, MockBackend, MockEffect},
+        },
+        common::defaults::TEST_REPO_CONFIG,
+        repository::repo::{Auth, THIS_REPOSITORY_VERSION},
+    };
+    use zeroize::Zeroizing;
+
     #[test]
     fn test_index_rejects_huge_claimed_blob_count_without_allocating() {
         let mut data = Vec::new();
@@ -1762,7 +1800,65 @@ mod tests {
             "expected Integrity, got: {err}"
         );
     }
-    use super::*;
+
+    #[tokio::test]
+    async fn persist_failure_keeps_index_resolvable() -> Result<()> {
+        let auth = Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let backend = Arc::new(MockBackend::new());
+        let backend_dyn: Arc<dyn StorageBackend> = backend.clone();
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend_dyn.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend_dyn, TEST_REPO_CONFIG).await?;
+
+        let descriptor1 = mock_blob_desc("persisted-after-error-1", BlobType::Data, 0, 4);
+        repo.index()
+            .add_pack(&repo, &mock_id("pack1"), vec![descriptor1.clone()])
+            .await?;
+        {
+            let index = repo.index();
+            let mut lock = index.inner.write();
+            let pending_idx = lock
+                .indices
+                .iter_mut()
+                .find(|idx| idx.is_pending())
+                .expect("should have pending index");
+            pending_idx.finalize();
+        }
+        let descriptor2 = mock_blob_desc("persisted-after-error-2", BlobType::Data, 0, 4);
+        repo.index()
+            .add_pack(&repo, &mock_id("pack2"), vec![descriptor2.clone()])
+            .await?;
+
+        backend.add_hook(Arc::new(|op| {
+            if matches!(op, BackendOp::Write { .. }) {
+                MockEffect {
+                    result_override: Some(Err(MapacheError::Backend(
+                        "injected index write failure".to_string(),
+                    ))),
+                    ..Default::default()
+                }
+            } else {
+                MockEffect::default()
+            }
+        }));
+
+        assert!(repo.index().persist(&repo).await.is_err());
+        assert!(repo.index().get(&descriptor1.id).await.is_some());
+        assert!(repo.index().get(&descriptor2.id).await.is_some());
+
+        Ok(())
+    }
 
     // A simple deterministic ID generator for testing
     fn mock_id(s: &str) -> ID {

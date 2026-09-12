@@ -169,7 +169,7 @@ pub(crate) async fn run_pipeline(
     let (processed_tx, mut processed_rx) = mpsc::channel(4096);
 
     tracing::info!(target: "archiver", "Starting chunker pool ({} threads)", num_readers);
-    let chunker_pool = chunker_pool::ChunkerPool::new(num_readers);
+    let chunker_pool = chunker_pool::ChunkerPool::new(num_readers)?;
 
     // ------------------------------------------------------------------
     // Stage 2a: Coordinator Task (lightweight routing)

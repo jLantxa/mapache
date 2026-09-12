@@ -166,7 +166,11 @@ impl StorageBackend for S3Backend {
                 };
 
                 let end = if length > 0 {
-                    Some(start + length as u64 - 1)
+                    Some(start.checked_add(length as u64 - 1).ok_or_else(|| {
+                        MapacheError::Backend(format!(
+                            "S3 read range exceeds supported size: start {start}, length {length}"
+                        ))
+                    })?)
                 } else {
                     None
                 };

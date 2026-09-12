@@ -1231,8 +1231,17 @@ impl Repository {
     }
 
     pub fn init_pack_saver(self: &Arc<Self>, num_packers: usize) -> Result<()> {
+        if num_packers == 0 {
+            return Err(MapacheError::Config(
+                "pack saver workers must be greater than 0".to_string(),
+            ));
+        }
+
         tracing::info!(target: "repo", "Initializing pack saver (workers={num_packers})");
-        let (tx, rx) = crossbeam_channel::bounded(2 * num_packers);
+        let channel_capacity = num_packers.checked_mul(2).ok_or_else(|| {
+            MapacheError::Config("pack saver worker count is too large".to_string())
+        })?;
+        let (tx, rx) = crossbeam_channel::bounded(channel_capacity);
 
         let weak_self = Arc::downgrade(self);
         let storage = self.secure_storage.clone();
@@ -1350,7 +1359,7 @@ impl Repository {
             // Check for .ecc, .tmp, .dropped extensions.
             if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy();
-                if ext_str == "ecc" {
+                if ext_str == REPO_ECC_EXTENSION {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
                         && let Ok(id) = ID::from_hex(stem)
                     {
@@ -1694,6 +1703,30 @@ mod tests {
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
         lock_handle.unlock().await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_init_pack_saver_rejects_zero_workers() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        assert!(matches!(
+            repo.init_pack_saver(0),
+            Err(MapacheError::Config(message)) if message == "pack saver workers must be greater than 0"
+        ));
 
         Ok(())
     }

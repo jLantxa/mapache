@@ -120,12 +120,15 @@ impl ReedSolomon {
     ///
     /// [Vandermonde]: https://en.wikipedia.org/wiki/Vandermonde_matrix
     pub(crate) fn new(k: usize, p: usize) -> Result<Self, Error> {
-        if k == 0 || p == 0 || k + p > 256 {
-            return Err(Error::InvalidShardCount(k + p));
+        let Some(total) = k.checked_add(p) else {
+            return Err(Error::InvalidShardCount(usize::MAX));
+        };
+        if k == 0 || p == 0 || total > 256 {
+            return Err(Error::InvalidShardCount(total));
         }
 
         // Build (k + p) × k Vandermonde matrix: V[i][j] = α^(i * j) where α = 0x02.
-        let v: Vec<Vec<u8>> = (0..(k + p))
+        let v: Vec<Vec<u8>> = (0..total)
             .map(|i| (0..k).map(|j| Galois::exp((i * j) as u32)).collect())
             .collect();
 

@@ -41,6 +41,16 @@ pub(crate) const SHARD_SIZE: usize = 4096;
 /// Magic header identifier for ECC sidecar files (`b"MECP"`).
 pub(crate) const MAGIC: [u8; 4] = *b"MECP";
 
+const MAGIC_OFFSET: usize = 0;
+const VERSION_OFFSET: usize = MAGIC_OFFSET + MAGIC.len();
+const RESERVED_OFFSET: usize = VERSION_OFFSET + 1;
+const DATA_SHARDS_OFFSET: usize = RESERVED_OFFSET + 1;
+const PARITY_SHARDS_OFFSET: usize = DATA_SHARDS_OFFSET + 2;
+const ORIGINAL_LEN_OFFSET: usize = PARITY_SHARDS_OFFSET + 2;
+const STRIPE_COUNT_OFFSET: usize = ORIGINAL_LEN_OFFSET + 8;
+const PROTECTED_HASH_OFFSET: usize = STRIPE_COUNT_OFFSET + 4;
+const PROTECTED_HASH_LEN: usize = 32;
+
 /// Current format version of the ECC sidecar file.
 pub(crate) const VERSION: u8 = 2;
 
@@ -48,7 +58,7 @@ pub(crate) const VERSION: u8 = 2;
 pub(crate) const CRC_SIZE: usize = 4;
 
 /// Sidecar header size in bytes (54), including the protected data hash.
-pub(crate) const HEADER_SIZE: usize = 54;
+pub(crate) const HEADER_SIZE: usize = PROTECTED_HASH_OFFSET + PROTECTED_HASH_LEN;
 
 /// Description of a single stripe's layout within an ECC payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,17 +156,37 @@ struct EccHeader {
 /// Parse a sidecar header; returns `None` for any truncated or malformed payload.
 fn parse_header(ecc_payload: &[u8]) -> Option<EccHeader> {
     if ecc_payload.len() < HEADER_SIZE
-        || ecc_payload[0..4] != MAGIC
-        || ecc_payload[4] != VERSION
-        || ecc_payload[5] != 0
+        || ecc_payload[MAGIC_OFFSET..MAGIC_OFFSET + MAGIC.len()] != MAGIC
+        || ecc_payload[VERSION_OFFSET] != VERSION
+        || ecc_payload[RESERVED_OFFSET] != 0
     {
         return None;
     }
-    let k = u16::from_le_bytes(ecc_payload[6..8].try_into().ok()?) as usize;
-    let p = u16::from_le_bytes(ecc_payload[8..10].try_into().ok()?) as usize;
-    let original_len = u64::from_le_bytes(ecc_payload[10..18].try_into().ok()?) as usize;
-    let stripe_count = u32::from_le_bytes(ecc_payload[18..22].try_into().ok()?) as usize;
-    let protected_hash: [u8; 32] = ecc_payload[22..54].try_into().ok()?;
+    let k = u16::from_le_bytes(
+        ecc_payload[DATA_SHARDS_OFFSET..DATA_SHARDS_OFFSET + 2]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    let p = u16::from_le_bytes(
+        ecc_payload[PARITY_SHARDS_OFFSET..PARITY_SHARDS_OFFSET + 2]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    let original_len = usize::try_from(u64::from_le_bytes(
+        ecc_payload[ORIGINAL_LEN_OFFSET..ORIGINAL_LEN_OFFSET + 8]
+            .try_into()
+            .ok()?,
+    ))
+    .ok()?;
+    let stripe_count = u32::from_le_bytes(
+        ecc_payload[STRIPE_COUNT_OFFSET..STRIPE_COUNT_OFFSET + 4]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    let protected_hash: [u8; PROTECTED_HASH_LEN] = ecc_payload
+        [PROTECTED_HASH_OFFSET..PROTECTED_HASH_OFFSET + PROTECTED_HASH_LEN]
+        .try_into()
+        .ok()?;
     Some(EccHeader {
         k,
         p,
@@ -178,9 +208,8 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
         return Ok(Vec::new());
     }
 
-    let layouts = calculate_stripe_layouts(data.len(), k, p);
-
     let rs = ReedSolomon::new(k, p).map_err(|_| EccEncodeError::InvalidShardCount { k, p })?;
+    let layouts = calculate_stripe_layouts(data.len(), k, p);
 
     let mut total_stripe_size = 0usize;
     for s in &layouts {
@@ -608,8 +637,8 @@ mod tests {
         let data = vec![42u8; 12_000]; // ~3 shards
         let payload = ecc_encode(&data, 4, 2).unwrap();
         assert!(!payload.is_empty());
-        assert_eq!(&payload[0..4], &MAGIC);
-        assert_eq!(payload[4], VERSION);
+        assert_eq!(&payload[MAGIC_OFFSET..MAGIC_OFFSET + MAGIC.len()], &MAGIC);
+        assert_eq!(payload[VERSION_OFFSET], VERSION);
 
         let decoded = ecc_decode(&data, &payload).unwrap();
         assert_eq!(decoded, data);
@@ -638,6 +667,10 @@ mod tests {
             ecc_encode(&data, 255, 2),
             Err(EccEncodeError::InvalidShardCount { k: 255, p: 2 })
         ));
+        assert!(matches!(
+            ecc_encode(&data, usize::MAX, 1),
+            Err(EccEncodeError::InvalidShardCount { k, p: 1 }) if k == usize::MAX
+        ));
     }
 
     #[test]
@@ -653,8 +686,8 @@ mod tests {
     fn invalid_header() {
         let data = vec![0u8; 100];
         let mut payload = vec![0u8; HEADER_SIZE + SHARD_SIZE + SHARD_SIZE];
-        payload[0..4].copy_from_slice(&MAGIC);
-        payload[4] = 99; // invalid version
+        payload[MAGIC_OFFSET..MAGIC_OFFSET + MAGIC.len()].copy_from_slice(&MAGIC);
+        payload[VERSION_OFFSET] = 99; // invalid version
         assert!(matches!(
             ecc_decode(&data, &payload),
             Err(EccDecodeError::InvalidHeader)
@@ -665,7 +698,7 @@ mod tests {
     fn reserved_header_byte_must_be_zero() {
         let data = vec![0u8; 100];
         let mut payload = ecc_encode(&data, 4, 2).unwrap();
-        payload[5] = 1;
+        payload[RESERVED_OFFSET] = 1;
         assert!(matches!(
             ecc_decode(&data, &payload),
             Err(EccDecodeError::InvalidHeader)
@@ -687,7 +720,7 @@ mod tests {
     fn sidecar_data_binding_is_verified() {
         let data = vec![0u8; SHARD_SIZE * 2];
         let mut payload = ecc_encode(&data, 4, 2).unwrap();
-        payload[22] ^= 1;
+        payload[PROTECTED_HASH_OFFSET] ^= 1;
         assert!(matches!(
             ecc_decode(&data, &payload),
             Err(EccDecodeError::ProtectedDataMismatch)

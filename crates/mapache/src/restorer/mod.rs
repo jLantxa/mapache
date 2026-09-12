@@ -577,17 +577,17 @@ impl Restorer {
                 let is_new_dir = metadata_paths.is_some()
                     && !dry_run
                     && !crate::fs::path_exists(&restore_path).await;
+                let mut dir_created = true;
                 if !dry_run && let Err(e) = fs::create_dir_all(&restore_path) {
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::Error(format!(
-                            "Failed to create directory {}: {}",
-                            restore_path.display(),
-                            e
-                        ))),
+                    let msg = format!(
+                        "Failed to create directory {}: {}",
+                        restore_path.display(),
+                        e
                     );
+                    self.handle_quit_on_error(msg, &e)?;
+                    dir_created = false;
                 }
-                if is_new_dir {
+                if is_new_dir && dir_created {
                     record_restored_path(&mut metadata_paths, &restore_path).await;
                 }
                 emit_event(
@@ -622,16 +622,14 @@ impl Restorer {
                                 && let Err(e) = std::fs::remove_file(&restore_path)
                                 && e.kind() != std::io::ErrorKind::NotFound
                             {
-                                emit_event(
-                                    &self.event_sender,
-                                    Event::Restore(RestoreEvent::Warning(format!(
-                                        "Failed to remove existing entry for {}: {}",
-                                        restore_path.display(),
-                                        e
-                                    ))),
+                                let msg = format!(
+                                    "Failed to remove existing entry for {}: {}",
+                                    restore_path.display(),
+                                    e
                                 );
+                                self.handle_quit_on_error(msg, &e)?;
                             }
-                            if let Err(_e) = node_restorer::restore_node_to_path(
+                            if let Err(e) = node_restorer::restore_node_to_path(
                                 &self.event_sender,
                                 &node,
                                 &restore_path,
@@ -639,13 +637,9 @@ impl Restorer {
                             )
                             .await
                             {
-                                emit_event(
-                                    &self.event_sender,
-                                    Event::Restore(RestoreEvent::Warning(format!(
-                                        "Failed to restore symlink {}",
-                                        restore_path.display(),
-                                    ))),
-                                );
+                                let msg =
+                                    format!("Failed to restore symlink {}", restore_path.display());
+                                self.handle_quit_on_error(msg, &e)?;
                             } else {
                                 record_restored_path(&mut metadata_paths, &restore_path).await;
                             }

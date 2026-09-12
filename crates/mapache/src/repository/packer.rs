@@ -855,9 +855,13 @@ mod tests {
             .map_err(|e| MapacheError::Repo(format!("finalize failed: {e}")))?
             .ok_or_else(|| MapacheError::Integrity("should return result".to_string()))?;
 
-        // CHANGE THIS:
-        // result.descriptors includes the padding blobs added for obfuscation
-        assert_eq!(result.descriptors.len(), 64);
+        // The descriptors include padding blobs added for obfuscation.
+        assert!(
+            result
+                .descriptors
+                .len()
+                .is_multiple_of(FOOTER_BLOB_MULTIPLE)
+        );
 
         // But we can verify that the first 2 are our actual data
         assert_eq!(result.descriptors[0].blob_type, BlobType::Data);

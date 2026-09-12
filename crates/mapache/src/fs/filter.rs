@@ -294,6 +294,11 @@ impl GlobRule {
 
     /// Returns true ONLY if the entire path matches the glob pattern.
     pub fn is_strict_match(&self, path: &Path) -> bool {
+        if self.tokens.len() > Self::MAX_TOKENS_U128 {
+            let comps = Self::collect_path_components(path);
+            return match_exact_components(&self.tokens, &comps);
+        }
+
         let mut states: u128 = 1; // Start state
         states = self.epsilon_closure_u128(states);
 
@@ -454,6 +459,56 @@ fn match_prefix_components(pattern: &[GlobToken], path: &[&OsStr]) -> bool {
     }
 
     // Path ended; pattern matches prefix only if it can finish by consuming empty (** only)
+    while p < pattern.len() && matches!(pattern[p], GlobToken::DoubleStar) {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+fn match_exact_components(pattern: &[GlobToken], path: &[&OsStr]) -> bool {
+    let mut p = 0usize;
+    let mut t = 0usize;
+    let mut star: Option<(usize, usize)> = None;
+
+    while t < path.len() {
+        if p == pattern.len() {
+            let Some((p_after, t_star)) = star else {
+                return false;
+            };
+            let t_next = t_star + 1;
+            if t_next > path.len() {
+                return false;
+            }
+            star = Some((p_after, t_next));
+            t = t_next;
+            p = p_after;
+            continue;
+        }
+
+        match &pattern[p] {
+            GlobToken::DoubleStar => {
+                star = Some((p + 1, t));
+                p += 1;
+            }
+            GlobToken::Comp(matcher) if matcher.matches(path[t]) => {
+                p += 1;
+                t += 1;
+            }
+            GlobToken::Comp(_) => {
+                let Some((p_after, t_star)) = star else {
+                    return false;
+                };
+                let t_next = t_star + 1;
+                if t_next > path.len() {
+                    return false;
+                }
+                star = Some((p_after, t_next));
+                t = t_next;
+                p = p_after;
+            }
+        }
+    }
+
     while p < pattern.len() && matches!(pattern[p], GlobToken::DoubleStar) {
         p += 1;
     }
@@ -743,6 +798,29 @@ mod tests {
         assert!(rule3.is_strict_match(Path::new("target/main.o")));
         assert!(rule3.is_strict_match(Path::new("a/b/target/test.o")));
         assert!(!rule3.is_strict_match(Path::new("a/target/b/test.o")));
+    }
+
+    #[test]
+    fn test_deep_glob_strict_match_uses_fallback() {
+        let components = std::iter::repeat_n("segment", 128)
+            .collect::<Vec<_>>()
+            .join("/");
+        let pattern = PathBuf::from(format!("{components}/file.txt"));
+        let rule = GlobRule::new(&pattern);
+
+        assert!(rule.is_strict_match(&pattern));
+        assert!(!rule.is_strict_match(&pattern.with_file_name("other.txt")));
+
+        let pattern_with_star = PathBuf::from(format!("{components}/**/file.txt"));
+        let rule_with_star = GlobRule::new(&pattern_with_star);
+        assert!(
+            rule_with_star
+                .is_strict_match(&PathBuf::from(format!("{components}/sub/nested/file.txt")))
+        );
+        assert!(
+            !rule_with_star
+                .is_strict_match(&PathBuf::from(format!("{components}/sub/nested/other.txt")))
+        );
     }
 
     #[test]

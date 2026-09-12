@@ -83,6 +83,11 @@ pub struct CmdArgs {
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), MountError> {
     tracing::info!(target: "mount", "Starting mount command (mountpoint={:?})", args.mountpoint);
+    if !args.data_cache_size_mib.is_finite() || args.data_cache_size_mib < 0.0 {
+        return Err(MountError::MountFailed(
+            "cache-size-mib must be a non-negative finite number".to_string(),
+        ));
+    }
     let actual_mountpoint = args.mountpoint.clone();
     let mut created_mountpoint = false;
 

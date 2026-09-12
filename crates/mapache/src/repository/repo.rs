@@ -54,8 +54,9 @@ const OBJECTS_DIR_FANOUT: usize = 2;
 
 pub fn warn_v1_deprecated() {
     ui::cli::warning!(
-        "Repository format v1 is deprecated and will be removed in a future release.\n\
-        Creating new v1 repositories will be disabled soon; existing repositories can still be \
+        "Repository format v1 is deprecated and will be removed in the future.\n\
+        Creating new v1 repositories will be disabled soon.\n\
+        Existing repositories can still be \
         read until v1 support is removed entirely.\n\
         Consider migrating to v2: `mapache migrate --repo <repo-path>`\n"
     );
@@ -272,6 +273,11 @@ impl Repository {
             return Err(MapacheError::RepoAlreadyExists);
         }
 
+        // TODO(v1-removal)
+        if repo_version == 1 {
+            warn_v1_deprecated();
+        }
+
         backend
             .create()
             .await
@@ -436,10 +442,6 @@ impl Repository {
         tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
         secure_storage.set_nonce_at_end(nonce_at_end);
 
-        if version == 1 {
-            warn_v1_deprecated();
-        }
-
         Ok((repo, secure_storage))
     }
 
@@ -464,8 +466,8 @@ impl Repository {
 
         let master_index = Arc::new(MasterIndex::new(config.index_mode));
 
+        // TODO(v1-removal)
         let repo_version = manifest.version();
-
         if repo_version == 1 {
             warn_v1_deprecated();
         }

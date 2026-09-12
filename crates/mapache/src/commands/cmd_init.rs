@@ -9,7 +9,7 @@ use crate::{
     common::{ID, defaults::SHORT_REPO_ID_LEN, error::MapacheError},
     repository::{
         manifest::EccConfig,
-        repo::{Repository, THIS_REPOSITORY_VERSION, warn_v1_deprecated},
+        repo::{Repository, THIS_REPOSITORY_VERSION},
     },
     ui::{self, json::emit_static},
     utils,
@@ -147,10 +147,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
             manifest.id().to_short_hex(SHORT_REPO_ID_LEN),
             global_args.repo
         );
-
-        if args.format == 1 {
-            warn_v1_deprecated(); // TODO(v1-removal): Remove v1 branch
-        }
 
         ui::cli::warning!(
             "This password is the key to your repository\nand the only way to access your data.\n{}",

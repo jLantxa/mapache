@@ -1,7 +1,10 @@
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use clap::Args;
@@ -281,10 +284,13 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
     );
     ui::cli::log!();
 
-    // Parallel deletion
+    // Parallel deletion. Rayon finishes folders in arbitrary order, but the
+    // progress lines are numbered in the exact order they are printed: the
+    // counter and the println! happen under the same lock, so [n/total]
+    // always counts up instead of reflecting which thread won the race.
     let num_deleted = AtomicUsize::new(0);
     let freed = AtomicU64::new(0);
-    let done = AtomicUsize::new(0);
+    let printed = Mutex::new(0u64);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(4)
         .build()
@@ -296,21 +302,24 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
             let size = utils::dir_size(path).unwrap_or(0);
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
 
             tracing::info!(target: "cache", "Deleting cache directory {:?}", path);
             match std::fs::remove_dir_all(path) {
                 Ok(_) => {
                     num_deleted.fetch_add(1, Ordering::Relaxed);
                     freed.fetch_add(size, Ordering::Relaxed);
-                    ui::cli::log!(
-                        "  [{}/{}] {} {} ({})",
-                        n,
-                        total,
-                        "DELETED".bright_red().bold(),
-                        name.cyan(),
-                        utils::format_size_binary(size, 3).dimmed()
-                    );
+                    {
+                        let mut count = printed.lock().expect("cache order mutex poisoned");
+                        *count += 1;
+                        ui::cli::log!(
+                            "  [{}/{}] {} {} ({})",
+                            *count,
+                            total,
+                            "DELETED".bright_red().bold(),
+                            name.cyan(),
+                            utils::format_size_binary(size, 3).dimmed()
+                        );
+                    }
                 }
                 Err(e) => ui::cli::warning!("Failed to delete {}: {}", path.display(), e),
             }

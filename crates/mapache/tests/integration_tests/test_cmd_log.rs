@@ -25,14 +25,24 @@ mod tests {
             .run(&ctx.global)
             .await?;
 
-        // Test cmd_log via binary
-        let stdout = ctx.run_mapache_ok(&["log"])?;
-        assert!(stdout.contains("Date:"));
-        assert!(stdout.contains("tag1"));
-        assert!(stdout.contains("test description"));
-        assert!(stdout.contains("1 snapshots"));
+        // Test cmd_log via binary, checking the structured JSON output
+        let stdout = ctx.run_mapache_ok(&["log", "--json"])?;
+        let json: serde_json::Value = serde_json::from_str(&stdout)?;
+        assert_eq!(json["msg_type"], "log");
+        let snapshots = json["snapshots"]
+            .as_array()
+            .expect("log output must have a snapshots array");
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0]["snapshot"];
+        assert!(
+            snapshot["tags"]
+                .as_array()
+                .expect("snapshot must have a tags array")
+                .contains(&serde_json::json!("tag1"))
+        );
+        assert_eq!(snapshot["description"], "test description");
 
-        // Test cmd_log --compact
+        // Test cmd_log --compact (human output)
         let stdout = ctx.run_mapache_ok(&["log", "--compact"])?;
         assert!(stdout.contains("tag1"));
 

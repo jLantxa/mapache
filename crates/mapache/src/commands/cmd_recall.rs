@@ -7,6 +7,8 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, error::MapacheError},
     repository::repo::REPO_DROPPED_EXTENSION,
+    ui::{self, cli::color::Colorize},
+    utils,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +72,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RecallE
 
             tracing::info!(target: "recall", "Recalling snapshot {}", id.to_short_hex(8));
             repo.recall_dropped_snapshot(&id).await?;
+
+            let snapshot = repo.load_snapshot(&id, None).await?;
+            ui::cli::log!(
+                "{} Recalled snapshot {} ({})",
+                "[SUCCESS]".bold().green(),
+                id.to_hex().bold().yellow(),
+                utils::pretty_print_timestamp(&snapshot.timestamp, Some("%Y-%m-%d %H:%M")).dimmed()
+            );
 
             Ok(())
         },

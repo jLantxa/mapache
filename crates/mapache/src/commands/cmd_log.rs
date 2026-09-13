@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt, io};
 
 use clap::{ArgGroup, Args};
 use serde::Serialize;
@@ -162,7 +162,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), LogErro
                     log_snapshots_full(&snapshots_sorted);
                 }
 
-                ui::cli::log!("{} snapshots", snapshots_sorted.len());
+                let active_count = snapshots_sorted.iter().filter(|e| e.active).count();
+                let dropped_count = snapshots_sorted.len() - active_count;
+                let summary = if dropped_count > 0 {
+                    format!(
+                        "{} ({} active, {} dropped)",
+                        utils::format_count(snapshots_sorted.len(), "snapshot", "snapshots"),
+                        active_count,
+                        dropped_count
+                    )
+                } else {
+                    utils::format_count(snapshots_sorted.len(), "snapshot", "snapshots")
+                };
+                ui::cli::log!("{}", summary.bold());
             } else {
                 ui::json::emit_static(
                     LOG_MSG,
@@ -179,49 +191,57 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), LogErro
 }
 
 fn log_snapshots_full(snapshots: &SnapshotEntryList) {
-    let mut peekable_snapshots = snapshots.iter().peekable();
-    while let Some(entry) = peekable_snapshots.next() {
+    for (i, entry) in snapshots.iter().enumerate() {
         let id = &entry.id;
         let snapshot = &entry.snapshot;
         let active = entry.active;
 
-        if active {
-            ui::cli::log!("{}", id.to_hex().bold().yellow());
-        } else {
-            ui::cli::log!("{}", (id.to_hex() + " (dropped)").bold().dimmed());
+        if i > 0 {
+            ui::cli::log!();
         }
 
-        ui::cli::log!(
-            "{} {}",
-            "Date:".bold(),
-            utils::pretty_print_timestamp(&snapshot.timestamp, None)
+        if active {
+            ui::cli::log!(
+                "{} {}",
+                "Snapshot".bold().cyan(),
+                id.to_hex().bold().yellow()
+            );
+        } else {
+            ui::cli::log!(
+                "{} {}",
+                "Snapshot".bold().cyan(),
+                (id.to_hex() + " (dropped)").bold().dimmed()
+            );
+        }
+
+        row(
+            "Date",
+            utils::pretty_print_timestamp(&snapshot.timestamp, None),
         );
-        ui::cli::log!(
-            "{} {}",
-            "Size:".bold(),
-            utils::format_size_binary(snapshot.summary.processed_bytes, 3)
+        row(
+            "Size",
+            utils::format_size_binary(snapshot.summary.processed_bytes, 3),
         );
-        ui::cli::log!("{} {}", "Root:".bold(), &snapshot.root.display());
+        row("Root", snapshot.root.display().to_string());
 
         if let Some(hostname) = &snapshot.hostname {
-            ui::cli::log!("{} {}", "Host:".bold(), hostname);
+            row("Host", hostname);
         }
 
         if let Some(username) = &snapshot.username {
-            ui::cli::log!("{} {}", "User:".bold(), username);
+            row("User", username);
         }
 
         if !snapshot.tags.is_empty() {
-            ui::cli::log!(
-                "{} {}",
-                "Tags:".bold(),
+            row(
+                "Tags",
                 snapshot
                     .tags
                     .iter()
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
-                    .join(", ")
-            )
+                    .join(", "),
+            );
         }
 
         ui::cli::log!();
@@ -237,15 +257,24 @@ fn log_snapshots_full(snapshots: &SnapshotEntryList) {
 
         if let Some(description) = &snapshot.description {
             ui::cli::log!();
-            ui::cli::log!("{}", description);
-        }
-
-        if peekable_snapshots.peek().is_some() {
-            ui::cli::log!();
+            ui::cli::log!("{}", description.dimmed());
         }
     }
 
     ui::cli::log!();
+}
+
+/// Width of the label column in the snapshot detail view.
+const LABEL_WIDTH: usize = 26;
+
+/// Prints an aligned `label  value` row. The label is padded before styling so
+/// ANSI escapes do not count towards the column width.
+fn row(label: &str, value: impl fmt::Display) {
+    ui::cli::log!(
+        "  {} {}",
+        format!("{:<width$}", label, width = LABEL_WIDTH).dimmed(),
+        value
+    );
 }
 
 #[derive(Serialize)]

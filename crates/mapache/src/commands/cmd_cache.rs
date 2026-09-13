@@ -69,6 +69,28 @@ pub fn run(args: &CmdArgs) -> Result<(), CacheError> {
     }
 }
 
+/// Counts the number of regular files stored under `path`, recursively.
+fn count_files_in_dir(path: &Path) -> u64 {
+    let mut count = 0;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 /// List all cache folders.
 fn list(cache_base: &Path) -> Result<(), CacheError> {
     if !cache_base.exists() {
@@ -79,53 +101,97 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
         return Ok(());
     }
 
-    let mut table = Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
+    let mut folders: Vec<(String, PathBuf)> = std::fs::read_dir(cache_base)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            Some((name, path))
+        })
+        .collect();
+
+    folders.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if folders.is_empty() {
+        ui::cli::log!(
+            "{}",
+            format!("No repo caches found in {}", cache_base.display()).bold()
+        );
+        return Ok(());
+    }
+
+    ui::cli::log!(
+        "{}",
+        format!("Repo caches in {}:", cache_base.display())
+            .bold()
+            .cyan()
+    );
+    ui::cli::log!();
+
+    let mut table = Table::new_with_alignments(vec![
+        Alignment::Left,
+        Alignment::Right,
+        Alignment::Right,
+        Alignment::Right,
+    ]);
+    table.set_padding(0);
     table.set_headers(vec![
         "Repo ID".bold().yellow().to_string(),
+        "Files".bold().yellow().to_string(),
         "Size".bold().yellow().to_string(),
+        "Modified".bold().yellow().to_string(),
     ]);
 
     let mut num_directories = 0;
     let mut total_cache_size = 0;
 
-    for entry in std::fs::read_dir(cache_base)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let folder_name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        match utils::dir_size(&path) {
-            Ok(size) => {
-                table.add_row(vec![
-                    folder_name
-                        .get(0..2 * SHORT_REPO_ID_LEN)
-                        .unwrap_or(&folder_name)
-                        .to_string(),
-                    utils::format_size_binary(size, 3),
-                ]);
-                num_directories += 1;
-                total_cache_size += size;
+    for (name, path) in &folders {
+        let size = match utils::dir_size(path) {
+            Ok(size) => size,
+            Err(e) => {
+                ui::cli::warning!("Error calculating size for {}: {}", path.display(), e);
+                continue;
             }
-            Err(e) => ui::cli::warning!("Error calculating size for {}: {}", path.display(), e),
-        }
+        };
+
+        let modified = path
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(|t| utils::pretty_print_system_time(t, Some("%Y-%m-%d %H:%M")).unwrap_or_default())
+            .unwrap_or_default();
+
+        table.add_row(vec![
+            name.get(0..2 * SHORT_REPO_ID_LEN)
+                .unwrap_or(name)
+                .bold()
+                .yellow()
+                .to_string(),
+            count_files_in_dir(path).to_string(),
+            utils::format_size_binary(size, 3),
+            modified.dimmed().to_string(),
+        ]);
+        num_directories += 1;
+        total_cache_size += size;
     }
 
-    if num_directories > 0 {
-        ui::cli::log!("{}", table.render());
-    }
+    ui::cli::log!("{}", table.render());
 
+    ui::cli::log!();
     ui::cli::log!(
         "{} ({}) in {}",
-        utils::format_count(num_directories, "directory", "directories"),
-        utils::format_size_binary(total_cache_size, 3),
-        cache_base.display()
+        utils::format_count(num_directories, "directory", "directories").bold(),
+        utils::format_size_binary(total_cache_size, 3)
+            .bold()
+            .green(),
+        cache_base.display().to_string().dimmed()
     );
 
     Ok(())
@@ -204,9 +270,21 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
         return Ok(());
     }
 
+    let total = to_delete.len();
+    ui::cli::log!(
+        "{} {} in {}",
+        "Deleting".bold().cyan(),
+        utils::format_count(total, "repo cache", "repo caches")
+            .bold()
+            .cyan(),
+        cache_base.display().to_string().dimmed()
+    );
+    ui::cli::log!();
+
     // Parallel deletion
     let num_deleted = AtomicUsize::new(0);
     let freed = AtomicU64::new(0);
+    let done = AtomicUsize::new(0);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(4)
         .build()
@@ -218,6 +296,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
             let size = utils::dir_size(path).unwrap_or(0);
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
 
             tracing::info!(target: "cache", "Deleting cache directory {:?}", path);
             match std::fs::remove_dir_all(path) {
@@ -225,7 +304,9 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
                     num_deleted.fetch_add(1, Ordering::Relaxed);
                     freed.fetch_add(size, Ordering::Relaxed);
                     ui::cli::log!(
-                        "{} {} ({})",
+                        "  [{}/{}] {} {} ({})",
+                        n,
+                        total,
                         "DELETED".bright_red().bold(),
                         name.cyan(),
                         utils::format_size_binary(size, 3).dimmed()
@@ -236,18 +317,23 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
         });
     });
 
-    ui::cli::log!(
-        "\nCleanup complete: {} ({}) freed.",
-        utils::format_count(
-            num_deleted.load(Ordering::Relaxed),
-            "repo cache",
-            "repo caches"
-        ),
-        utils::format_size_binary(freed.load(Ordering::Relaxed), 3)
-            .green()
-            .bold()
-    );
-    tracing::info!(target: "cache", "Cache cleanup finished (freed {})", utils::format_size_binary(freed.load(Ordering::Relaxed), 3));
+    let num_deleted = num_deleted.load(Ordering::Relaxed);
+    let freed = freed.load(Ordering::Relaxed);
+    let failed = total.saturating_sub(num_deleted);
+
+    if num_deleted > 0 {
+        ui::cli::log!(
+            "\n{} {} ({}) freed.",
+            "[SUCCESS]".bold().green(),
+            utils::format_count(num_deleted, "repo cache", "repo caches").bold(),
+            utils::format_size_binary(freed, 3).bold().green()
+        );
+    }
+    if failed > 0 {
+        ui::cli::warning!("{}/{} repo caches failed to delete.", failed, total);
+    }
+
+    tracing::info!(target: "cache", "Cache cleanup finished (freed {})", utils::format_size_binary(freed, 3));
 
     Ok(())
 }

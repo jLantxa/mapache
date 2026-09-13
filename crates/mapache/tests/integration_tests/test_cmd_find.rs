@@ -24,12 +24,13 @@ mod tests {
 
         // Test cmd_find via binary
         let stdout = ctx.run_mapache_ok(&["find", "file.txt"])?;
-        assert!(stdout.contains("Found in snapshot"));
+        assert!(stdout.contains("1 match"));
         assert!(stdout.contains("file.txt"));
 
         // Test cmd_find non-existent
         let stdout = ctx.run_mapache_ok(&["find", "non-existent.file"])?;
-        assert!(!stdout.contains("Found in snapshot"));
+        assert!(!stdout.contains("1 match"));
+        assert!(stdout.contains("No matches found"));
 
         Ok(())
     }

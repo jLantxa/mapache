@@ -458,11 +458,17 @@ mod tests {
             .run(&ctx.global)
             .await?;
 
-        // Verify via binary log output
-        let stdout = ctx.run_mapache_ok(&["log"])?;
-
-        assert!(stdout.contains("Tags: important, work"));
-        assert!(stdout.contains("Detailed backup description"));
+        // Verify via the structured JSON output of the log command
+        let stdout = ctx.run_mapache_ok(&["log", "--json"])?;
+        let json: serde_json::Value = serde_json::from_str(&stdout)?;
+        assert_eq!(json["msg_type"], "log");
+        let snapshot = &json["snapshots"][0]["snapshot"];
+        let tags = snapshot["tags"]
+            .as_array()
+            .expect("snapshot must have a tags array");
+        assert!(tags.contains(&serde_json::json!("important")));
+        assert!(tags.contains(&serde_json::json!("work")));
+        assert_eq!(snapshot["description"], "Detailed backup description");
 
         Ok(())
     }

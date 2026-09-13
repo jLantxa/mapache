@@ -102,6 +102,14 @@
   "t": ..., "p": ...}`) instead of flat top-level `m`, `t`, `p` fields.
   Old v1 keyfiles are read transparently by constructing the `kdf` object
   from the flat fields.
+- **CLI output polish**: `mapache log` aligns snapshot metadata labels, dims
+  the description, and ends with a styled active/dropped summary.
+  `mapache find` prints a search header, per-snapshot match headers with
+  short ID and timestamp, and a match summary (or `No matches found`).
+  `mapache cache list` gains a table header with Files/Modified/Size columns
+  and a summary row, and `cache clean` shows per-package progress and a
+  success summary. `mapache recall` now confirms the recalled snapshot with
+  its ID and timestamp.
 
 ### Fixed
 
@@ -226,6 +234,8 @@
   when there are 2 or more. The "Action" line no longer claims to repack packs
   that will not be repacked, and the "Packs:" line shows 0 small when no merge
   is possible.
+- **`find` interrupt handling**: Pressing Ctrl+C during `mapache find` now
+  stops the search and exits with code 130 instead of continuing to scan.
 
 ## v0.6.0 (2026-07-31)
 

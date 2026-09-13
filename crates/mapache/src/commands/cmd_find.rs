@@ -10,13 +10,14 @@ use crate::{
         GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         with_repository_lock,
     },
-    common::{ID, error::MapacheError},
+    common::{ID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
     fs::node::{Node, node_to_string},
     repository::{
         repo::find_in_snapshot,
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui,
+    ui::{self, cli::color::Colorize},
+    utils,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +26,8 @@ pub enum FindError {
     RepoOpenFail(String),
     #[error("search failed: {0}")]
     FindFailed(String),
+    #[error("find interrupted by user")]
+    Interrupted,
     #[error(transparent)]
     Repo(#[from] MapacheError),
     #[error(transparent)]
@@ -36,6 +39,7 @@ impl ToExitCode for FindError {
         match self {
             FindError::RepoOpenFail(_) => 10,
             FindError::FindFailed(_) => 20,
+            FindError::Interrupted => 130,
             FindError::Repo(_) => 1,
             FindError::Io(_) => 4,
         }
@@ -90,6 +94,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), FindErr
             repo.reload_master_index().await?;
 
             let snapshots: Vec<(ID, Snapshot)> = if let Some(use_snap) = &args.snapshot {
+                if cleanup_handler.is_interrupted() {
+                    tracing::info!(target: "find", "Find interrupted by user");
+                    return Err(FindError::Interrupted);
+                }
                 find_use_snapshot(repo.clone(), use_snap)
                     .await?
                     .into_iter()
@@ -98,6 +106,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), FindErr
                 let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
                 let mut snaps = Vec::new();
                 while let Some(res) = snapshot_stream.next().await {
+                    if cleanup_handler.is_interrupted() {
+                        tracing::info!(target: "find", "Find interrupted by user while loading snapshots");
+                        return Err(FindError::Interrupted);
+                    }
                     snaps.push(res?);
                 }
                 snaps
@@ -120,6 +132,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), FindErr
             if global_args.json {
                 let mut entries = Vec::new();
                 for (id, snap) in snapshots {
+                    if cleanup_handler.is_interrupted() {
+                        tracing::info!(target: "find", "Find interrupted by user");
+                        return Err(FindError::Interrupted);
+                    }
                     let found = find_in_snapshot(repo.clone(), &snap, &args.target)
                         .await
                         .map_err(|e| FindError::FindFailed(e.to_string()))?;
@@ -133,17 +149,58 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), FindErr
                 }
                 ui::json::emit_static("find", &FindOutput { entries });
             } else {
+                let pattern_display = format!("\"{}\"", args.target);
+                let num_snapshots = utils::format_count(snapshots.len(), "snapshot", "snapshots");
+                ui::cli::log!(
+                    "{} {} in {}",
+                    "Searching for".dimmed(),
+                    pattern_display.bold().yellow(),
+                    num_snapshots.dimmed()
+                );
+                ui::cli::log!();
+
+                let mut total_matches = 0;
+                let mut snapshots_with_matches = 0;
+
                 for (id, snap) in snapshots {
+                    if cleanup_handler.is_interrupted() {
+                        tracing::info!(target: "find", "Find interrupted by user");
+                        return Err(FindError::Interrupted);
+                    }
                     let found = find_in_snapshot(repo.clone(), &snap, &args.target)
                         .await
                         .map_err(|e| FindError::FindFailed(e.to_string()))?;
-                    if !found.is_empty() {
-                        ui::cli::log!("Found in snapshot {}", id.to_hex());
-                        for (path, node) in found {
-                            ui::cli::log!("{}", node_to_string(&node, Some(&path), true, true));
-                        }
-                        ui::cli::log!();
+                    if found.is_empty() {
+                        continue;
                     }
+                    total_matches += found.len();
+                    snapshots_with_matches += 1;
+
+                    ui::cli::log!(
+                        "{} {} {}",
+                        "Snapshot".bold().cyan(),
+                        id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow(),
+                        utils::pretty_print_timestamp(&snap.timestamp, Some("%Y-%m-%d %H:%M"))
+                            .dimmed()
+                    );
+                    for (path, node) in found {
+                        ui::cli::log!("{}", node_to_string(&node, Some(&path), true, true));
+                    }
+                    ui::cli::log!();
+                }
+
+                if total_matches == 0 {
+                    ui::cli::log!(
+                        "{}",
+                        format!("No matches found for {pattern_display}.").bold()
+                    );
+                } else {
+                    ui::cli::log!(
+                        "{} ({}) in {}",
+                        utils::format_count(total_matches, "match", "matches").bold(),
+                        utils::format_count(snapshots_with_matches, "snapshot", "snapshots"),
+                        pattern_display.dimmed()
+                    );
                 }
             }
 

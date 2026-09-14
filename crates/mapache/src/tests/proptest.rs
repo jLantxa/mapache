@@ -219,9 +219,15 @@ proptest! {
         footer_data.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
 
         // Flip whole bytes so every mutation is guaranteed to change the input.
+        // Deduplicate indices so the same byte is never flipped twice: a double
+        // flip would restore the original byte, which no longer counts as
+        // corruption.
+        let mut flipped = std::collections::HashSet::new();
         for pos in positions {
             let idx = pos % footer_data.len();
-            footer_data[idx] ^= 0xFF;
+            if flipped.insert(idx) {
+                footer_data[idx] ^= 0xFF;
+            }
         }
 
         // Any changed byte breaks either the AEAD tag or the footer-length

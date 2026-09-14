@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -48,6 +48,8 @@ pub enum StatsError {
     Repo(#[from] MapacheError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("stats interrupted by user")]
+    Interrupted,
 }
 
 impl ToExitCode for StatsError {
@@ -55,6 +57,7 @@ impl ToExitCode for StatsError {
         match self {
             StatsError::Repo(_) => 1,
             StatsError::Io(_) => 4,
+            StatsError::Interrupted => 130,
         }
     }
 }
@@ -196,6 +199,25 @@ fn compression_ratios(
     )
 }
 
+/// Clears the spinner when the command exits with an error. A single
+/// "interrupted by user" message is emitted at info level for interrupt errors.
+fn finish_spinner_on_error(spinner: &ProgressBar, error: &StatsError) {
+    if matches!(error, StatsError::Interrupted) {
+        tracing::info!(target: "stats", "Stats interrupted by user");
+    }
+    spinner.finish_and_clear();
+}
+
+/// Returns `Err(StatsError::Interrupted)` if the shutdown flag has been set.
+#[inline]
+fn check_interrupted(signal: &AtomicBool) -> Result<(), StatsError> {
+    if signal.load(Ordering::Acquire) {
+        Err(StatsError::Interrupted)
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -215,6 +237,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsEr
         |repo, secure_storage, lock_handle| async move {
             let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
+            let shutdown_signal = cleanup_handler.interrupted.clone();
 
             repo.reload_master_index().await?;
 
@@ -224,6 +247,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsEr
                 repo.backend(),
                 args,
                 global_args.json,
+                shutdown_signal,
             )
             .await
         },
@@ -297,6 +321,7 @@ async fn scan_pack_footers(
     secure_storage: Arc<SecureStorage>,
     pack_ids: &[ID],
     spinner: &ProgressBar,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<FooterScan, StatsError> {
     let total = pack_ids.len();
     let done = AtomicUsize::new(0);
@@ -307,8 +332,10 @@ async fn scan_pack_footers(
             let repo = repo.clone();
             let backend = backend.clone();
             let secure_storage = secure_storage.clone();
+            let shutdown_signal = shutdown_signal.clone();
             let done = &done;
             async move {
+                check_interrupted(&shutdown_signal)?;
                 let descriptors = Packer::parse_pack_footer(
                     repo.as_ref(),
                     backend.as_ref(),
@@ -377,6 +404,7 @@ async fn stats_repository(
     backend: Arc<dyn StorageBackend>,
     args: &CmdArgs,
     json_out: bool,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<(), StatsError> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -432,7 +460,9 @@ async fn stats_repository(
         .await;
 
     // Snapshot-derived summary (index-only).
-    let snap_stats = analyze_snapshots(repo.clone(), &spinner).await?;
+    let snap_stats = analyze_snapshots(repo.clone(), &spinner, shutdown_signal.clone())
+        .await
+        .inspect_err(|e| finish_spinner_on_error(&spinner, e))?;
 
     let footers = if args.full {
         Some(
@@ -442,8 +472,10 @@ async fn stats_repository(
                 secure_storage.clone(),
                 &objects.pack_ids,
                 &spinner,
+                shutdown_signal.clone(),
             )
-            .await?,
+            .await
+            .inspect_err(|e| finish_spinner_on_error(&spinner, e))?,
         )
     } else {
         None
@@ -786,6 +818,7 @@ impl SnapshotAnalysis {
 async fn analyze_snapshots(
     repo: Arc<Repository>,
     spinner: &ProgressBar,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<SnapshotAnalysis, StatsError> {
     let snapshot_ids = repo.list_snapshot_ids().await?;
     let total = snapshot_ids.len();
@@ -802,10 +835,13 @@ async fn analyze_snapshots(
         .map(|id| {
             let repo = repo.clone();
             let visited = visited.clone();
+            let shutdown_signal = shutdown_signal.clone();
             let done = &done;
             async move {
+                check_interrupted(&shutdown_signal)?;
                 let snapshot = repo.load_snapshot(&id, None).await?;
-                let analysis = analyze_snapshot(repo, snapshot, visited.as_ref()).await?;
+                let analysis =
+                    analyze_snapshot(repo, snapshot, visited.as_ref(), &shutdown_signal).await?;
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 spinner.set_message(format!("analyzing snapshots {n}/{total}"));
                 Ok::<_, StatsError>(analysis)
@@ -826,7 +862,10 @@ async fn analyze_snapshot(
     repo: Arc<Repository>,
     snapshot: Snapshot,
     visited: &ShardedIdSet,
+    shutdown_signal: &AtomicBool,
 ) -> Result<SnapshotAnalysis, StatsError> {
+    check_interrupted(shutdown_signal)?;
+
     let mut acc = SnapshotAnalysis {
         // Sum of snapshot raw bytes, not deduped.
         total_restorable_bytes: snapshot.size(),
@@ -850,6 +889,7 @@ async fn analyze_snapshot(
     .await?;
 
     while let Some(res) = stream.next().await {
+        check_interrupted(shutdown_signal)?;
         let (_path, stream_node_res_outer) = res?;
         let node = stream_node_res_outer?.node;
 

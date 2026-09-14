@@ -236,6 +236,9 @@
   is possible.
 - **`find` interrupt handling**: Pressing Ctrl+C during `mapache find` now
   stops the search and exits with code 130 instead of continuing to scan.
+- **`stats` interrupt handling**: Pressing Ctrl+C during `mapache stats` now
+  stops snapshot analysis (and `--full` pack-footer parsing) and exits with
+  code 130 instead of continuing to scan.
 
 ## v0.6.0 (2026-07-31)
 

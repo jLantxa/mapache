@@ -139,33 +139,34 @@ impl SnapshotDetailScreen {
 
         lines.push(Line::from(vec![
             Span::styled(format!("{:lw$}", "Tags", lw = lw), theme::THEME.menu_key),
-            Span::raw(if s.tags.is_empty() { "(none)" } else { "" }),
+            Span::raw(if s.tags.is_empty() {
+                "(none)".to_string()
+            } else {
+                theme::format_tags(&s.tags)
+            }),
         ]));
-        if !s.tags.is_empty() {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(lw + 2)),
-                Span::raw(theme::format_tags(&s.tags)),
-            ]));
-        }
 
         lines.push(Line::from(vec![
             Span::styled(format!("{:lw$}", "Active", lw = lw), theme::THEME.menu_key),
             Span::raw(if entry.active { "yes" } else { "no" }),
         ]));
 
-        lines.push(Line::from(Span::styled(
-            format!("{:lw$}", "Paths", lw = lw),
-            theme::THEME.header,
-        )));
-
-        for p in &s.paths {
-            let relative = p
-                .strip_prefix(&s.root)
+        let mut paths_iter = s.paths.iter().map(|p| {
+            p.strip_prefix(&s.root)
                 .unwrap_or(p.as_path())
                 .to_string_lossy()
-                .into_owned();
+                .into_owned()
+        });
+
+        if let Some(first) = paths_iter.next() {
             lines.push(Line::from(vec![
-                Span::raw(" ".repeat(lw + 2)),
+                Span::styled(format!("{:lw$}", "Paths", lw = lw), theme::THEME.menu_key),
+                Span::raw(first),
+            ]));
+        }
+        for relative in paths_iter {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(lw)),
                 Span::raw(relative),
             ]));
         }

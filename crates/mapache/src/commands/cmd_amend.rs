@@ -61,14 +61,18 @@ impl ToExitCode for AmendError {
 #[clap(
     about = "Amend an existing snapshot",
     long_about = "Amend an existing snapshot's metadata: tags, description, or exclude paths.\n\n\
-        By default amends the most recent snapshot. Use a snapshot ID to amend a\n\
-        specific one, or --all to apply the changes to every snapshot. The amended\n\
-        snapshot is rewritten; use --keep-old to retain the original."
+        By default amends the most recent snapshot. Pass one or more snapshot IDs\n\
+        to amend specific ones, or --all to apply the changes to every snapshot.\n\
+        The amended snapshot is rewritten; use --keep-old to retain the original."
 )]
 pub struct CmdArgs {
-    /// The ID of the snapshot to amend, or 'latest' to amend the most recent snapshot.
-    #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest, group = "snapshot_group")]
-    pub snapshot: UseSnapshot,
+    /// One or more snapshot IDs to amend, or 'latest' to amend the most recent snapshot.
+    #[arg(
+        value_parser = clap::value_parser!(UseSnapshot),
+        num_args = 0..,
+        group = "snapshot_group"
+    )]
+    pub snapshot: Option<Vec<UseSnapshot>>,
 
     /// Apply changes to all snapshots
     #[arg(short, long, group = "snapshot_group")]
@@ -126,23 +130,37 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), AmendEr
             if args.all {
                 let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
                 while let Some(res) = snapshot_stream.next().await {
-                    snapshots.push(res?);
+                    let (id, snap) = res?;
+                    if !snapshots.iter().any(|(existing, _)| *existing == id) {
+                        snapshots.push((id, snap));
+                    }
                 }
             } else {
-                match find_use_snapshot(repo.clone(), &args.snapshot).await {
-                    Ok(Some((id, snap))) => snapshots.push((id, snap)),
-                    Ok(None) => {
-                        return Err(AmendError::NotFound(format!(
-                            "no snapshot found for {} (only snapshots created by this host are considered)",
-                            args.snapshot
-                        )));
+                let mut selected: Vec<UseSnapshot> = args.snapshot.clone().unwrap_or_default();
+                if selected.is_empty() {
+                    selected.push(UseSnapshot::Latest);
+                }
+
+                for use_snapshot in &selected {
+                    match find_use_snapshot(repo.clone(), use_snapshot).await {
+                        Ok(Some((id, snap))) => {
+                            if !snapshots.iter().any(|(existing, _)| *existing == id) {
+                                snapshots.push((id, snap));
+                            }
+                        }
+                        Ok(None) => {
+                            return Err(AmendError::NotFound(format!(
+                                "no snapshot found for {} (only snapshots created by this host are considered)",
+                                use_snapshot
+                            )));
+                        }
+                        Err(e) => return Err(AmendError::Repo(e)),
                     }
-                    Err(e) => return Err(AmendError::Repo(e)),
                 }
             }
 
             let num_snapshots = snapshots.len();
-            for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
+            for (i, (id, snapshot)) in snapshots.iter_mut().enumerate() {
                 if cleanup_handler.is_interrupted() {
                     tracing::info!(target: "amend", "Amend interrupted by user");
                     return Err(AmendError::Interrupted);
@@ -152,7 +170,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), AmendEr
                     "Amending snapshot {}",
                     id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().red()
                 );
-                if args.all {
+                if num_snapshots > 1 {
                     ui::cli::log!("{} ({}/{})", amend_str, i + 1, num_snapshots);
                 } else {
                     ui::cli::log!("{} ", amend_str);

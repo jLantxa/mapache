@@ -4,6 +4,7 @@ mod tests {
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
     use anyhow::Result;
+    use futures::StreamExt;
     use mapache::{
         backend::localfs::LocalFS,
         commands::cmd_amend::AmendError,
@@ -191,6 +192,63 @@ mod tests {
                 .is_some_and(|e| matches!(e, AmendError::NotFound(_) | AmendError::Repo(_))),
             "expected AmendError::NotFound or AmendError::Repo, got: {err:#}"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_amend_multiple_snapshots() -> Result<()> {
+        use mapache::commands::UseSnapshot;
+
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot(vec![backup_data_tmp_path.join("0")]).await?;
+        ctx.snapshot(vec![backup_data_tmp_path.join("1")]).await?;
+        ctx.snapshot(vec![backup_data_tmp_path.join("2")]).await?;
+
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
+        let (repo, _, test_repo_lock_handle) =
+            Repository::try_open_with_lock(&ctx.auth, None, backend, TEST_REPO_CONFIG, false, None)
+                .await?;
+        test_repo_lock_handle.unlock().await;
+
+        let mut ids = Vec::new();
+        {
+            let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+            while let Some(res) = snapshot_stream.next().await {
+                let (id, _) = res?;
+                ids.push(id);
+            }
+        }
+        assert_eq!(ids.len(), 3);
+
+        let use_snapshots: Vec<UseSnapshot> = ids
+            .iter()
+            .map(|id| UseSnapshot::SnapshotId(id.to_hex()))
+            .collect();
+
+        ctx.amend_builder()
+            .description("multi amend".to_string())
+            .snapshots(use_snapshots)
+            .run(&ctx.global)
+            .await?;
+
+        // Each snapshot should now carry the new description and record the ID
+        // it amended in `summary.amends`.
+        let mut mut_snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        let mut amended = 0;
+        while let Some(res) = mut_snapshot_stream.next().await {
+            let (_, snapshot) = res?;
+            assert!(snapshot.summary.amends.is_some());
+            assert_eq!(snapshot.description.as_deref(), Some("multi amend"));
+            amended += 1;
+        }
+        assert_eq!(amended, 3);
 
         Ok(())
     }

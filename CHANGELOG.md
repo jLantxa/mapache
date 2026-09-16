@@ -97,6 +97,11 @@
   `policy` array and a `reason` field per entry.
 - **Snapshot tables**: `log` and `forget` tables are rendered without extra cell
   padding, making them noticeably narrower.
+- **`mapache amend` accepts multiple snapshot IDs**: Pass one or more snapshot
+  IDs to amend them in a single invocation (e.g. `mapache amend <ID_1> <ID_2>`).
+  Each selected snapshot is rewritten and reported with a progress counter when
+  more than one is selected. The original `latest` default and `--all` flag are
+  unchanged.
 - **Keyfile format**: Key files now use a nested `kdf` object with an
   `algorithm` discriminator (e.g. `{"algorithm": "argon2id", "m": ...,
   "t": ..., "p": ...}`) instead of flat top-level `m`, `t`, `p` fields.

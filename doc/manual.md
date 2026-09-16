@@ -1451,6 +1451,10 @@ mapache amend --description "Backup before upgrade" -r <URL>
 mapache amend --clear-tags -r <URL>
 mapache amend --clear-description -r <URL>
 
+# Amend specific snapshots (one or more IDs)
+mapache amend <SNAPSHOT_ID> -r <URL>
+mapache amend <SNAPSHOT_ID_1> <SNAPSHOT_ID_2> -r <URL>
+
 # Add exclusions post-hoc (rebuilds tree)
 mapache amend --exclude "*.log" -r <URL>
 
@@ -1885,7 +1889,7 @@ mapache cat <type>:<ID> -r <URL>
 Modify an existing snapshot.
 
 ```
-mapache amend [SNAPSHOT] -r <URL>
+mapache amend [SNAPSHOT...] -r <URL>
   -a, --all               Apply to all snapshots
   --keep-old              Keep the old snapshot file
   --tags <TAGS>           Replace tags

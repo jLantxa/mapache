@@ -631,7 +631,7 @@ impl AmendBuilder {
         use {UseSnapshot, cmd_amend};
         Self {
             args: cmd_amend::CmdArgs {
-                snapshot: UseSnapshot::Latest,
+                snapshot: Some(vec![UseSnapshot::Latest]),
                 all: false,
                 keep_old: false,
                 tags_str: None,
@@ -655,7 +655,12 @@ impl AmendBuilder {
     }
 
     pub fn snapshot(mut self, use_snapshot: UseSnapshot) -> Self {
-        self.args.snapshot = use_snapshot;
+        self.args.snapshot = Some(vec![use_snapshot]);
+        self
+    }
+
+    pub fn snapshots(mut self, use_snapshots: Vec<UseSnapshot>) -> Self {
+        self.args.snapshot = Some(use_snapshots);
         self
     }
 

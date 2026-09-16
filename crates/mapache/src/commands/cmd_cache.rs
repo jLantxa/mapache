@@ -5,6 +5,7 @@ use std::{
         Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    time::SystemTime,
 };
 
 use clap::Args;
@@ -104,7 +105,7 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
         return Ok(());
     }
 
-    let mut folders: Vec<(String, PathBuf)> = std::fs::read_dir(cache_base)?
+    let mut folders: Vec<(String, PathBuf, Option<SystemTime>)> = std::fs::read_dir(cache_base)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
@@ -116,11 +117,12 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            Some((name, path))
+            let modified = path.metadata().ok().and_then(|m| m.modified().ok());
+            Some((name, path, modified))
         })
         .collect();
 
-    folders.sort_by(|a, b| a.0.cmp(&b.0));
+    folders.sort_by_key(|a| std::cmp::Reverse(a.2));
 
     if folders.is_empty() {
         ui::cli::log!(
@@ -155,7 +157,7 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
     let mut num_directories = 0;
     let mut total_cache_size = 0;
 
-    for (name, path) in &folders {
+    for (name, path, modified) in &folders {
         let size = match utils::dir_size(path) {
             Ok(size) => size,
             Err(e) => {
@@ -164,10 +166,7 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
             }
         };
 
-        let modified = path
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
+        let modified = modified
             .map(|t| utils::pretty_print_system_time(t, Some("%Y-%m-%d %H:%M")).unwrap_or_default())
             .unwrap_or_default();
 

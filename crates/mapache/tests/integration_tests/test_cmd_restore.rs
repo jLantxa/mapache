@@ -185,6 +185,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_delete_with_strip_prefix() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Run snapshot
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
+
+        // Run restore with strip-prefix: include "0/00" writes to "00" at target root.
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0/00".to_string()])
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .strip_prefix(true)
+            .run(&ctx.global)
+            .await?;
+        assert!(restore_path.join("00").join("file00.txt").exists());
+
+        // Create extra files: one inside the stripped subtree (deletable),
+        // one outside the include, and one at the target root.
+        std::fs::File::create(restore_path.join("00").join("extra.txt"))?;
+        std::fs::create_dir_all(restore_path.join("0"))?;
+        std::fs::File::create(restore_path.join("0").join("extra_outside.txt"))?;
+        std::fs::File::create(restore_path.join("extra_root.txt"))?;
+        assert!(restore_path.join("00").join("extra.txt").exists());
+
+        // Restore with --delete and strip-prefix: local dirs must be resolved
+        // with the same stripped mapping as the restore pass.
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0/00".to_string()])
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .delete(true)
+            .strip_prefix(true)
+            .run(&ctx.global)
+            .await?;
+
+        assert!(restore_path.join("00").join("file00.txt").exists());
+        assert!(!restore_path.join("00").join("extra.txt").exists());
+        assert!(restore_path.join("0").join("extra_outside.txt").exists());
+        assert!(restore_path.join("extra_root.txt").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_restore_delete_default() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);

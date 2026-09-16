@@ -439,7 +439,7 @@ pub(crate) async fn run_with_repo(
             dry_run,
             strategy,
             quit_on_error,
-            strip_prefix: common_prefix,
+            strip_prefix: common_prefix.clone(),
             preallocate: !sparse,
             verify,
             include: parsed_includes.clone(),
@@ -470,6 +470,7 @@ pub(crate) async fn run_with_repo(
             restorer::SyncOpts {
                 include: parsed_includes,
                 exclude: parsed_excludes,
+                strip_prefix: common_prefix,
                 dry_run,
                 no_preserve_root,
                 shutdown_signal: cleanup_handler.interrupted.clone(),

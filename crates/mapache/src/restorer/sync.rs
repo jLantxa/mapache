@@ -22,6 +22,10 @@ use crate::{
 pub struct SyncOpts {
     pub include: Option<Vec<PathBuf>>,
     pub exclude: Option<Vec<PathBuf>>,
+    /// Prefix stripped from snapshot paths by the restore pass before writing
+    /// to the target. The delete pass must apply the same mapping so it looks
+    /// in the directories the restore actually wrote to.
+    pub strip_prefix: Option<PathBuf>,
     pub dry_run: bool,
     pub no_preserve_root: bool,
     pub shutdown_signal: Arc<AtomicBool>,
@@ -88,7 +92,23 @@ pub async fn delete_nodes(
             .map(|node| node.name.as_str())
             .collect();
 
-        let local_dir = &target_path.join(path);
+        // Apply the same strip-prefix mapping the restore pass used. An empty
+        // stream path is the snapshot root, which always maps to the target
+        // root regardless of any stripped prefix.
+        let local_path = match &opts.strip_prefix {
+            Some(prefix) if !path.as_os_str().is_empty() => match path.strip_prefix(prefix) {
+                Ok(stripped) => {
+                    if stripped.as_os_str().is_empty() {
+                        continue;
+                    }
+                    stripped.to_path_buf()
+                }
+                Err(_) => continue,
+            },
+            _ => path,
+        };
+
+        let local_dir = &target_path.join(local_path);
         process_local_directory(
             local_dir,
             &snapshot_node_names,

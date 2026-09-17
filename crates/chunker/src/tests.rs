@@ -66,6 +66,20 @@ fn test_mask_distributions() {
     }
 }
 
+#[test]
+fn test_rounded_log2_matches_nearest_bucket() {
+    use crate::rounded_log2;
+
+    // Powers of two: exact, no rounding needed.
+    assert_eq!(rounded_log2(1024), 10);
+    assert_eq!(rounded_log2(16384), 14);
+    // Non-powers of two: must round to nearest in log-space, not floor.
+    assert_eq!(rounded_log2(1500), 11); // log2 ~ 10.55, rounds up
+    assert_eq!(rounded_log2(12288), 14); // log2 ~ 13.585, rounds up
+    assert_eq!(rounded_log2(24576), 15); // log2 ~ 14.585, rounds up
+    assert_eq!(rounded_log2(1100), 10); // log2 ~ 10.103, rounds down
+}
+
 #[rstest]
 #[case(Normalization::None)]
 fn test_chunker_masks(#[case] normalization: Normalization) {

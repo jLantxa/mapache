@@ -102,6 +102,26 @@ impl Normalization {
     }
 }
 
+/// Rounded (nearest-bucket) base-2 logarithm used for mask selection.
+///
+/// Picks whichever power of two `2^bits` is logarithmically closest to
+/// `value`, rather than flooring like [`usize::ilog2`]. For example
+/// `rounded_log2(12288)` (log2 ≈ 13.585) returns 14, not 13 — otherwise a
+/// non-power-of-two `normal_size` would pick a mask bucket one step too
+/// small. Compares in log-space via `value^2` vs `2 * pow_lo^2` (equivalent
+/// to `value / pow_lo >= sqrt(2)`) to stay in integer arithmetic and remain
+/// usable from a `const fn`. `u64` is enough headroom since `value` is
+/// bounded by [`TOTAL_MAX_SIZE`] (16 MiB), whose square is far under `u64::MAX`.
+const fn rounded_log2(value: usize) -> usize {
+    let bits = value.ilog2() as usize;
+    let pow_lo = 1u64 << bits;
+    if (value as u64).pow(2) >= 2 * pow_lo.pow(2) {
+        bits + 1
+    } else {
+        bits
+    }
+}
+
 /// FastCDC chunker configured with size bounds and a normalization level.
 ///
 /// Holds precomputed masks and references to the static Gear hash tables.
@@ -169,7 +189,7 @@ impl Chunker {
         assert!(normal_size.is_multiple_of(2), "normal_size must be even");
         assert!(max_size.is_multiple_of(2), "max_size must be even");
 
-        let normal_bits = normal_size.ilog2() as usize;
+        let normal_bits = rounded_log2(normal_size);
         let norm_bits = normalization.bits();
         assert!(normal_bits + norm_bits <= MASKS.len());
 
@@ -209,6 +229,7 @@ impl Chunker {
     ///    `mask_l` (fewer one-bits → fewer positions pass, guaranteeing
     ///    termination before or at `max_size`).
     /// 4. **Fallback** — Return `max` if no cut point was found.
+    #[inline]
     pub fn cut(&self, data: &[u8]) -> (u64, usize) {
         let len = data.len();
         if len <= self.min_size {
@@ -294,8 +315,13 @@ pub struct Chunk {
 pub struct ChunkStream<'a, R: Read> {
     chunker: &'a Chunker,
     source: R,
+    /// `buffer.len()` is the number of valid, unconsumed bytes at the front.
+    /// `buffer.capacity()` grows geometrically (up to `max_size`) as more
+    /// data is needed, so small sources don't pay for a full `max_size`
+    /// allocation. Bytes beyond `len()` are uninitialized (see `fill`).
     buffer: Vec<u8>,
     global_offset: usize,
+    eof: bool,
 }
 
 impl<'a, R: Read> ChunkStream<'a, R> {
@@ -309,7 +335,48 @@ impl<'a, R: Read> ChunkStream<'a, R> {
             source,
             buffer: Vec::with_capacity(initial_capacity.min(chunker.max_size)),
             global_offset: 0,
+            eof: false,
         }
+    }
+
+    /// Reads from the source until either `max_size` bytes are buffered or
+    /// EOF is reached. Grows `buffer`'s capacity geometrically (doubling,
+    /// capped at `max_size`) rather than jumping straight to `max_size`, so
+    /// the total bytes ever allocated stays proportional to what is actually
+    /// needed. Reads land directly in the (uninitialized) spare capacity to
+    /// avoid zero-filling memory that `read()` is about to overwrite anyway.
+    fn fill(&mut self) -> io::Result<()> {
+        let max_size = self.chunker.max_size;
+        while !self.eof && self.buffer.len() < max_size {
+            if self.buffer.len() == self.buffer.capacity() {
+                let grown = (self.buffer.capacity() * 2).max(self.chunker.min_size);
+                self.buffer.reserve(grown.min(max_size) - self.buffer.len());
+            }
+
+            let cur_len = self.buffer.len();
+            let to_read = self.buffer.capacity() - cur_len;
+            let spare = &mut self.buffer.spare_capacity_mut()[..to_read];
+            // SAFETY: `u8` has no validity invariant — any bit pattern,
+            // including untouched allocator memory, is a valid `u8`. So
+            // reinterpreting this `&mut [MaybeUninit<u8>]` as `&mut [u8]`
+            // to hand to `read()` cannot itself cause undefined behavior,
+            // regardless of whether `read()`'s implementation happens to
+            // read from `buf` before overwriting it. Whatever `read()`
+            // writes into `buf[..n]` is then genuinely initialized, and we
+            // only extend `len` by that same `n` below.
+            let buf = unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr().cast(), to_read) };
+
+            match self.source.read(buf) {
+                Ok(0) => self.eof = true,
+                // SAFETY: `n <= to_read <= capacity - cur_len`, and the
+                // bytes `[cur_len, cur_len + n)` were just written by
+                // `read()` above, so they are initialized.
+                Ok(n) => unsafe { self.buffer.set_len(cur_len + n) },
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -320,58 +387,22 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
     /// then find a cut point and yield the chunk as a [`Chunk`].
     /// Flushes any remaining buffered data as the final chunk on EOF.
     fn next(&mut self) -> Option<Self::Item> {
-        let max_size = self.chunker.max_size;
-        let min_size = self.chunker.min_size;
-
-        let mut eof = false;
-
-        while self.buffer.len() < max_size {
-            let cur_len = self.buffer.len();
-            let needed = max_size - cur_len;
-
-            if self.buffer.capacity() < max_size {
-                self.buffer.reserve(needed);
-            }
-
-            let to_read = needed.min(self.buffer.capacity() - cur_len);
-
-            let spare = self.buffer.spare_capacity_mut();
-            let uninit = &mut spare[..to_read];
-            // SAFETY: `u8` accepts any bit pattern; `read()` immediately
-            // overwrites the uninitialized region before any read occurs.
-            let buf =
-                unsafe { std::slice::from_raw_parts_mut(uninit.as_mut_ptr() as *mut u8, to_read) };
-
-            match self.source.read(buf) {
-                Ok(0) => {
-                    eof = true;
-                    break;
-                }
-                // SAFETY: `cur_len + n` ≤ `to_read`, and we reserved enough
-                // capacity above to fit `max_size` bytes. `n` is the number
-                // of bytes actually written by `read()`, all within bounds.
-                Ok(n) => unsafe {
-                    self.buffer.set_len(cur_len + n);
-                },
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    continue;
-                }
-                Err(e) => {
-                    return Some(Err(ChunkerError::Io(e)));
-                }
-            }
+        if let Err(e) = self.fill() {
+            return Some(Err(ChunkerError::Io(e)));
         }
 
-        if eof && self.buffer.is_empty() {
+        if self.buffer.is_empty() {
             return None;
         }
 
-        if self.buffer.len() >= min_size {
-            let slice = &self.buffer[..self.buffer.len().min(max_size)];
-            let (_hash, cut_point) = self.chunker.cut(slice);
+        if self.buffer.len() >= self.chunker.min_size {
+            let (_hash, cut_point) = self.chunker.cut(&self.buffer);
 
             if cut_point > 0 {
-                let data: Vec<u8> = self.buffer.drain(..cut_point).collect();
+                let data = self.buffer[..cut_point].to_vec();
+                let remaining = self.buffer.len() - cut_point;
+                self.buffer.copy_within(cut_point.., 0);
+                self.buffer.truncate(remaining);
                 let offset = self.global_offset;
                 self.global_offset += cut_point;
 
@@ -383,11 +414,10 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
             }
         }
 
-        if eof && !self.buffer.is_empty() {
+        if self.eof {
             let length = self.buffer.len();
-            let offset = self.global_offset;
             let data = std::mem::take(&mut self.buffer);
-
+            let offset = self.global_offset;
             self.global_offset += length;
 
             return Some(Ok(Chunk {

@@ -26,9 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     archiver::{
-        chunker_pool::{BATCH_SIZE, ChunkerPoolMsg},
-        progress::SnapshotProgress,
-        tree_serializer::TreeSerializer,
+        chunker_pool::ChunkerPoolMsg, progress::SnapshotProgress, tree_serializer::TreeSerializer,
     },
     common::{
         self,
@@ -180,8 +178,6 @@ pub(crate) async fn run_pipeline(
     let coordinator_tx = processed_tx.clone();
     let forwarder_tx = processed_tx.clone();
 
-    let batch_lock: Arc<Mutex<Vec<chunker_pool::ChunkerJob>>> = Arc::new(Mutex::new(Vec::new()));
-
     let coordinator_is_stdin = is_stdin;
     let coordinator_task = tokio::spawn(async move {
         tracing::trace!(target: "archiver", "Coordinator task started");
@@ -194,7 +190,6 @@ pub(crate) async fn run_pipeline(
             let progress = status.progress.clone();
             let event_sender = status.event_sender.clone();
             let shutdown_signal = status.shutdown_signal.clone();
-            let batch_lock = batch_lock.clone();
             let is_stdin = coordinator_is_stdin;
 
             if status.is_failed() {
@@ -230,10 +225,6 @@ pub(crate) async fn run_pipeline(
 
             if needs_chunking {
                 let is_stdin_item = is_stdin && path == Path::new("/stdin");
-                let is_small = !is_stdin_item
-                    && next_node
-                        .as_ref()
-                        .is_some_and(|n| n.node.metadata.size <= common::defaults::MIN_CHUNK_SIZE);
 
                 let job = chunker_pool::ChunkerJob {
                     path,
@@ -247,43 +238,14 @@ pub(crate) async fn run_pipeline(
                     is_stdin: is_stdin_item,
                 };
 
-                if is_small {
-                    let mut batch = batch_lock.lock();
-                    batch.push(job);
-                    if batch.len() >= BATCH_SIZE {
-                        let to_send = std::mem::take(&mut *batch);
-                        drop(batch);
-                        if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err()
-                            && !status.is_failed()
-                        {
-                            status.signal_fatal(error::MapacheError::Chunking(
-                                CHUNKER_POOL_CLOSED.to_string(),
-                            ));
-                        }
-                    }
-                } else {
-                    let pending = {
-                        let mut batch = batch_lock.lock();
-                        std::mem::take(&mut *batch)
-                    };
-                    if !pending.is_empty()
-                        && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
-                        && !status.is_failed()
-                    {
-                        status.signal_fatal(error::MapacheError::Chunking(
-                            CHUNKER_POOL_CLOSED.to_string(),
-                        ));
-                        continue;
-                    }
-                    if pool_sender
-                        .send(ChunkerPoolMsg::Single(Box::new(job)))
-                        .is_err()
-                        && !status.is_failed()
-                    {
-                        status.signal_fatal(error::MapacheError::Chunking(
-                            CHUNKER_POOL_CLOSED.to_string(),
-                        ));
-                    }
+                if pool_sender
+                    .send(ChunkerPoolMsg::Single(Box::new(job)))
+                    .is_err()
+                    && !status.is_failed()
+                {
+                    status.signal_fatal(error::MapacheError::Chunking(
+                        CHUNKER_POOL_CLOSED.to_string(),
+                    ));
                 }
             } else {
                 tracing::trace!(target: "archiver", "Processing item inline: {:?}", path);
@@ -316,20 +278,6 @@ pub(crate) async fn run_pipeline(
                     }
                 }
             }
-        }
-
-        // Flush any remaining batch
-        let remaining = {
-            let mut batch = batch_lock.lock();
-            std::mem::take(&mut *batch)
-        };
-        if !remaining.is_empty()
-            && chunker_pool
-                .sender
-                .send(ChunkerPoolMsg::Batch(remaining))
-                .is_err()
-        {
-            tracing::warn!(target: "archiver", "Coordinator flush failed: chunker channel closed");
         }
 
         tracing::trace!(target: "archiver", "Coordinator task finished");

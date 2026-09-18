@@ -181,7 +181,7 @@ pub(crate) fn process_item_sync(
                     let current_size = file.metadata()?.len();
                     if current_size != file_size {
                         emit_event(
-                            ctx.event_sender,
+                            &event_sender,
                             Event::Backup(BackupEvent::Warning(format!(
                                 "File {} changed size during backup ({} -> {}); backing up actual contents",
                                 path.display(),
@@ -361,14 +361,19 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 
 /// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
 ///
-/// A background producer thread reads the file and runs the CDC chunker, sending raw
-/// chunk payloads over a bounded channel (capacity 2). The calling thread receives
-/// these chunks and performs the CPU-heavy work (zstd compression + AES encryption)
-/// via `save_blob`. This overlaps file I/O and chunk-boundary scanning with
-/// compression/encryption, improving throughput on multi-core systems.
+/// For files up to 2 MiB,
+/// chunking and storage happen inline to avoid the overhead of spawning a thread
+/// and setting up a channel.
+///
+/// For larger files, a background producer thread reads the file and runs the CDC
+/// chunker, sending raw chunk payloads over a bounded channel (capacity 2). The
+/// calling thread receives these chunks and performs the CPU-heavy work (zstd
+/// compression + AES encryption) via `save_blob`. This overlaps file I/O and
+/// chunk-boundary scanning with compression/encryption, improving throughput on
+/// multi-core systems.
 ///
 /// Returns the stored blob IDs and the number of bytes actually read from the
-/// file (which may differ from the scanned `file_size`).
+/// file.
 pub(crate) fn chunk_and_store_file<R: Read + Send>(
     blob_saver: &dyn BlobSaver,
     reader: R,
@@ -377,6 +382,13 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
     event_sender: &EventSender,
     shutdown_signal: &AtomicBool,
 ) -> Result<(Vec<ID>, u64)> {
+    // Small files are processed inline to skip thread-spawn and channel overhead.
+    const INLINE_THRESHOLD: u64 = 2 * common::defaults::NORMAL_CHUNK_SIZE;
+
+    if file_size <= INLINE_THRESHOLD {
+        return chunk_and_store_inline(blob_saver, reader, progress, event_sender, shutdown_signal);
+    }
+
     let (chunk_tx, chunk_rx) = crossbeam_channel::bounded::<Result<Vec<u8>>>(2);
     let rt_handle = tokio::runtime::Handle::try_current().ok();
 
@@ -384,9 +396,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
         s.spawn(move || {
             let _guard = rt_handle.as_ref().map(|h| h.enter());
 
-            let initial_capacity = usize::try_from(file_size).unwrap_or(0);
-            let stream =
-                mapache_chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, initial_capacity);
+            let stream = mapache_chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, 0);
             for result in stream {
                 let chunk = match result {
                     Ok(c) => c,
@@ -437,6 +447,54 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
 
         Ok((ids, total_bytes))
     })
+}
+
+/// Inline chunking path for small files. Avoids thread spawn + channel overhead.
+fn chunk_and_store_inline<R: Read>(
+    blob_saver: &dyn BlobSaver,
+    reader: R,
+    progress: &SnapshotProgress,
+    event_sender: &EventSender,
+    shutdown_signal: &AtomicBool,
+) -> Result<(Vec<ID>, u64)> {
+    (|| {
+        let stream = mapache_chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, 0);
+        let mut ids = Vec::new();
+        let mut total_bytes = 0u64;
+
+        for chunk_result in stream {
+            let chunk = chunk_result.map_err(|e| MapacheError::Chunking(format!("{e}")))?;
+
+            if shutdown_signal.load(Ordering::Acquire) {
+                return Err(MapacheError::Interrupted);
+            }
+
+            let chunk_len = chunk.length as u64;
+            total_bytes += chunk_len;
+
+            let blob_type = if is_all_zero(&chunk.data) {
+                BlobType::Zero
+            } else {
+                BlobType::Data
+            };
+
+            let id = blob_saver.save_blob(
+                blob_type,
+                WriteContents::Borrowed(&chunk.data),
+                SaveID::CalculateID,
+            )?;
+
+            ids.push(id);
+
+            progress.processed_bytes(chunk_len);
+            emit_event(
+                event_sender,
+                Event::Backup(BackupEvent::BytesProcessed(chunk_len)),
+            );
+        }
+
+        Ok((ids, total_bytes))
+    })()
 }
 
 /// Stores a small file as a single blob without chunking.

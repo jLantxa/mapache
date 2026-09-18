@@ -14,8 +14,6 @@ use crate::{
     ui::events::EventSender,
 };
 
-pub(crate) const BATCH_SIZE: usize = 16;
-
 pub(crate) struct ChunkerJob {
     pub path: PathBuf,
     pub prev_node: Option<StreamNode>,
@@ -35,7 +33,6 @@ pub(crate) struct ChunkerResult {
 
 pub(crate) enum ChunkerPoolMsg {
     Single(Box<ChunkerJob>),
-    Batch(Vec<ChunkerJob>),
 }
 
 pub(crate) struct ChunkerPool {
@@ -109,20 +106,6 @@ impl ChunkerPool {
                                 .is_err()
                             {
                                 break;
-                            }
-                        }
-                        ChunkerPoolMsg::Batch(jobs) => {
-                            for job in jobs {
-                                let result = process(&job, &mut bufs);
-                                if tx
-                                    .send(ChunkerResult {
-                                        path: job.path,
-                                        result,
-                                    })
-                                    .is_err()
-                                {
-                                    return;
-                                }
                             }
                         }
                     }

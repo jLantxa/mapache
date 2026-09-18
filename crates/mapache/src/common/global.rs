@@ -15,11 +15,10 @@ use crate::{
     },
 };
 
-pub(crate) const THIS_MAPACHE_VERSION: &str = if option_env!("MAPACHE_RELEASE_TYPE").is_some() {
-    concat!("v", env!("CARGO_PKG_VERSION"))
-} else {
-    concat!("v", env!("CARGO_PKG_VERSION"), "+dev")
-};
+/// Version string. `build.rs` resolves the build type from context and emits
+/// `MAPACHE_VERSION`: a clean `vX.Y.Z` for crates.io packages and official
+/// release builds, `vX.Y.Z+dev` for development builds from a git checkout.
+pub(crate) const THIS_MAPACHE_VERSION: &str = env!("MAPACHE_VERSION");
 
 pub(crate) static MAPACHE_VERSION_INFO: LazyLock<String> = LazyLock::new(|| {
     format!(

@@ -160,7 +160,7 @@ def build_target(t: Target, release_type: bool = False) -> None:
     if rustflags_parts:
         env["RUSTFLAGS"] = " ".join(rustflags_parts)
     if release_type:
-        env["MAPACHE_RELEASE_TYPE"] = "release"
+        env["MAPACHE_BUILD_TYPE"] = "release"
 
     label = f"{t.release_name} ({t.triple})"
     print(f"\n===== {label} =====")
@@ -304,7 +304,7 @@ def main() -> None:
     p.add_argument("--target", action="append", dest="targets",
                    help="Only build targets matching platform or triple")
     p.add_argument("--release-type", action="store_true",
-                   help="Set MAPACHE_RELEASE_TYPE=release")
+                   help="Set MAPACHE_BUILD_TYPE=release")
     args = p.parse_args()
 
     check_docker_reachable()

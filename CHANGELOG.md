@@ -10,7 +10,8 @@
   be removed in a future release.
 - **`mapache migrate`**: New command to convert v1 repositories to v2 format.
   Re-encrypts packs, re-indexes files, and rebuilds the binary index.
-  Supports `--dry-run` for preview.
+  Supports `--dry-run` for preview. The command can now also be interrupted
+  cleanly with Ctrl+C, exiting with the conventional interrupt code.
 - **`--format`**: New flag in `init` to select repository format version.
 - **`--compression none`**: Per-blob compression marker in v2 enables storing
   already-compressed content (video, photos, archives) without zstd overhead.
@@ -58,6 +59,10 @@
   larger than the budget. Evicted indices are re-loaded from disk on the next
   access. Configurable via `[runtime] lru-max-blobs` in the TOML config
   (default: 1,000,000).
+- **Config key alignment**: TOML config keys now match the corresponding CLI
+  flag names. `snapshot.num-readers` and `snapshot.num-packers` are now
+  `snapshot.readers` and `snapshot.packers`; the old keys are no longer
+  accepted.
 - **AES-GCM-SIV nonce position**: In v2, encrypted blobs place the nonce at the
   end (`[ct | tag | nonce]`) instead of the start. Eliminates an extra
   allocation and memory copy during encryption.
@@ -66,6 +71,10 @@
 - **TUI repository format indicator**: The dashboard top bar now shows the
   repository format version.
 - **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
+- **Small-file performance**: The archiver now chunks small files inline
+  instead of round-tripping them through the chunker pool, and the chunker's
+  stream buffer grows geometrically instead of allocating the full maximum
+  size upfront. Small/medium sources use less memory and back up faster.
 - **Bundle open retry**: Opening a bundle with the wrong password now prompts
   again instead of failing immediately.
 - **Copy and sync format enforcement**: `mapache copy` and `mapache sync` now
@@ -155,6 +164,9 @@
   `skip` keeps a conflicting symlink with a warning, `overwrite` replaces it,
   and `fail` aborts — instead of always replacing or always failing regardless
   of the chosen strategy.
+- **`restore --delete` with `--include`**: The delete pass now strips the same
+  leading path prefix as the restore pass. Previously, deleting with
+  `--include` looked for local directories under the full snapshot path.
 - **Lock staleness**: A lock left by a process that is still running on the same
   host is no longer treated as stale merely because it exceeded the lock age.
   Locks are only reclaimed by age when the owning process cannot be confirmed
@@ -164,6 +176,8 @@
   diff-resolution failure). After the stream ends, remaining trees are
   force-finalized so the snapshot completes and omits the skipped items with a
   warning.
+- **Deleted nodes in snapshots**: The per-node progress counters count deleted
+  nodes again; they had been silently dropped from the item counts.
 - **Stat-failure visibility**: Files that fail to stat during directory
   scanning are now surfaced as visible warnings in snapshot and bundle output
   instead of being silently omitted with only a debug log, so data loss from
@@ -189,6 +203,10 @@
 - **Bundle ECC repair safety**: Repairing a corrupted bundle writes the
   repaired output to a `.repaired` file instead of overwriting the original,
   which is left untouched.
+- **ECC repair integrity**: After repairing a corrupted bundle, the repaired
+  shards are CRC-validated and the repair is refused if the check fails,
+  instead of writing repaired (possibly wrong) data anyway. Partial-shard
+  CRC mismatches are now caught.
 - **Deterministic blob nonce**: Blob encryption nonces are now derived from the
   content hash instead of an independent random value, so the 96-bit GCM-SIV
   nonce can only repeat for identical content (which is safe for GCM-SIV),
@@ -220,11 +238,18 @@
   to epoch, fixing silent metadata loss on old files.
 - **Bundle validation**: Reject blob sizes and trailer fields that overflow
   `u32` instead of silently truncating.
+- **Robust index/bundle parsing**: Parser reads no longer preallocate
+  capacity from untrusted header counts before validating them, preventing
+  crafted corrupt files from triggering giant allocations or corrupting
+  headers.
 - **Bundle cleanup on interrupt/error**: Delete the output file when a bundle
   creation is interrupted by Ctrl+C or fails after the file has been created.
   Also delay opening the bundle writer until after all upfront checks pass.
 - **Verify exit codes**: Detect corrupt metadata files (exit code `23`) and
   preserve per-error exit codes in `clean`.
+- **Distinct exit codes**: Every error variant now maps to its own exit code
+  instead of collapsing to generic `1`, so scripts can distinguish failure
+  categories (e.g. snapshot not found, repository error, I/O error).
 - **Symlink restore safety**: Symlink subtrees no longer emit during tree
   walk, preventing writes through a symlink from escaping the target root.
 - **Cache race**: Fix missed wakeups in download coalescing; failed downloads

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `ChunkStream` now grows its read buffer geometrically (doubling, capped at the
+  maximum chunk size) instead of allocating the full `max_size` buffer upfront.
+  Small and medium sources no longer pay for a needlessly large allocation.
+
+### Fixed
+
+- `Chunker::new` now rounds `normal_size` to the nearest log2 bucket instead of
+  flooring it, matching fastcdc's behaviour. Non-power-of-two `normal_size`
+  values previously selected a mask bucket one step too small.
+
 ## v0.3.0 (2026-08-26)
 
 ### Changed

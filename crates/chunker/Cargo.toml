@@ -1,6 +1,6 @@
 [package]
 name = "mapache-chunker"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "FastCDC (Fast Content-Defined Chunking) implementation"
 repository.workspace = true

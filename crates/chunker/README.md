@@ -1,7 +1,9 @@
 # Mapache Chunker
 
-A standalone [FastCDC](https://ieeexplore.ieee.org/document/9055082) (Fast
-Content-Defined Chunking) implementation in Rust.
+A standalone [FastCDC](https://ieeexplore.ieee.org/document/9055082) (FastCDC
+Content-Defined Chunking) implementation in Rust from the
+[mapache](https://github.com/jLantxa/mapache)
+project.
 
 ## About
 

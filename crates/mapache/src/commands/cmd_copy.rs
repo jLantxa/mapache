@@ -43,6 +43,8 @@ pub enum CopyError {
     CopyFailed(String),
     #[error("cannot copy between repositories with different formats: {0}")]
     FormatMismatch(String),
+    #[error("invalid arguments: {0}")]
+    InvalidArguments(String),
     #[error("copy interrupted by user")]
     Interrupted,
     #[error(transparent)]
@@ -58,6 +60,7 @@ impl ToExitCode for CopyError {
             CopyError::BackendError(_) => 11,
             CopyError::FormatMismatch(_) => 12,
             CopyError::CopyFailed(_) => 20,
+            CopyError::InvalidArguments(_) => 2,
             CopyError::Interrupted => 130,
             CopyError::Repo(_) => 3,
             CopyError::Io(_) => 4,
@@ -93,6 +96,10 @@ pub struct CmdArgs {
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
     pub tags: Option<Vec<String>>,
 
+    /// Copy all snapshots. Cannot be combined with other filters.
+    #[clap(long, default_value_t = false)]
+    pub all: bool,
+
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -100,6 +107,22 @@ pub struct CmdArgs {
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyError> {
     let json_out = global_args.json;
+
+    let has_filters = args.snapshot.is_some()
+        || args.host.as_deref().is_some_and(|v| !v.is_empty())
+        || args.tags.as_deref().is_some_and(|v| !v.is_empty());
+
+    // Exactly one selection mode: `--all`, or at least one filter.
+    if args.all == has_filters {
+        return Err(CopyError::InvalidArguments(
+            if args.all {
+                "--all cannot be combined with --snapshot, --host or --tags"
+            } else {
+                "at least one of --all, --snapshot, --host or --tags must be specified"
+            }
+            .to_string(),
+        ));
+    }
 
     // Open source repository
 
@@ -195,6 +218,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
 
     let snapshots = select_snapshots(
         src_repo.clone(),
+        args.all,
         args.snapshot.clone(),
         args.host.clone().unwrap_or_default(),
         args.tags.clone().unwrap_or_default(),
@@ -345,6 +369,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
 /// Select snapshots from source based on filters.
 async fn select_snapshots(
     repo: Arc<Repository>,
+    all: bool,
     snapshot_filters: Option<Vec<String>>,
     host_filters: Vec<String>,
     tag_filters: Vec<String>,
@@ -353,6 +378,10 @@ async fn select_snapshots(
 
     let stream = SnapshotStream::new(repo.clone()).await?;
     let mut entries: Vec<SnapshotEntry> = stream.collect_entries(true).await?;
+
+    if all {
+        return Ok(entries.into_iter().map(|e| (e.id, e.snapshot)).collect());
+    }
 
     if let Some(prefixes) = &snapshot_filters {
         entries.retain(|e| {
@@ -626,6 +655,14 @@ async fn copy_snapshots(
 }
 
 /// Write snapshot metadata to the destination repository.
+///
+/// Snapshots are re-encoded under the destination master key, so their file
+/// IDs are re-derived from the destination ciphertext instead of reusing the
+/// source IDs (which hash the source ciphertext). `parent`/`amends`
+/// references to copied snapshots are remapped to the destination IDs so the
+/// history stays coherent. References to snapshots that are not part of the
+/// copy (e.g. when filters are used) are left untouched: they are purely
+/// informational and never dereferenced.
 async fn write_snapshots_to_dest(
     src_repo: &Repository,
     dst_repo: &Repository,
@@ -637,29 +674,21 @@ async fn write_snapshots_to_dest(
         ui::cli::log!("{}", "Writing snapshots...".bold());
     }
 
-    for (i, (snap_id, _snap)) in snapshots.iter().enumerate() {
-        let raw_data = src_repo
-            .load_file(
-                snap_id,
-                crate::backend::StorageHint {
-                    file_type: ContentIdType::Snapshot,
-                    is_metadata: true,
-                },
-                None,
-            )
-            .await?;
+    let hint = crate::backend::StorageHint {
+        file_type: ContentIdType::Snapshot,
+        is_metadata: true,
+    };
 
-        dst_repo
-            .save_file(
-                &SaveID::WithID(*snap_id),
-                &raw_data,
-                crate::backend::StorageHint {
-                    file_type: ContentIdType::Snapshot,
-                    is_metadata: true,
-                },
-                None,
-            )
+    // Pass 1: store every snapshot under the destination key and remember the
+    // mapping from source IDs to the newly derived destination IDs.
+    let mut id_map: std::collections::HashMap<ID, ID> =
+        std::collections::HashMap::with_capacity(total);
+    for (i, (snap_id, _snap)) in snapshots.iter().enumerate() {
+        let raw_data = src_repo.load_file(snap_id, hint, None).await?;
+        let (new_id, _) = dst_repo
+            .save_file(&SaveID::CalculateID, &raw_data, hint, None)
             .await?;
+        id_map.insert(*snap_id, new_id);
 
         if json_out {
             #[derive(Serialize)]
@@ -679,10 +708,45 @@ async fn write_snapshots_to_dest(
         } else {
             ui::cli::log!(
                 "  {} ({}/{})",
-                snap_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).yellow().bold(),
+                new_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).yellow().bold(),
                 i + 1,
                 total
             );
+        }
+    }
+
+    // Pass 2: rewrite snapshots whose `parent`/`amends` reference copied
+    // snapshots so the history resolves against the new IDs. Only snapshots
+    // whose stored content actually changes are rewritten.
+    for (old_id, snap) in snapshots.iter() {
+        let new_parent = snap.parent.and_then(|p| id_map.get(&p).copied());
+        let new_amends = snap.summary.amends.and_then(|a| id_map.get(&a).copied());
+        let parent_changed = new_parent.is_some() && new_parent != snap.parent;
+        let amends_changed = new_amends.is_some() && new_amends != snap.summary.amends;
+        if !parent_changed && !amends_changed {
+            continue;
+        }
+
+        let mut updated = snap.clone();
+        if parent_changed {
+            updated.parent = new_parent;
+        }
+        if amends_changed {
+            updated.summary.amends = new_amends;
+        }
+
+        let data = serde_json::to_vec(&updated)
+            .map_err(|e| CopyError::Repo(MapacheError::Serialization(e)))?;
+        let (final_id, _) = dst_repo
+            .save_file(&SaveID::CalculateID, &data, hint, None)
+            .await?;
+
+        // The pass-1 copy of this snapshot changed, so replace it.
+        if final_id != id_map[old_id] {
+            dst_repo
+                .delete_file(ContentIdType::Snapshot, &id_map[old_id], None)
+                .await?;
+            id_map.insert(*old_id, final_id);
         }
     }
 

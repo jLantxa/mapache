@@ -45,8 +45,14 @@
   encoded bytes. The row is only shown when the count is non-zero. The metric
   lands reliably at zero after `clean` now that GC detects cross-pack phantom
   blob descriptors and stats walk cold indices too.
+- **`copy --all`**: Added an option to `mapache copy` to copy all snapshots to a
+  new repository in one go.
 
 ### Changed
+
+- **`copy` requires a selector**: `mapache copy` now errors unless one of
+  `--all`, `--snapshot`, `--host` or `--tags` is given. Previously a bare
+  `copy` silently copied every snapshot in the source; use `--all` for that.
 
 - **Restorer memory**: Reduced restore memory usage by compacting the per-blob
   planning data and eliminating redundant allocations in the pack download

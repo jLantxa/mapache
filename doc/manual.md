@@ -557,19 +557,23 @@ caches.
 ### `copy` — Transfer Snapshots Between Repositories
 
 ```bash
-mapache copy --from <URL> -r <URL>
-mapache copy --from <URL> --dry-run -r <URL>
+mapache copy --all --from <URL> -r <URL>
+mapache copy --all --from <URL> --dry-run -r <URL>
 mapache copy --from <URL> --snapshot ID --host HOST -r <URL>
+mapache copy --from <URL> --tags WORK --snapshot ID -r <URL>
 ```
 
 Copies snapshots (and their data) from one repository to another. Useful for
-migration, creating replicas, or consolidating backups.
+migration, creating replicas, or consolidating backups. At least one of
+`--all`, `--snapshot`, `--host` or `--tags` must be given to select which
+snapshots to copy.
 
 | Flag | Description |
 |---|---|
 | `--from <URL>` | Source repository URL (required) |
 | `--from-ssh-privatekey <PATH>` | SSH private key for the source repository |
 | `--from-ssh-known-hosts <PATH>` | SSH known hosts file for the source repository |
+| `--all` | Copy all snapshots. Cannot be combined with `--snapshot`, `--host` or `--tags` |
 | `--snapshot <PREFIX>` | Copy only snapshots with the given ID prefix (repeatable, or comma-separated) |
 | `--host <HOST>` | Copy only snapshots from the given host (repeatable, or comma-separated) |
 | `--tags <TAGS>` | Copy only snapshots with the given tag (repeatable, or comma-separated) |
@@ -578,12 +582,17 @@ migration, creating replicas, or consolidating backups.
 The copy operation:
 
 1. Connects to both source (`--from`) and destination (`-r`) repositories
-2. Lists all snapshots in the source, applying any filters (`--snapshot`, `--host`, `--tags`)
+2. Lists all snapshots in the source, applying the given filters (`--all`, `--snapshot`, `--host`, `--tags`)
 3. Skips snapshots already present in the destination (by ID)
 4. Walks every referenced tree to discover all required data blobs
 5. Filters out blobs already present in the destination (blob-level dedup)
 6. Transfers only missing blobs, re-packing them at the destination
 7. Writes snapshot metadata to the destination
+
+Snapshots are re-encoded under the destination repository's master key, so
+their file IDs are re-derived at the destination (blob IDs stay identical, as
+they hash the plaintext). Any `parent`/`amends` links between copied snapshots
+are remapped to the new IDs.
 
 Source and destination must use the same format version (`v1` and `v2` cannot be
 mixed). Use `mapache migrate` to upgrade a v1 repository to v2.
@@ -1304,6 +1313,26 @@ later with `--key-file` to authenticate without username/password.
   full read access to the storage cannot decrypt any content without the master
   key.
 
+### Renewing the Master Key
+
+Mapache does not rotate the master key in place. If the master key (or a user
+password that wraps it) is suspected to be compromised, the sanctioned
+procedure is to recreate the repository under a fresh master key and copy the
+data over:
+
+1. Initialize a new repository with a new master key:
+   `mapache init -r <NEW_URL>`
+2. Copy every snapshot (this re-encrypts all data under the new master key):
+   `mapache copy --all -r <NEW_URL> --from <OLD_URL>`
+3. Verify the new repository: `mapache verify -r <NEW_URL>` and
+   `mapache log -r <NEW_URL>`.
+4. Destroy the old repository and all copies of its key files.
+
+Note that any data already extracted under the old master key remains readable;
+recreation only protects future access. Snapshot IDs are re-derived in the new
+repository (they hash the encrypted bytes, which differ under the new key), but
+all content is preserved.
+
 ---
 
 ## 14. Bundle Files
@@ -1939,10 +1968,11 @@ mapache rechunk -r <URL>
 Transfer snapshots between repositories.
 
 ```
-mapache copy --from <URL> -r <URL>
+mapache copy --all --from <URL> -r <URL>
   --from <URL>                Source repository (required)
   --from-ssh-privatekey <PATH>  SSH key for source repository
   --from-ssh-known-hosts <PATH>  SSH known hosts file for source
+  --all                       Copy all snapshots (cannot be combined with the filters below)
   --snapshot <PREFIX>         Copy only snapshots with this ID prefix (repeatable)
   --host <HOST>               Copy only snapshots from this host (repeatable)
   --tags <TAGS>               Copy only snapshots with this tag (repeatable)

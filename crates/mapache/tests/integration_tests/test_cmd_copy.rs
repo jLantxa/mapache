@@ -3,7 +3,7 @@
 mod tests {
     use std::sync::Arc;
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
 
     use mapache::{
         backend::{StorageBackend, localfs::LocalFS},
@@ -80,12 +80,34 @@ mod tests {
 
         // Copy: -r (auto) = destination, --from = source
         let src_path_str = src_repo_path.to_string_lossy().to_string();
-        ctx.run_mapache_ok(&["copy", "--from", &src_path_str])?;
+        ctx.run_mapache_ok(&["copy", "--all", "--from", &src_path_str])?;
 
+        // Snapshots are re-encoded under the destination's master key, so the
+        // destination gets its own IDs instead of the source's.
+        let src_ids = get_snapshot_ids(&src_repo_path)?;
         let dst_ids = get_snapshot_ids(&ctx.repo_path)?;
         assert_eq!(
-            src_ids, dst_ids,
-            "Destination should have same snapshots as source"
+            dst_ids.len(),
+            src_ids.len(),
+            "Destination should have the same number of snapshots as source"
+        );
+
+        // The destination must be fully usable: snapshots must decode (their
+        // ID is the hash of the destination-encrypted bytes) and data must be
+        // restorable from the destination.
+        ctx.run_mapache_ok(&["log"])?;
+
+        let restore_path = ctx._tmp_dir.path().join("copy_basic_restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+        assert_eq!(
+            std::fs::read(restore_path.join("file.txt"))?,
+            b"This is a test file.\n"
+        );
+        assert_eq!(
+            std::fs::read(restore_path.join("0").join("file0.txt"))?,
+            b"Content 0\n",
         );
 
         Ok(())
@@ -116,10 +138,10 @@ mod tests {
         let src_path_str = src_repo_path.to_string_lossy().to_string();
 
         // First copy
-        ctx.run_mapache_ok(&["copy", "--from", &src_path_str])?;
+        ctx.run_mapache_ok(&["copy", "--all", "--from", &src_path_str])?;
 
         // Second copy should be a no-op (idempotent)
-        ctx.run_mapache_ok(&["copy", "--from", &src_path_str])?;
+        ctx.run_mapache_ok(&["copy", "--all", "--from", &src_path_str])?;
 
         // Verify destination is still consistent
         let dst_backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
@@ -180,7 +202,7 @@ mod tests {
 
         // Copy must fail hard (no silent partial copy, no exit 0)
         let src_path_str = src_repo_path.to_string_lossy().to_string();
-        let output = ctx.run_mapache(&["copy", "--from", &src_path_str])?;
+        let output = ctx.run_mapache(&["copy", "--all", "--from", &src_path_str])?;
         assert!(
             !output.status.success(),
             "copy should fail when the source is corrupt\nstdout: {}\nstderr: {}",
@@ -218,7 +240,7 @@ mod tests {
             .await?;
 
         let src_path_str = src_repo_path.to_string_lossy().to_string();
-        let output = ctx.run_mapache(&["copy", "--from", &src_path_str, "--dry-run"])?;
+        let output = ctx.run_mapache(&["copy", "--all", "--from", &src_path_str, "--dry-run"])?;
         assert!(output.status.success(), "Dry run should succeed");
 
         // Destination should have no snapshots after dry run
@@ -268,10 +290,10 @@ mod tests {
 
         let dst_ids = get_snapshot_ids(&ctx.repo_path)?;
         assert_eq!(dst_ids.len(), 1, "Should copy exactly one snapshot");
-        assert!(
-            dst_ids[0].starts_with(first_prefix),
-            "Copied snapshot should match the requested prefix"
-        );
+
+        // The copied snapshot must decode in the destination (its ID is
+        // re-derived from the destination-encrypted bytes).
+        ctx.run_mapache_ok(&["cat", &format!("snapshot:{}", dst_ids[0])])?;
 
         Ok(())
     }
@@ -450,12 +472,180 @@ mod tests {
         init_repo_at_version(&src_repo_path, &ctx.auth, 1).await?;
 
         let src_path_str = src_repo_path.to_string_lossy().to_string();
-        let output = ctx.run_mapache(&["copy", "--from", &src_path_str])?;
+        let output = ctx.run_mapache(&["copy", "--all", "--from", &src_path_str])?;
 
         assert!(
             !output.status.success(),
             "copy between different formats should fail"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_requires_selector() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init destination repo (will be accessed via -r)
+        ctx.init_repo().await?;
+
+        // Init source repo separately
+        let src_repo_path = ctx._tmp_dir.path().join("copy_src");
+        init_repo_at(&src_repo_path, &ctx.auth).await?;
+
+        // Create a snapshot in source repo
+        let mut src_global = ctx.global.clone();
+        src_global.repo = src_repo_path.to_string_lossy().to_string();
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_scan(true)
+            .run(&src_global)
+            .await?;
+
+        // Copy without any selector must be rejected: copying everything needs
+        // an explicit --all (or a --snapshot/--host/--tags filter).
+        let src_path_str = src_repo_path.to_string_lossy().to_string();
+        let output = ctx.run_mapache(&["copy", "--from", &src_path_str])?;
+        assert!(
+            !output.status.success(),
+            "copy without a selector should be rejected"
+        );
+        assert_eq!(output.status.code(), Some(2));
+
+        let dst_ids = get_snapshot_ids(&ctx.repo_path)?;
+        assert!(
+            dst_ids.is_empty(),
+            "rejected copy must not write anything to the destination"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_with_all_flag() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        let src_repo_path = ctx._tmp_dir.path().join("copy_src");
+        init_repo_at(&src_repo_path, &ctx.auth).await?;
+
+        let mut src_global = ctx.global.clone();
+        src_global.repo = src_repo_path.to_string_lossy().to_string();
+
+        // Create two snapshots
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_scan(true)
+            .run(&src_global)
+            .await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("0")])
+            .no_scan(true)
+            .run(&src_global)
+            .await?;
+
+        let src_ids = get_snapshot_ids(&src_repo_path)?;
+        assert_eq!(src_ids.len(), 2, "Should have two snapshots");
+
+        let src_path_str = src_repo_path.to_string_lossy().to_string();
+
+        // --all copies every snapshot
+        ctx.run_mapache_ok(&["copy", "--all", "--from", &src_path_str])?;
+        assert_eq!(
+            get_snapshot_ids(&ctx.repo_path)?.len(),
+            2,
+            "--all should copy every snapshot"
+        );
+
+        // --all combined with a filter is rejected
+        let prefix = &src_ids[0][..8];
+        let output = ctx.run_mapache(&[
+            "copy",
+            "--all",
+            "--snapshot",
+            prefix,
+            "--from",
+            &src_path_str,
+        ])?;
+        assert!(
+            !output.status.success(),
+            "--all combined with --snapshot should be rejected"
+        );
+        assert_eq!(output.status.code(), Some(2));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_remaps_parent_links() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        let src_repo_path = ctx._tmp_dir.path().join("copy_src");
+        init_repo_at(&src_repo_path, &ctx.auth).await?;
+
+        let mut src_global = ctx.global.clone();
+        src_global.repo = src_repo_path.to_string_lossy().to_string();
+
+        // Two snapshots; the second links to the first as its parent.
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_scan(true)
+            .run(&src_global)
+            .await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("0")])
+            .no_scan(true)
+            .run(&src_global)
+            .await?;
+
+        let src_path_str = src_repo_path.to_string_lossy().to_string();
+        ctx.run_mapache_ok(&["copy", "--all", "--from", &src_path_str])?;
+
+        // Every destination snapshot must decode, and any parent/amends
+        // pointer must resolve to another destination snapshot (the IDs are
+        // re-derived under the destination key, so unmapped source IDs would
+        // not be present here).
+        let dst_ids = ctx.get_snapshot_ids()?;
+        assert_eq!(dst_ids.len(), 2, "Both snapshots should be copied");
+
+        let mut referenced: Vec<String> = Vec::new();
+        for id in &dst_ids {
+            let out = ctx.run_mapache_ok(&["cat", &format!("snapshot:{id}")])?;
+            let value: serde_json::Value =
+                serde_json::from_str(out.trim()).context("copied snapshot JSON did not parse")?;
+
+            if let Some(parent) = value.get("parent").and_then(|p| p.as_str()) {
+                referenced.push(parent.to_string());
+                assert!(
+                    dst_ids.contains(&parent.to_string()),
+                    "parent {parent} must resolve to a destination snapshot"
+                );
+            }
+
+            if let Some(amends) = value
+                .get("summary")
+                .and_then(|s| s.get("amends"))
+                .and_then(|a| a.as_str())
+            {
+                assert!(
+                    dst_ids.contains(&amends.to_string()),
+                    "amends {amends} must resolve to a destination snapshot"
+                );
+            }
+        }
+        assert!(
+            !referenced.is_empty(),
+            "the second snapshot should carry a remapped parent link"
+        );
+
         Ok(())
     }
 }

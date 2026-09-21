@@ -165,8 +165,11 @@ encrypt personal copies of the master key in a KeyFile. Every user has a KeyFile
 that they use to open the repository. These KeyFiles can be stored in the `keys`
 directory or provided externally.
 
-Mapache does not implement master key rotation at the moment, but it may do so
-in the future.
+Mapache does not implement master key rotation, and it is not planned. Every
+KeyFile holds a personal copy of the master key, so any user can obtain it; a
+rotation would have to be performed by someone holding that key, and a
+malicious user could hijack the repository in the process. To change the master
+key or the set of users, create a new repository and copy the snapshots over.
 
 ### Hashing
 
@@ -202,6 +205,25 @@ Mapache uses a dual-layer approach to ensure data integrity and confidentiality:
 - **Content-Addressability:** Objects are identified by the cryptographic hash
   (ID) of their content. This provides a secondary and independent
   verification mechanism to ensure the content has not been corrupted.
+
+#### Why both layers are needed
+
+The AEAD authenticates the ciphertext with the master key. Because every user
+of the repository holds the master key (via their KeyFile), the AEAD can only
+guarantee that the ciphertext has not been modified or corrupted since it was
+written — it **cannot** attest that the decrypted plaintext is the content its
+ID claims. A user of the repository, or an attacker who has compromised the
+master key, can encrypt any content and produce a valid, authenticated
+ciphertext under any ID, and the AEAD will accept it.
+
+Content-addressability is the layer that closes this gap. The ID (the BLAKE3
+hash of the plaintext) is fixed independently in the pack footer and the
+index, and mapache re-hashes every blob immediately after decryption on the
+read path by default. A blob whose decrypted content does not match its ID —
+whether by accidental corruption, a wrong pack or offset, or deliberate
+substitution by a key-holding party — fails the hash check. This verification
+is mandatory on every read; it is not deferred to an optional `verify`
+workflow.
 
 ### Attacker Limitations
 
@@ -470,6 +492,13 @@ manifest), a per-blob boolean is sufficient. The low 7 bits hold the blob type:
 When the high bit is set (`0x80 | type`), the blob's payload is zstd-compressed
 and the `encoded length` is the compressed size; when clear, the payload is
 stored as-is (`encoded length == raw length`).
+
+**Zero blobs** (`0x03`) carry no payload in the pack: their `encoded length`
+is 0 (the same zero region is deduplicated across snapshots) and their `raw
+length` is the **number of zero bytes** the blob represents. A restore
+reconstructs exactly that many zero bytes for the position the file node
+assigns to the blob, ordered among the sibling blobs by the tree. No data is
+ever stored for zero blobs.
 
 The descriptor list is padded to a multiple of 64 entries
 (`FOOTER_BLOB_MULTIPLE`) before serialization. Missing entries are filled with

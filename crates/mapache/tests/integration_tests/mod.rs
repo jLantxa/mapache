@@ -52,6 +52,7 @@ mod test_cmd_sync;
 mod test_cmd_verify;
 mod test_concurrency;
 mod test_corrupt_repo;
+mod test_golden_repo;
 mod test_hooks;
 mod test_lock_cleanup;
 mod test_permission_denied;

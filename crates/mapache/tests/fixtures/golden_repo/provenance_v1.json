@@ -1,0 +1,36 @@
+{
+ "source": "/home/jlantxa/workspace/mapache-v0.6.0",
+ "mapache": "mapache v0.6.0 compiled with rustc 1.97.1 (x86_64-unknown-linux-musl)",
+ "_commands": [
+  "init -r /tmp/mapache-golden-r77e5kk6/repo",
+  "snapshot a <- /home/jlantxa/workspace/mapache-v0.6.0/crates",
+  "snapshot b <- /home/jlantxa/workspace/mapache-v0.6.0",
+  "snapshot c <- /home/jlantxa/workspace/mapache-v0.6.0",
+  "verify",
+  "restore a",
+  "restore b",
+  "restore c"
+ ],
+ "_capabilities": {
+  "init_format": false,
+  "init_ecc": false
+ },
+ "snapshots": {
+  "a": "e7349c7dcfa27e796704568809b0db1c99cf7b78f45468fd79d0add9b66bc56f",
+  "b": "0cc3201ab2ca9457f7bd18ba08fc804f814dcc5a1fea3e69bc898e9551c0eb02",
+  "c": "769cd39e6fb261d283c2e0b29217f650e0a37106363f0a2b5af5a59823970179"
+ },
+ "marker": "golden-fixture-marker\n",
+ "excludes": [
+  "**/.git",
+  "**/target",
+  "**/book"
+ ],
+ "git": {
+  "head": "982c0c18cc1f05fe87000b79ad6f269d51cc42ac",
+  "short_head": "982c0c1",
+  "branch": "HEAD",
+  "describe": "v0.6.0",
+  "worktree_clean": true
+ }
+}

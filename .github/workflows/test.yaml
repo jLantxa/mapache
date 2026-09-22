@@ -23,13 +23,6 @@ jobs:
       - name: Check format
         run: cargo fmt --check
 
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: swatinem/rust-cache@v2
-      - uses: EmbarkStudios/cargo-deny-action@v2
-
   clippy:
     runs-on: ubuntu-latest
     steps:

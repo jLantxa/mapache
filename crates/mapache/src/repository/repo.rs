@@ -663,6 +663,17 @@ impl Repository {
             .await
             .ok_or(MapacheError::NotInIndex(*id))?;
         if locator.blob_type == BlobType::Zero {
+            // Zero blobs are only ever produced at chunk granularity, so the
+            // claimed length is bounded by MAX_CHUNK_SIZE. A larger claim is a
+            // corrupt or tampered index and must not drive a giant allocation.
+            if locator.raw_length as u64 > common::defaults::MAX_ZERO_BLOB_RAW_LENGTH {
+                return Err(MapacheError::Integrity(format!(
+                    "zero blob {id} in pack {} claims {} bytes, exceeding the limit {}",
+                    locator.pack_id.to_short_hex(8),
+                    locator.raw_length,
+                    common::defaults::MAX_ZERO_BLOB_RAW_LENGTH
+                )));
+            }
             let zero_data = vec![0u8; locator.raw_length as usize];
             id.verify_content(&zero_data)?;
             return Ok(zero_data);
@@ -1685,6 +1696,50 @@ mod tests {
     }
 
     /// Test init a repo with password and open it
+    #[tokio::test]
+    async fn test_load_blob_rejects_oversized_zero_blob() -> Result<()> {
+        // Regression: an index claiming an oversized zero blob used to drive a
+        // giant allocation before the content hash was verified. It must be
+        // rejected as an integrity error instead.
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _, lock_handle) =
+            Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
+                .await?;
+
+        let id = ID::from_bytes([0xab; 32]);
+        let pack_id = ID::from_bytes([0xcd; 32]);
+        let oversized = common::defaults::MAX_ZERO_BLOB_RAW_LENGTH + 1;
+        let descriptor = crate::repository::packer::PackedBlobDescriptor {
+            id,
+            blob_type: BlobType::Zero,
+            offset: 0,
+            length: 0,
+            raw_length: oversized as u32,
+            compressed: false,
+        };
+        repo.index()
+            .add_pack(&repo, &pack_id, vec![descriptor])
+            .await?;
+
+        match repo.load_blob(&id).await {
+            Err(MapacheError::Integrity(_)) => {}
+            other => panic!("expected Integrity error for oversized zero blob, got: {other:?}"),
+        }
+
+        lock_handle.unlock().await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_init_and_open_with_password() -> Result<()> {
         let auth = make_auth();

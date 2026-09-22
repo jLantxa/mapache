@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore] // slow — run with `cargo test -- --ignored`
+    #[ignore]
     fn calibrate_hits_target_duration() {
         let target = CALIBRATE_TARGET;
         let params = calibrate(target, CALIBRATE_MEMORY_BOUNDS.1);
@@ -234,11 +234,13 @@ mod tests {
             samples.push(start.elapsed());
         }
         samples.sort();
-        let measured = samples[N / 2]; // median of N
 
+        let measured = samples[N / 2]; // median of N
+        let error_band = target.as_secs_f64() * 0.15;
+        let error = (target.as_secs_f64() - measured.as_secs_f64()).abs();
         assert!(
-            measured >= target,
-            "calibration too fast: {measured:?} (expected >= {target:?})"
+            error <= error_band,
+            "calibration out of error band: target={target:?}, measured={measured:?}"
         );
     }
 }

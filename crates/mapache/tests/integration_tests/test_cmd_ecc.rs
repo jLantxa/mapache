@@ -358,6 +358,7 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO(v1-removal): Delete this test when v1 repos stop being supported.
     async fn test_ecc_rejects_v1_repo() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);

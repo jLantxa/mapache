@@ -461,6 +461,7 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO(v1-removal): Delete this test when v1 repos stop being supported.
     async fn test_copy_version_mismatch_v1_to_v2() -> Result<()> {
         let ctx = TestContext::new().await?;
 

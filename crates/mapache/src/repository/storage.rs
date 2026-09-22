@@ -663,6 +663,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         Ok(())
     }
 
+    // TODO(v1-removal): Remove this test with the v1 nonce-at-start support.
     #[test]
     fn test_nonce_at_start() -> Result<()> {
         let key = TEST_KEY;

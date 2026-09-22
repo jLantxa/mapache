@@ -2,7 +2,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -251,9 +251,13 @@ pub async fn scan(
     );
     check_shutdown(&shutdown_signal)?;
     let candidate_packs: Vec<ID> = keep_packs.iter().copied().collect();
-    let duplicate_packs =
-        find_packs_with_duplicate_footers(repo.clone(), &candidate_packs, shutdown_signal.clone())
-            .await?;
+    let duplicate_packs = find_packs_with_duplicate_footers(
+        repo.clone(),
+        &candidate_packs,
+        &reporter,
+        shutdown_signal.clone(),
+    )
+    .await?;
     for pack_id in &duplicate_packs {
         tracing::info!(
             target: "gc",
@@ -328,12 +332,14 @@ pub async fn repack_all(
 async fn find_packs_with_duplicate_footers(
     repo: Arc<Repository>,
     pack_ids: &[ID],
+    reporter: &GcReporter,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<IdSet<ID>> {
     let backend = repo.backend();
     let secure_storage = repo.secure_storage();
     let index = repo.index();
     let nonce_at_end = repo.nonce_at_end();
+    let pos = Arc::new(AtomicU64::new(0));
 
     let duplicates: IdSet<ID> = futures::stream::iter(pack_ids.iter().copied())
         .map(|pack_id| {
@@ -341,6 +347,8 @@ async fn find_packs_with_duplicate_footers(
             let backend = backend.clone();
             let secure_storage = secure_storage.clone();
             let index = index.clone();
+            let reporter = reporter.clone();
+            let pos = pos.clone();
             let shutdown_signal = shutdown_signal.clone();
             async move {
                 check_shutdown(&shutdown_signal)?;
@@ -380,6 +388,8 @@ async fn find_packs_with_duplicate_footers(
                         break;
                     }
                 }
+                let processed = pos.fetch_add(1, Ordering::Relaxed) + 1;
+                reporter.update_task(GcTaskKind::FindingDuplicateBlobs, processed);
                 Ok::<_, MapacheError>((pack_id, has_phantom))
             }
         })
@@ -1113,9 +1123,14 @@ mod tests {
         let (clean_pack, _) = write_raw_pack(&repo, vec![(id_a, b"aaa"), (id_b, b"bbb")]).await?;
 
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let duplicates =
-            find_packs_with_duplicate_footers(repo.clone(), &[dup_pack, clean_pack], shutdown)
-                .await?;
+        let reporter = GcReporter(noop_sender());
+        let duplicates = find_packs_with_duplicate_footers(
+            repo.clone(),
+            &[dup_pack, clean_pack],
+            &reporter,
+            shutdown,
+        )
+        .await?;
 
         assert!(
             duplicates.contains(&dup_pack),

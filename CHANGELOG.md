@@ -47,6 +47,9 @@
   blob descriptors and stats walk cold indices too.
 - **`copy --all`**: Added an option to `mapache copy` to copy all snapshots to a
   new repository in one go.
+- **`mapache repack`**: New command that re-encodes every reachable blob using
+  the current settings (e.g. `--compression none`, `--pack-size`), rebuilding
+  the packs and dropping packs that are no longer referenced by any snapshot.
 
 ### Changed
 
@@ -133,6 +136,13 @@
 
 ### Fixed
 
+- **`rechunk` snapshot loss on no-op rewrites**: Running `rechunk` when the
+  rewrite produces unchanged content (e.g. a second run with the same settings)
+  deleted the snapshot it had just saved. Because snapshot IDs are
+  content-addressed, the rewritten snapshot gets the same ID as the original, so
+  saving the new file and then deleting the old one removed the only copy,
+  leaving the repository with zero snapshots. The old snapshot is now only
+  deleted when its ID differs from the newly saved one.
 - **`mapache stats` accounting**: Pack counts and sizes no longer include
   `.ecc`, `.tmp` and `.dropped` files, and ECC bytes are no longer added
   twice to the reported total repository size.

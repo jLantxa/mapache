@@ -276,6 +276,47 @@ pub async fn scan(
     Ok(plan)
 }
 
+/// Re-encode every reachable blob using the repository's current configuration,
+/// preserving content IDs and snapshot trees.
+pub async fn repack_all(
+    repo: Arc<Repository>,
+    event_sender: EventSender,
+    shutdown_signal: Arc<AtomicBool>,
+) -> Result<GcSizes> {
+    let reporter = GcReporter(event_sender.clone());
+    check_shutdown(&shutdown_signal)?;
+
+    let (referenced_blobs, referenced_packs) =
+        get_referenced_blobs_and_packs(repo.clone(), event_sender, shutdown_signal.clone()).await?;
+    let (all_packs, object_dropped) = repo.list_packs_and_dropped().await?;
+
+    let mut unused_packs = all_packs.clone();
+    unused_packs.retain(|id| !referenced_packs.contains(id));
+
+    reporter.log(format!(
+        "Repacking {} referenced blobs from {} packs",
+        referenced_blobs.len(),
+        referenced_packs.len()
+    ));
+
+    Plan {
+        repo: repo.clone(),
+        total_packs: all_packs.len(),
+        referenced_blobs,
+        referenced_packs: referenced_packs.clone(),
+        obsolete_packs: referenced_packs,
+        small_data_packs: IdSet::default(),
+        small_tree_packs: IdSet::default(),
+        tolerated_packs: IdSet::default(),
+        unused_packs,
+        index_ids: repo.index().ids(),
+        object_dropped,
+        shutdown_signal,
+    }
+    .execute(reporter.0)
+    .await
+}
+
 /// Parses the footer of every candidate pack and returns the set of packs that
 /// contain a descriptor whose authoritative copy (per the index) lives
 /// elsewhere, or that list the same blob ID more than once in their own footer.

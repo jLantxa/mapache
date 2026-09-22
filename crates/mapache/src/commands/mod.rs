@@ -22,6 +22,7 @@ pub mod cmd_mount;
 pub mod cmd_rebuild_index;
 pub mod cmd_recall;
 pub mod cmd_rechunk;
+pub mod cmd_repack;
 pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
@@ -115,6 +116,7 @@ pub enum Command {
     RebuildIndex(WithGlobal<cmd_rebuild_index::CmdArgs>),
     Recall(WithGlobal<cmd_recall::CmdArgs>),
     Rechunk(WithGlobal<cmd_rechunk::CmdArgs>),
+    Repack(WithGlobal<cmd_repack::CmdArgs>),
     Restore(WithGlobal<cmd_restore::CmdArgs>),
     Snapshot(WithGlobal<cmd_snapshot::CmdArgs>),
     Stats(WithGlobal<cmd_stats::CmdArgs>),
@@ -719,6 +721,7 @@ pub async fn parse_and_run() -> i32 {
         ),
         Command::Recall(cmd) => (resolve_global(&cmd.global, &config), Command::Recall(cmd)),
         Command::Rechunk(cmd) => (resolve_global(&cmd.global, &config), Command::Rechunk(cmd)),
+        Command::Repack(cmd) => (resolve_global(&cmd.global, &config), Command::Repack(cmd)),
         Command::Stats(cmd) => (resolve_global(&cmd.global, &config), Command::Stats(cmd)),
         Command::Sync(cmd) => (resolve_global(&cmd.global, &config), Command::Sync(cmd)),
         Command::Tui(cmd) => (resolve_global(&cmd.global, &config), Command::Tui(cmd)),
@@ -810,6 +813,9 @@ pub async fn parse_and_run() -> i32 {
             .await
             .map_err(CmdError::new),
         Command::Rechunk(cmd) => cmd_rechunk::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Repack(cmd) => cmd_repack::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
         Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args, cmd_hooks)

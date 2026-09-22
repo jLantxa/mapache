@@ -12,8 +12,8 @@ use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
     commands::{
         Compression, GlobalArgs, UseSnapshot, cmd_amend, cmd_bundle, cmd_cat, cmd_clean, cmd_ecc,
-        cmd_forget, cmd_init, cmd_log, cmd_rebuild_index, cmd_recall, cmd_rechunk, cmd_restore,
-        cmd_snapshot, cmd_stats, cmd_sync, cmd_unlock, cmd_verify,
+        cmd_forget, cmd_init, cmd_log, cmd_rebuild_index, cmd_recall, cmd_rechunk, cmd_repack,
+        cmd_restore, cmd_snapshot, cmd_stats, cmd_sync, cmd_unlock, cmd_verify,
     },
     common::{defaults::DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
     repository::{
@@ -45,6 +45,7 @@ mod test_cmd_log;
 mod test_cmd_ls;
 mod test_cmd_rebuild_index;
 mod test_cmd_rechunk;
+mod test_cmd_repack;
 mod test_cmd_restore;
 mod test_cmd_snapshot;
 mod test_cmd_stats;
@@ -214,6 +215,11 @@ impl TestContext {
     /// Creates a default Rechunk CmdArgs builder.
     pub fn rechunk_builder(&self) -> RechunkBuilder {
         RechunkBuilder::new()
+    }
+
+    /// Creates a default Repack CmdArgs builder.
+    pub fn repack_builder(&self) -> RepackBuilder {
+        RepackBuilder::new()
     }
 
     /// Creates an Ecc CmdArgs builder.
@@ -978,6 +984,25 @@ impl RechunkBuilder {
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
         cmd_rechunk::run(global, &self.args)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+#[derive(Clone)]
+pub struct RepackBuilder {
+    pub args: cmd_repack::CmdArgs,
+}
+
+impl RepackBuilder {
+    pub fn new() -> Self {
+        Self {
+            args: cmd_repack::CmdArgs {},
+        }
+    }
+
+    pub async fn run(self, global: &GlobalArgs) -> Result<()> {
+        cmd_repack::run(global, &self.args)
             .await
             .map_err(Into::into)
     }

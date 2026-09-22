@@ -10,13 +10,17 @@ use crate::{
     },
     backend::{StorageHint, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
-    repository::snapshot::SnapshotStream,
+    common::{
+        ContentIdType, SaveID,
+        defaults::{self, SHORT_SNAPSHOT_ID_LEN},
+        error::MapacheError,
+    },
+    repository::{repo::Repository, snapshot::SnapshotStream},
     ui::{
         self,
         cli::{color::Colorize, snapshot},
     },
-    utils::{self},
+    utils,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -40,8 +44,10 @@ impl ToExitCode for RechunkError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Rechunk all snapshots")]
-#[clap(long_about = "Rechunk all snapshots using the current chunker and parameters.")]
+#[clap(about = "Rechunk all snapshot files")]
+#[clap(
+    long_about = "Recalculate chunk boundaries for every snapshot file using the current chunker and settings."
+)]
 pub struct CmdArgs {}
 
 pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), RechunkError> {
@@ -56,85 +62,92 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), Rechun
         |repo, _secure_storage, lock_handle| async move {
             let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
-
             repo.reload_master_index().await?;
-            repo.init_pack_saver(1)?;
 
             let start = Instant::now();
-
-            let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-            let num_snapshots = snapshot_stream.len();
-            let mut rechunked_blob_list_map = HashMap::new();
-
-            let mut i = 0;
-            while let Some(res) = snapshot_stream.next().await {
-                if cleanup_handler.is_interrupted() {
-                    tracing::info!(target: "rechunk", "Rechunk interrupted by user");
-                    return Err(RechunkError::Interrupted);
-                }
-                let (snapshot_id, mut snapshot) = res?;
-                ui::cli::log!(
-                    "Rechunking snapshot {} ({}/{})",
-                    snapshot_id
-                        .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
-                        .bold()
-                        .yellow(),
-                    i + 1,
-                    num_snapshots
-                );
-                i += 1;
-
-                let progress = Arc::new(SnapshotProgress::new());
-
-                let event_sender = snapshot::make_event_sender(
-                    Some(snapshot.summary.processed_items_count),
-                    Some(snapshot.summary.processed_bytes),
-                    1,
-                );
-
-                let rewrite_ctx = RewriteCtx {
-                    progress: progress.clone(),
-                    event_sender,
-                    shutdown_signal: cleanup_handler.interrupted.clone(),
-                };
-                rewrite_snapshot_tree(
-                    repo.clone(),
-                    &mut snapshot,
-                    None,
-                    true,
-                    Some(&mut rechunked_blob_list_map),
-                    rewrite_ctx,
-                )
-                .await?;
-
-                // Save the rechunked snapshot and delete the old snapshot file
-                repo.save_file(
-                    &SaveID::CalculateID,
-                    serde_json::to_string(&snapshot)
-                        .map_err(|e| RechunkError::Repo(MapacheError::Serialization(e)))?
-                        .as_bytes(),
-                    StorageHint {
-                        file_type: ContentIdType::Snapshot,
-                        is_metadata: true,
-                    },
-                    None,
-                )
-                .await?;
-
-                repo.delete_file(ContentIdType::Snapshot, &snapshot_id, None)
-                    .await?;
-            }
-
-            repo.flush_and_finalize_pack_saver().await?;
+            rechunk_with_repo(repo, cleanup_handler.interrupted.clone()).await?;
 
             ui::cli::log!(
                 "\nFinished in {}",
                 utils::pretty_print_duration(start.elapsed())
             );
-            tracing::info!(target: "rechunk", "Rechunk command completed in {:?}", start.elapsed());
-
             Ok(())
         },
     )
     .await
+}
+
+async fn rechunk_with_repo(
+    repo: Arc<Repository>,
+    shutdown_signal: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), RechunkError> {
+    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+    let num_snapshots = snapshot_stream.len();
+    let mut rechunked_blob_list_map = HashMap::new();
+
+    repo.init_pack_saver(defaults::DEFAULT_SNAPSHOT_PACKERS)?;
+
+    let mut index = 0;
+    while let Some(res) = snapshot_stream.next().await {
+        if shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(RechunkError::Interrupted);
+        }
+        let (snapshot_id, mut snapshot_data) = res?;
+        ui::cli::log!(
+            "Rechunking snapshot {} ({}/{})",
+            snapshot_id
+                .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                .bold()
+                .yellow(),
+            index + 1,
+            num_snapshots
+        );
+        index += 1;
+
+        let progress = Arc::new(SnapshotProgress::new());
+        let event_sender = snapshot::make_event_sender(
+            Some(snapshot_data.summary.processed_items_count),
+            Some(snapshot_data.summary.processed_bytes),
+            1,
+        );
+        let rewrite_ctx = RewriteCtx {
+            progress: progress.clone(),
+            event_sender,
+            shutdown_signal: shutdown_signal.clone(),
+        };
+
+        rewrite_snapshot_tree(
+            repo.clone(),
+            &mut snapshot_data,
+            None,
+            true,
+            Some(&mut rechunked_blob_list_map),
+            rewrite_ctx,
+        )
+        .await?;
+
+        let (new_snapshot_id, _) = repo
+            .save_file(
+                &SaveID::CalculateID,
+                serde_json::to_string(&snapshot_data)
+                    .map_err(MapacheError::Serialization)?
+                    .as_bytes(),
+                StorageHint {
+                    file_type: ContentIdType::Snapshot,
+                    is_metadata: true,
+                },
+                None,
+            )
+            .await?;
+        // A rechunk that produces no changes rewrites the snapshot to identical
+        // bytes, yielding the same content-addressed ID. Deleting the old file
+        // in that case would remove the snapshot we just saved.
+        if new_snapshot_id != snapshot_id {
+            repo.delete_file(ContentIdType::Snapshot, &snapshot_id, None)
+                .await?;
+        }
+    }
+
+    repo.flush_and_finalize_pack_saver().await?;
+    Ok(())
 }

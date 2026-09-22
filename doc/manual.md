@@ -1231,17 +1231,35 @@ descriptors, or identifying unreferenced blobs offline with `sort | uniq -w 64`.
 
 ---
 
-### `rechunk` — Re-process All Snapshots
+### `repack` — Re-encode All Blobs
+
+```bash
+mapache repack -r <URL> --compression best
+```
+
+Re-encodes all reachable blobs using the current compression and pack-size
+settings while preserving chunk IDs and snapshots. This is the way to change
+the compression of an existing repository after the fact (e.g.
+`--compression none` for content that does not compress, `best` for archival).
+
+Old packs are removed after the replacement index is persisted. Repack requires
+an exclusive lock and may take significant time on large repositories.
+
+---
+
+### `rechunk` — Recalculate Snapshot Chunks
 
 ```bash
 mapache rechunk -r <URL>
 ```
 
-Re-processes all snapshots using the current chunker parameters. Useful after
-chunker algorithm changes or when migrating between versions. Creates new blob
-versions and updates snapshot trees. Old blobs remain until cleaned by GC.
+Reconstructs every file from its snapshot blobs, recalculates its chunk
+boundaries with the current chunker, and writes new blobs using the current
+compression and pack-size settings.
 
-Requires an exclusive lock. May take significant time on large repositories.
+Existing blobs are not deleted: blobs superseded by the rechunk remain in place
+until a later `clean` reclaims the space. Rechunk requires an exclusive lock
+and may take significant time on large repositories.
 
 ---
 
@@ -1955,9 +1973,18 @@ mapache migrate -r <URL>
   --dry-run               Simulate without making changes
 ```
 
+### `mapache repack`
+
+Re-encode all reachable blobs with current settings.
+
+```
+mapache repack -r <URL>
+```
+
 ### `mapache rechunk`
 
-Rechunk all snapshots with current parameters.
+Recalculate chunk boundaries for every snapshot file and write new blobs using
+the current settings.
 
 ```
 mapache rechunk -r <URL>

@@ -6,15 +6,11 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-# quick-xml v0.38.4 (via rust-s3 v0.37.2) — upstream has no fix yet.
-# RUSTSEC-2026-0194: Quadratic CPU exhaustion in attribute duplicate-name check.
-# RUSTSEC-2026-0195: Unbounded namespace allocation in NsReader (OOM).
-# Both are High severity DoS requiring crafted XML input from a remote source.
-# mapache does not use NsReader and does not call attributes() with default
-# checks on untrusted input, so the practical risk is minimal.
+# rust-s3 is pinned to a fork (Charles-Johnson/rust-s3 rev 8f2785af) that
+# resolves quick-xml to 0.41.0, patching RUSTSEC-2026-0194 (quadratic CPU in
+# attribute duplicate-name check) and RUSTSEC-2026-0195 (unbounded NsReader
+# namespace allocation). No advisories are ignored.
 ignore = [
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 ]
 
 [licenses]
@@ -56,7 +52,8 @@ skip-tree = []
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# rust-s3 fork until upstream's quick-xml advisories are addressed upstream.
+allow-git = ["https://github.com/Charles-Johnson/rust-s3"]
 
 [sources.allow-org]
 github = []

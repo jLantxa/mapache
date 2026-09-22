@@ -1607,13 +1607,29 @@ impl IndexFile {
     }
 
     /// Deserialize an `IndexFile` based on the repository version.
-    // TODO(v1-removal): Remove the v1 JSON branch.
+    ///
+    /// If the version-appropriate parser fails, the other format is tried as a
+    /// fallback. This makes the repository openable during the v1→v2 migration
+    /// crash window, where an updated manifest can coexist with legacy-format
+    /// index files (and vice versa). Both formats are self-identifying
+    /// (`MPIX` magic vs JSON object), so the fallback cannot misparse.
+    // TODO(v1-removal): Remove the v1 JSON branch and the cross-format fallback.
     pub fn deserialize(data: &[u8], repo_version: u32) -> Result<Self> {
         // TODO(v1-removal): Remove the version dispatch and legacy JSON parser.
         match repo_version {
-            2 => deserialize_index_binary(data)
-                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}"))),
-            _ => super::legacy::deserialize_index_json(data),
+            2 => match deserialize_index_binary(data) {
+                Ok(index) => Ok(index),
+                Err(bin_err) => super::legacy::deserialize_index_json(data).map_err(|_| {
+                    MapacheError::Format(format!(
+                        "failed to deserialize index: {bin_err} \
+                         (also rejected by the legacy json parser)"
+                    ))
+                }),
+            },
+            _ => match super::legacy::deserialize_index_json(data) {
+                Ok(index) => Ok(index),
+                Err(json_err) => deserialize_index_binary(data).map_err(|_| json_err),
+            },
         }
     }
 }
@@ -2397,6 +2413,43 @@ mod tests {
         assert_eq!(b1.offset, 1024);
         assert_eq!(b1.length, 256);
         assert_eq!(b1.raw_length, 512);
+    }
+
+    #[test]
+    // TODO(v1-removal): delete this test (and the `deserialize` fallback it
+    // covers) when the v1 JSON index format is dropped.
+    fn test_deserialize_tolerates_cross_format_files() {
+        // Migration crash-window regression: a v1 manifest can coexist with
+        // binary (v2) index files and vice versa. `IndexFile::deserialize` must
+        // fall back to the alternate parser so the repository still opens.
+        let packs = vec![IndexFilePack {
+            id: mock_id("pack_1"),
+            blobs: vec![IndexFileBlob {
+                id: mock_id("blob_a"),
+                blob_type: BlobType::Data,
+                offset: 0,
+                length: 1024,
+                raw_length: 2048,
+                compressed: true,
+            }],
+        }];
+        let index_file = IndexFile { packs };
+
+        let binary = serialize_index_binary(&index_file);
+        let binary_json = crate::repository::legacy::serialize_index_json(&index_file).unwrap();
+
+        // Binary index read under a v1 manifest (crash before manifest update).
+        let from_binary = IndexFile::deserialize(&binary, 1).unwrap();
+        assert_eq!(from_binary.packs[0].blobs[0].id, mock_id("blob_a"));
+
+        // Legacy JSON index read under a v2 manifest (crash after manifest
+        // update but before the old index files were dropped).
+        let from_json = IndexFile::deserialize(&binary_json, 2).unwrap();
+        assert_eq!(from_json.packs[0].blobs[0].id, mock_id("blob_a"));
+
+        // Garbage is still rejected under both versions.
+        assert!(IndexFile::deserialize(b"not an index", 1).is_err());
+        assert!(IndexFile::deserialize(b"not an index", 2).is_err());
     }
 
     #[test]

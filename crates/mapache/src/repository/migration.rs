@@ -60,7 +60,27 @@ pub(crate) async fn re_encrypt_pack(
     }
     let data_section_end = total_len - 4 - encoded_footer_length;
 
-    let mut descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1)?;
+    let mut descriptors =
+        match Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1) {
+            Ok(descriptors) => descriptors,
+            Err(first_err) => {
+                // The pack may already be in the target format (e.g. a migration
+                // that crashed after writing re-encrypted packs but before the
+                // manifest update). Treat it as already migrated so migration can
+                // be re-run to completion instead of failing on its own output.
+                match Packer::parse_footer(secure_storage, &pack_data, new_nonce_at_end, 1) {
+                    Ok(descriptors) => {
+                        tracing::debug!(
+                            target: "migrate",
+                            "Pack {} already at target nonce position, skipping re-encryption",
+                            old_pack_id.to_short_hex(8)
+                        );
+                        return Ok((*old_pack_id, descriptors));
+                    }
+                    Err(_) => return Err(first_err),
+                }
+            }
+        };
 
     tracing::debug!(target: "migrate", "Pack {}: {} blobs, data_section={} bytes, footer={} bytes",
         old_pack_id.to_short_hex(8), descriptors.len(), data_section_end, encoded_footer_length);
@@ -167,11 +187,34 @@ pub(crate) async fn re_encrypt_file(
         .get_path(file_type, old_id)
         .with_extension(extension.unwrap_or_default());
     let data = params.backend.read(&Handle::new(&old_path), 0, 0).await?;
-    let re_encrypted = params.secure_storage.re_encrypt(
+    let re_encrypted = match params.secure_storage.re_encrypt(
         &data,
         params.old_nonce_at_end,
         params.new_nonce_at_end,
-    )?;
+    ) {
+        Ok(re_encrypted) => re_encrypted,
+        Err(first_err) => {
+            // The file may already be in the target format (e.g. a migration
+            // that crashed after writing re-encrypted files but before the
+            // manifest update). Re-encrypting to the same position is a no-op,
+            // so keep the existing file rather than failing the re-run.
+            match params.secure_storage.re_encrypt(
+                &data,
+                params.new_nonce_at_end,
+                params.new_nonce_at_end,
+            ) {
+                Ok(_) => {
+                    tracing::debug!(
+                        target: "migrate",
+                        "{} {} already at target nonce position, skipping re-encryption",
+                        file_type, old_id
+                    );
+                    return Ok(*old_id);
+                }
+                Err(_) => return Err(first_err),
+            }
+        }
+    };
     let new_id = ID::from_content(&re_encrypted);
     let new_path = params
         .repo

@@ -55,9 +55,10 @@ mod test_corrupt_repo;
 mod test_golden_repo;
 mod test_hooks;
 mod test_lock_cleanup;
+mod test_migration; // TODO(v1-removal): remove this module
 mod test_permission_denied;
 mod test_retry_backoff;
-mod test_v1;
+mod test_v1; // TODO(v1-removal): remove this module
 mod test_zeroize;
 
 #[cfg(all(feature = "mount", unix))]

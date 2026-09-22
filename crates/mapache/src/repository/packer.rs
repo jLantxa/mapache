@@ -83,6 +83,17 @@ pub struct PackedBlobDescriptor {
     pub compressed: bool,
 }
 
+/// Counts the real (non-padding) blobs in a finalized pack's descriptor list.
+///
+/// Padding descriptors are an internal storage detail that must not be
+/// reported or counted as real blobs.
+pub(crate) fn count_real_blobs(descriptors: &[PackedBlobDescriptor]) -> u64 {
+    descriptors
+        .iter()
+        .filter(|d| !matches!(d.blob_type, BlobType::Padding))
+        .count() as u64
+}
+
 /// Internal struct to pass summary data back from the heavy-lifting function
 struct PackFinalizationResult {
     id: ID,
@@ -566,7 +577,9 @@ impl PackSaver {
                         let stats_raw = result.raw_size;
                         let stats_enc = result.encoded_size;
                         let stats_meta = result.meta_size;
-                        let stats_blobs = result.descriptors.len() as u64;
+                        // Padding descriptors are an internal storage detail that
+                        // must not be reported (or counted) as real blobs.
+                        let stats_blobs = count_real_blobs(&result.descriptors);
                         let pack_id = result.id;
                         let pack_data = result.data;
                         let descriptors = result.descriptors;
@@ -866,6 +879,10 @@ mod tests {
         // But we can verify that the first 2 are our actual data
         assert_eq!(result.descriptors[0].blob_type, BlobType::Data);
         assert_eq!(result.descriptors[1].blob_type, BlobType::Data);
+
+        // Stats must count only real blobs, never the padding inserted for
+        // obfuscation.
+        assert_eq!(count_real_blobs(&result.descriptors), 2);
 
         assert!(!result.data.is_empty());
 

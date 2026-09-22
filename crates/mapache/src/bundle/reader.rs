@@ -262,6 +262,9 @@ impl BundleReader {
 
         let mut index_map = HashMap::new();
         for (i, entry) in index.entries.iter().enumerate() {
+            // Bound every claimed blob range against the real file length so a
+            // corrupt or tampered index cannot drive a huge allocation on read.
+            validate_section_range("blob", entry.offset, entry.length, file_len)?;
             index_map.insert(entry.id, i);
         }
 
@@ -271,6 +274,15 @@ impl BundleReader {
         } else {
             trailer.index_offset
         };
+
+        // The data section must be non-empty and end at or before the real
+        // file length; otherwise the ECC repair path would compute a wrapping
+        // usize subtraction below and try to allocate a huge buffer.
+        if data_start >= data_end || data_end > file_len {
+            return Err(MapacheError::Format(format!(
+                "invalid bundle format: data section [{data_start}, {data_end}) is invalid for file length {file_len}"
+            )));
+        }
 
         Ok(Self {
             file: Mutex::new(file),
@@ -306,8 +318,15 @@ impl BundleReader {
 
         let mut file = self.file.lock();
 
-        // Read the blob data section.
-        let data_len = (self.data_end - self.data_start) as usize;
+        // Read the blob data section. `open` guarantees `data_start < data_end
+        // <= file_len`, so this cannot underflow on a valid reader; still guard
+        // defensively in case the struct is ever constructed elsewhere.
+        let data_len = self.data_end.checked_sub(self.data_start).ok_or_else(|| {
+            MapacheError::Format(format!(
+                "invalid bundle format: data section end {} precedes its start {}",
+                self.data_end, self.data_start
+            ))
+        })? as usize;
         file.seek(SeekFrom::Start(self.data_start))?;
         let mut data_section = vec![0u8; data_len];
         file.read_exact(&mut data_section)?;
@@ -831,5 +850,48 @@ mod tests {
             Err(MapacheError::Format(_))
         ));
         assert!(validate_section_range("index", 90, 10, 100).is_ok());
+    }
+
+    #[test]
+    fn test_ecc_repair_rejects_inverted_data_section() {
+        // Regression: a data section whose end precedes its start used to be
+        // turned into a wrapping usize subtraction and then a giant allocation.
+        // It must instead be rejected with a Format error.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bundle.b");
+        std::fs::write(&path, b"x").unwrap();
+
+        let reader = BundleReader {
+            file: Mutex::new(File::open(&path).unwrap()),
+            path: path.to_path_buf(),
+            storage: SecureStorage::new(),
+            index: BundleIndex::default(),
+            index_map: HashMap::new(),
+            trailer: BundleTrailer {
+                root_tree: ID::default(),
+                index_offset: 0,
+                index_len: 0,
+                manifest_offset: 0,
+                manifest_len: 0,
+                ecc_offset: 0,
+                ecc_len: 1,
+                magic_end: *BUNDLE_MAGIC_END,
+            },
+            version: 2,
+            ecc_config: Some(crate::repository::manifest::EccConfig {
+                data_shards: 1,
+                parity_shards: 1,
+            }),
+            data_start: 64,
+            data_end: 32,
+        };
+
+        match reader.try_ecc_repair() {
+            Err(e) => assert!(
+                matches!(e, MapacheError::Format(_)),
+                "expected Format error, got: {e}"
+            ),
+            Ok(()) => panic!("expected ECC repair to reject the inverted data section"),
+        }
     }
 }

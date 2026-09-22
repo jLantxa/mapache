@@ -229,6 +229,7 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO(v1-removal): Delete this test when v1 repos stop being supported.
     async fn test_sync_version_mismatch_v1_to_v2() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);

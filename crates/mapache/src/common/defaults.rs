@@ -54,6 +54,14 @@ pub(crate) const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 /// Chunk normalization level.
 pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::L2;
 
+/// Maximum raw length of a zero blob in the index.
+///
+/// Zero blobs are only ever produced by the chunker (bounded by
+/// [`MAX_CHUNK_SIZE`]) or the small-file path (bounded by [`MIN_CHUNK_SIZE`]),
+/// so any claimed length above this limit is index corruption or tampering and
+/// must not be allowed to drive an allocation.
+pub(crate) const MAX_ZERO_BLOB_RAW_LENGTH: u64 = MAX_CHUNK_SIZE;
+
 // --- Encoding ---
 pub(crate) const DEFAULT_COMPRESSION: Compression = Compression::Fast;
 

@@ -536,6 +536,14 @@ impl Node {
                 return;
             }
 
+            // Only regular files and directories can be safely opened here.
+            // Opening a FIFO for reading blocks until a writer appears, device
+            // nodes may block on open depending on the driver, and sockets
+            // cannot be opened at all with File::open.
+            if !self.is_file() && !self.is_dir() {
+                return;
+            }
+
             // Using standard fs::File for ioctl.
             // Opening as read-only is enough for GETFLAGS.
             if let Ok(file) = std::fs::File::open(path) {
@@ -808,6 +816,66 @@ mod tests {
 
         node.node_type = NodeType::Socket;
         assert!(node.is_socket());
+    }
+
+    #[test]
+    fn test_fetch_linux_flags_skips_opening_special_nodes() {
+        for node_type in [
+            NodeType::Fifo,
+            NodeType::Socket,
+            NodeType::CharDevice,
+            NodeType::BlockDevice,
+        ] {
+            let mut node = Node {
+                node_type,
+                ..Default::default()
+            };
+            // Fetching flags must not attempt to open special nodes, otherwise
+            // opening a FIFO would block forever waiting for a writer. A
+            // nonexistent path would also hang the regression (there is no
+            // writer), so on Linux this also guards against hangs in CI.
+            node.fetch_linux_flags(Path::new("__mapache_nonexistent_for_flags__"));
+            assert!(node.metadata.linux_flags.is_none(), "{node_type:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_fetch_linux_flags_reads_real_file_and_dir() {
+        use std::process::Command;
+
+        // Regular files and directories must still go through the ioctl path so
+        // the full FS_*_FL set is captured for restore fidelity (the statx mask
+        // omits e.g. SYNC/NOCOW/DIRSYNC/TOPDIR, which the restorer applies).
+        if Command::new("stat").arg("-c").arg("").output().is_err() {
+            return; // no `stat` binary available (e.g. tiny containers)
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("file");
+        let dir_path = tmp.path().join("dir");
+        std::fs::write(&file_path, b"x").unwrap();
+        std::fs::create_dir(&dir_path).unwrap();
+
+        let mut file_node = Node {
+            node_type: NodeType::File,
+            ..Default::default()
+        };
+        file_node.fetch_linux_flags(&file_path);
+        assert!(
+            file_node.metadata.linux_flags.is_some(),
+            "expected FS_IOC_GETFLAGS to populate flags on a regular file"
+        );
+
+        let mut dir_node = Node {
+            node_type: NodeType::Directory,
+            ..Default::default()
+        };
+        dir_node.fetch_linux_flags(&dir_path);
+        assert!(
+            dir_node.metadata.linux_flags.is_some(),
+            "expected FS_IOC_GETFLAGS to populate flags on a directory"
+        );
     }
 
     #[test]

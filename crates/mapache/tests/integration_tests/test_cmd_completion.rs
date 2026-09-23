@@ -7,11 +7,10 @@ mod tests {
     use crate::integration_tests::TestContext;
 
     #[tokio::test]
-    async fn test_run_completion_and_check_stdout() -> Result<()> {
+    async fn test_run_bash_completion() -> Result<()> {
         let ctx = TestContext::new().await?;
         let tmp_dir = tempdir()?;
 
-        // Test completion via binary
         ctx.run_mapache_ok(&[
             "completion",
             "--shell",
@@ -20,14 +19,14 @@ mod tests {
             &tmp_dir.path().to_string_lossy(),
         ])?;
 
-        // Depending on implementation, it might write to the file or stdout.
-        // If it writes to the file, we check the file.
-        let executable_name = env!("CARGO_PKG_NAME");
-        let completion_file = tmp_dir.path().join(executable_name);
-        if completion_file.exists() {
-            let content = std::fs::read_to_string(completion_file)?;
-            assert!(content.contains(executable_name));
-        }
+        let completion_file = tmp_dir.path().join("mapache.bash");
+        assert!(completion_file.is_file(), "completion file was not created");
+
+        let content = std::fs::read_to_string(completion_file)?;
+        assert!(content.contains("mapache"));
+        assert!(content.contains("snapshot"));
+        assert!(content.contains("restore"));
+        assert!(content.contains("verify"));
 
         Ok(())
     }

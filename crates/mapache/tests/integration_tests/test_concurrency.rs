@@ -60,7 +60,14 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "Second exclusive lock should fail");
+        match result {
+            Err(
+                mapache::common::error::MapacheError::Locked(_)
+                | mapache::common::error::MapacheError::LockExpired(_),
+            ) => {}
+            Err(error) => panic!("Second exclusive lock failed for another reason: {error}"),
+            Ok(_) => panic!("Second exclusive lock unexpectedly succeeded"),
+        }
 
         Ok(())
     }

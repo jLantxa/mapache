@@ -255,20 +255,19 @@ impl SyntheticData {
                 }
             }
             Entry::Symlink { target, is_dir } => {
-                if !full_path.exists() {
-                    // The symlink was either not created during setup (no
-                    // privilege) or was lost during the round-trip (snapshot,
-                    // bundle, extract, etc.).  In either case do not fail the
-                    // test — just warn and move on.
-                    if self.symlinks_supported() {
-                        eprintln!(
-                            "Warning: symlink {:?} (→ {}) created during setup \
-                             but missing during verification — the round-trip \
-                             may not have preserved it on this platform.",
-                            rel_path, target,
-                        );
+                let metadata = match fs::symlink_metadata(&full_path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if !self.symlinks_supported() {
+                            return Ok(());
+                        }
+                        bail!("Missing symlink: {:?}", rel_path);
                     }
-                    return Ok(());
+                    Err(error) => return Err(error.into()),
+                };
+
+                if !metadata.file_type().is_symlink() {
+                    bail!("Not a symlink: {:?}", rel_path);
                 }
 
                 if full_path.is_dir() != *is_dir {

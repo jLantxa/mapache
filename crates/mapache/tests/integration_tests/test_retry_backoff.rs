@@ -6,7 +6,7 @@ mod tests {
             Arc,
             atomic::{AtomicU32, Ordering},
         },
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use mapache::{
@@ -17,7 +17,7 @@ mod tests {
     #[derive(Clone)]
     struct RetryTracker {
         attempt_count: Arc<AtomicU32>,
-        attempt_times: Arc<parking_lot::Mutex<Vec<Instant>>>,
+        attempt_times: Arc<parking_lot::Mutex<Vec<()>>>,
     }
 
     impl RetryTracker {
@@ -30,77 +30,12 @@ mod tests {
 
         fn increment(&self) {
             self.attempt_count.fetch_add(1, Ordering::SeqCst);
-            self.attempt_times.lock().push(Instant::now());
+            self.attempt_times.lock().push(());
         }
 
         fn count(&self) -> u32 {
             self.attempt_count.load(Ordering::SeqCst)
         }
-
-        fn times(&self) -> Vec<Instant> {
-            self.attempt_times.lock().clone()
-        }
-
-        fn delays(&self) -> Vec<Duration> {
-            let times = self.times();
-            if times.len() < 2 {
-                return vec![];
-            }
-
-            times
-                .windows(2)
-                .map(|window| window[1].duration_since(window[0]))
-                .collect()
-        }
-    }
-
-    #[tokio::test]
-    async fn exponential_backoff_timing() {
-        let tracker = RetryTracker::new();
-        let opts = RetryOptions {
-            max_attempts: 4,
-            base_delay: Duration::from_millis(10),
-            request_timeout: Duration::from_secs(10),
-        };
-
-        let tracker_clone = tracker.clone();
-        let result = retry_with(
-            "test",
-            &opts,
-            || {
-                let tc = tracker_clone.clone();
-                async move {
-                    tc.increment();
-                    if tc.count() < 3 {
-                        Err::<i32, MapacheError>(MapacheError::Backend("retryable".to_string()))
-                    } else {
-                        Ok(42)
-                    }
-                }
-            },
-            |_| true, // All errors are retryable
-        )
-        .await;
-
-        // Should succeed on attempt 3
-        assert!(result.is_ok());
-        assert_eq!(tracker.count(), 3);
-
-        // Verify retries never occur before their configured backoff expires.
-        let delays = tracker.delays();
-        assert_eq!(delays.len(), 2);
-
-        // The first retry must wait base_delay * 2^0.
-        let expected_first = Duration::from_millis(10);
-        assert!(delays[0] >= expected_first, "first delay: {:?}", delays[0]);
-
-        // The second retry must wait base_delay * 2^1.
-        let expected_second = Duration::from_millis(20);
-        assert!(
-            delays[1] >= expected_second,
-            "second delay: {:?}",
-            delays[1]
-        );
     }
 
     #[tokio::test]

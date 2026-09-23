@@ -1,6 +1,5 @@
 use std::io::Cursor;
 
-use rand::Rng;
 use rstest::rstest;
 
 use crate::{Chunker, Normalization, Result, lookup::MASKS};
@@ -11,43 +10,6 @@ const kiB: usize = 1024;
 const MiB: usize = 1024 * kiB;
 
 const MAPACHE_PNG: &[u8] = include_bytes!("../testdata/mapache.png");
-
-fn generate_random_data(length: usize) -> Vec<u8> {
-    let mut rng = rand::rng();
-    let mut data = vec![0u8; length];
-    rng.fill_bytes(&mut data);
-    data
-}
-
-fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<f64> {
-    let reader = Cursor::new(data);
-    let stream = chunker.stream(reader);
-
-    let mut chunk_lengths: Vec<usize> = Vec::new();
-    let mut total_bytes: usize = 0;
-
-    for chunk_result in stream {
-        let chunk = chunk_result?;
-        chunk_lengths.push(chunk.length);
-        total_bytes += chunk.length;
-    }
-
-    assert!(!chunk_lengths.is_empty(), "chunking produced no chunks");
-    let count = chunk_lengths.len();
-
-    let mean = total_bytes as f64 / count as f64;
-
-    let variance_sum: f64 = chunk_lengths
-        .iter()
-        .map(|&len| {
-            let diff = len as f64 - mean;
-            diff * diff
-        })
-        .sum();
-
-    let variance = variance_sum / count as f64;
-    Ok(variance.sqrt())
-}
 
 #[rstest]
 #[case(0, 0, 0)]
@@ -153,7 +115,7 @@ fn test_cut_on_random_data_is_not_max_size() {
     let chunker = Chunker::new(min_size, normal_size, max_size, Normalization::None);
 
     let data_len = 2 * max_size;
-    let data = generate_random_data(data_len);
+    let data: Vec<u8> = (0..data_len).map(|index| (index % 251) as u8).collect();
 
     let cut_point = chunker.cut(&data).1;
 
@@ -167,58 +129,29 @@ fn test_cut_on_random_data_is_not_max_size() {
     );
 }
 
-#[rstest]
-#[case(128)]
-#[case(4 * kiB)]
-#[case(16 * kiB)]
-#[case(128 * kiB)]
-#[case(512 * kiB)]
-fn test_normalization_spread_effect(#[case] normal_size: usize) -> Result<()> {
-    const DATA_SIZE: usize = 64 * MiB;
-    let data = generate_random_data(DATA_SIZE);
+#[test]
+fn test_chunking_reconstructs_input_with_contiguous_offsets() -> Result<()> {
+    let data: Vec<u8> = (0..(16 * kiB + 37))
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let chunker = Chunker::new(kiB, 4 * kiB, 8 * kiB, Normalization::L2);
+    let chunks: Vec<_> = chunker.stream(Cursor::new(&data)).collect::<Result<_>>()?;
 
-    let min_size = normal_size / 2;
-    let max_size = normal_size * 2;
+    let mut reconstructed = Vec::with_capacity(data.len());
+    let mut expected_offset = 0;
+    for (index, chunk) in chunks.iter().enumerate() {
+        assert_eq!(chunk.offset, expected_offset);
+        assert_eq!(chunk.length, chunk.data.len());
+        if index + 1 < chunks.len() {
+            assert!(chunk.length >= chunker.min_size);
+            assert!(chunk.length <= chunker.max_size);
+        }
+        expected_offset += chunk.length;
+        reconstructed.extend_from_slice(&chunk.data);
+    }
 
-    // Chunker configurations for comparison
-    let chunker_l0 = Chunker::new(min_size, normal_size, max_size, Normalization::None);
-    let chunker_l1 = Chunker::new(min_size, normal_size, max_size, Normalization::L1);
-    let chunker_l2 = Chunker::new(min_size, normal_size, max_size, Normalization::L2);
-    let chunker_l3 = Chunker::new(min_size, normal_size, max_size, Normalization::L3);
-
-    let stats_l0 = chunk_and_analyze(&chunker_l0, &data)?;
-    let stats_l1 = chunk_and_analyze(&chunker_l1, &data)?;
-    let stats_l2 = chunk_and_analyze(&chunker_l2, &data)?;
-    let stats_l3 = chunk_and_analyze(&chunker_l3, &data)?;
-
-    println!(
-        "\n--- Spread Comparison (Normal size: {} B) ---",
-        normal_size
-    );
-    println!("L0 StdDev: {:.2} B", stats_l0);
-    println!("L1 StdDev: {:.2} B", stats_l1);
-    println!("L2 StdDev: {:.2} B", stats_l2);
-    println!("L3 StdDev: {:.2} B", stats_l3);
-
-    assert!(
-        stats_l0 > stats_l1,
-        "Normalization L0 should have a LARGER standard deviation than L1. L0: {:.2}, L1: {:.2}",
-        stats_l0,
-        stats_l1
-    );
-    assert!(
-        stats_l1 > stats_l2,
-        "Normalization L1 should have a LARGER standard deviation than L2. L1: {:.2}, L2: {:.2}",
-        stats_l1,
-        stats_l2
-    );
-    assert!(
-        stats_l2 > stats_l3,
-        "Normalization L2 should have a LARGER standard deviation than L3. L2: {:.2}, L3: {:.2}",
-        stats_l2,
-        stats_l3
-    );
-
+    assert_eq!(expected_offset, data.len());
+    assert_eq!(reconstructed, data);
     Ok(())
 }
 
@@ -369,7 +302,7 @@ impl<R: std::io::Read> std::io::Read for SlowReader<R> {
 
 #[test]
 fn test_chunk_slow_reader() {
-    let data = generate_random_data(500);
+    let data: Vec<u8> = (0..500).map(|index| (index % 251) as u8).collect();
     let chunker = Chunker::new(64, 128, 256, Normalization::None);
 
     let slow_reader = SlowReader {

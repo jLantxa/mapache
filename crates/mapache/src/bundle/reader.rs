@@ -548,23 +548,20 @@ where
 
                     if !node.is_file() {
                         if node.is_symlink()
-                            && let Some(symlink_info) = &node.symlink_info
+                            && node.symlink_info.is_some()
+                            && let Err(e) = node_restorer::restore_node_to_path(
+                                &meta_sender,
+                                &node,
+                                &path,
+                                false,
+                            )
+                            .await
                         {
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::symlink;
-                                if symlink(&symlink_info.target_path, &path).is_ok() {
-                                    node_restorer::try_restore_node_metadata(
-                                        &node.metadata,
-                                        true,
-                                        &path,
-                                        &meta_sender,
-                                    );
-                                }
-                            }
-
-                            #[cfg(not(unix))]
-                            let _ = symlink_info;
+                            sender(Event::Backup(BackupEvent::Warning(format!(
+                                "failed to create symlink {}: {}",
+                                path.display(),
+                                e
+                            ))));
                         }
                         sender(Event::Backup(BackupEvent::NodeProcessed {
                             path: path.clone(),

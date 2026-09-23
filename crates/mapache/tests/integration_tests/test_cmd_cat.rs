@@ -22,9 +22,14 @@ mod tests {
 
         // Test cmd_cat manifest via binary
         let stdout = ctx.run_mapache_ok(&["cat", "manifest"])?;
+        let manifest: serde_json::Value = serde_json::from_str(&stdout)?;
 
-        assert!(stdout.contains("\"version\""));
-        assert!(stdout.contains("\"id\""));
+        assert_eq!(
+            manifest["version"],
+            mapache::repository::repo::THIS_REPOSITORY_VERSION
+        );
+        assert!(manifest["id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert_eq!(manifest["hash_algorithm"], "blake3-256");
 
         Ok(())
     }

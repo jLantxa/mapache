@@ -116,7 +116,6 @@ pub struct RuntimeConfig {
     pub restore_pack_segment_max_size: Option<u64>,
     // GC
     pub min_pack_size_factor: Option<f32>,
-    pub gc_decoded_budget: Option<u64>,
     pub gc_repack_concurrency: Option<usize>,
     // Index
     pub blobs_per_index_file: Option<usize>,
@@ -141,7 +140,6 @@ impl RuntimeConfig {
             restore_pack_read_merge_threshold: Some(DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD),
             restore_pack_segment_max_size: Some(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE),
             min_pack_size_factor: Some(DEFAULT_MIN_PACK_SIZE_FACTOR),
-            gc_decoded_budget: Some(DEFAULT_GC_DECODED_BUDGET),
             gc_repack_concurrency: Some(DEFAULT_GC_REPACK_CONCURRENCY),
             blobs_per_index_file: Some(BLOBS_PER_INDEX_FILE),
             index_flush_timeout_secs: Some(INDEX_FLUSH_TIMEOUT.as_secs()),
@@ -307,11 +305,6 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
         if runtime.restore_pack_segment_max_size == Some(0) {
             return Err(MapacheError::Config(
                 "runtime.restore_pack_segment_max_size must be greater than 0".into(),
-            ));
-        }
-        if runtime.gc_decoded_budget == Some(0) {
-            return Err(MapacheError::Config(
-                "runtime.gc_decoded_budget must be greater than 0".into(),
             ));
         }
         if runtime.blobs_per_index_file == Some(0) {
@@ -706,7 +699,6 @@ mod tests {
             "restore-max-open-files",
             "restore-decoded-budget",
             "restore-pack-segment-max-size",
-            "gc-decoded-budget",
             "blobs-per-index-file",
             "lru-max-blobs",
         ] {

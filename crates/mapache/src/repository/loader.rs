@@ -1,13 +1,19 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures::stream::{self, StreamExt};
+use futures::{Stream, TryStreamExt};
 
 use crate::{
     backend::Handle,
     common::error::{MapacheError, Result},
     common::{BlobType, ContentIdType, ID, defaults},
-    repository::{index::BlobLocator, repo::Repository},
+    repository::{index::BlobLocator, repo::Repository, storage::SecureStorage},
 };
+
+/// Maximum number of pack segments downloaded concurrently while decoding a
+/// batch of blobs. Kept small so the encoded data held in flight stays a
+/// bounded window rather than the whole batch.
+const LOADER_SEGMENT_CONCURRENCY: usize = 2;
 
 /// A segment of a pack file to be downloaded.
 #[derive(Debug, Clone)]
@@ -191,59 +197,235 @@ impl BlobLoader {
             .flat_map(|(pack_id, blobs)| segment_blobs(pack_id, blobs))
             .collect();
 
-        // Download
-        let loaded = download_pack_segments(self.repo.clone(), all_segments).await?;
+        // Download and decode each segment as it arrives, so only a bounded
+        // window of encoded segment data is resident at any time. Buffering
+        // every segment's encoded bytes before decoding made peak memory
+        // roughly proportional to (encoded + decoded) size of the whole batch,
+        // which for GC repack nearly doubled an already decoded-budget-bound
+        // workload.
+        let repo = self.repo.clone();
+        let secure_storage = repo.secure_storage();
 
-        // Extract and Decode
-        let total_blobs: usize = loaded.iter().map(|(seg, _)| seg.blobs.len()).sum();
-        let mut result = HashMap::with_capacity(total_blobs);
-        for (segment, data) in loaded {
-            for (id, loc, _) in segment.blobs {
-                let blob_offset = loc.offset as u64;
-                if blob_offset < segment.min_offset {
-                    return Err(MapacheError::Integrity(format!(
-                        "Blob offset {} is before segment start {}",
-                        blob_offset, segment.min_offset
-                    )));
-                }
-                let start = usize::try_from(blob_offset - segment.min_offset).map_err(|_| {
-                    MapacheError::Integrity(format!(
-                        "Blob offset {} does not fit in usize",
-                        blob_offset
-                    ))
-                })?;
-                let length = usize::try_from(loc.length).map_err(|_| {
-                    MapacheError::Integrity(format!(
-                        "Blob length {} does not fit in usize",
-                        loc.length
-                    ))
-                })?;
-                let end = start.checked_add(length).ok_or_else(|| {
-                    MapacheError::Integrity(format!(
-                        "Blob range overflows usize: offset {start}, length {length}"
-                    ))
-                })?;
-                if end > data.len() {
-                    return Err(MapacheError::Integrity(format!(
-                        "Blob end {} exceeds segment data length {}",
-                        end,
-                        data.len()
-                    )));
-                }
+        let total_blobs: usize = all_segments.iter().map(|seg| seg.blobs.len()).sum();
 
-                let decoded = self
-                    .repo
-                    .secure_storage()
-                    .decode_blob(&data[start..end], loc.compressed)?;
+        let downloads = stream::iter(all_segments).map(|segment| {
+            let repo = repo.clone();
+            async move {
+                let path = repo.get_path(ContentIdType::Pack, &segment.pack_id);
+                // Hint if all blobs are trees
+                let is_tree = segment
+                    .blobs
+                    .iter()
+                    .all(|(_, loc, _)| loc.blob_type == BlobType::Tree);
+                let (read_offset, read_length) = segment.read_range()?;
 
-                if loc.blob_type != BlobType::Zero {
-                    id.verify_content(&decoded)?;
-                }
+                let data = repo
+                    .backend()
+                    .read(
+                        &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
+                        read_offset,
+                        read_length,
+                    )
+                    .await
+                    .map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "Failed to read pack {}: {}",
+                            segment.pack_id, e
+                        ))
+                    })?;
 
-                result.insert(id, decoded);
+                Ok::<(_, Vec<u8>), MapacheError>((segment, data))
             }
-        }
+        });
+
+        let result = downloads
+            .buffer_unordered(LOADER_SEGMENT_CONCURRENCY)
+            .try_fold(
+                HashMap::with_capacity(total_blobs),
+                move |mut result, (segment, data)| {
+                    let secure_storage = secure_storage.clone();
+                    async move {
+                        for (id, loc, _) in segment.blobs {
+                            let blob_offset = loc.offset as u64;
+                            if blob_offset < segment.min_offset {
+                                return Err(MapacheError::Integrity(format!(
+                                    "Blob offset {} is before segment start {}",
+                                    blob_offset, segment.min_offset
+                                )));
+                            }
+                            let start = usize::try_from(blob_offset - segment.min_offset).map_err(
+                                |_| {
+                                    MapacheError::Integrity(format!(
+                                        "Blob offset {} does not fit in usize",
+                                        blob_offset
+                                    ))
+                                },
+                            )?;
+                            let length = usize::try_from(loc.length).map_err(|_| {
+                                MapacheError::Integrity(format!(
+                                    "Blob length {} does not fit in usize",
+                                    loc.length
+                                ))
+                            })?;
+                            let end = start.checked_add(length).ok_or_else(|| {
+                                MapacheError::Integrity(format!(
+                                    "Blob range overflows usize: offset {start}, length {length}"
+                                ))
+                            })?;
+                            if end > data.len() {
+                                return Err(MapacheError::Integrity(format!(
+                                    "Blob end {} exceeds segment data length {}",
+                                    end,
+                                    data.len()
+                                )));
+                            }
+
+                            let decoded =
+                                secure_storage.decode_blob(&data[start..end], loc.compressed)?;
+
+                            if loc.blob_type != BlobType::Zero {
+                                id.verify_content(&decoded)?;
+                            }
+
+                            result.insert(id, decoded);
+                        }
+                        Ok(result)
+                    }
+                },
+            )
+            .await?;
 
         Ok(result)
     }
+
+    /// Streams the blobs referenced by `locators`, decoding each one as its
+    /// pack segment arrives, in offset order, with at most `window` segments
+    /// downloaded concurrently.
+    ///
+    /// Downloads overlap (`window` encoded segments resident at once), but
+    /// decoding is lazy: blobs are decrypted/decompressed one at a time by the
+    /// consumer, so at any moment only the in-flight download buffers plus the
+    /// blobs currently being written are resident — never a whole decoded
+    /// segment. Resident memory is therefore independent of both the total
+    /// number of blobs and the size of a segment, so large batches can be
+    /// repacked with a small, flat memory profile.
+    pub fn load_with_locators_streaming(
+        &self,
+        locators: Vec<(ID, BlobLocator)>,
+        window: usize,
+    ) -> impl Stream<Item = Result<(ID, BlobType, Vec<u8>)>> + '_ {
+        // Group by Pack
+        let locator_count = locators.len();
+        let mut pack_groups: HashMap<ID, Vec<(ID, BlobLocator, ())>> = HashMap::new();
+        for (id, loc) in locators {
+            pack_groups
+                .entry(loc.pack_id)
+                .or_default()
+                .push((id, loc, ()));
+        }
+
+        // Segment
+        let num_packs = pack_groups.len();
+        let all_segments: Vec<_> = pack_groups
+            .into_iter()
+            .flat_map(|(pack_id, blobs)| segment_blobs(pack_id, blobs))
+            .collect();
+
+        tracing::debug!(
+            target: "gc",
+            "streaming {} segments from {} locators ({} packs)",
+            all_segments.len(),
+            locator_count,
+            num_packs
+        );
+
+        let repo = self.repo.clone();
+        let decode_secure_storage = repo.secure_storage();
+
+        stream::iter(all_segments)
+            .map(move |segment| {
+                let repo = repo.clone();
+                async move {
+                    let path = repo.get_path(ContentIdType::Pack, &segment.pack_id);
+                    // Hint if all blobs are trees
+                    let is_tree = segment
+                        .blobs
+                        .iter()
+                        .all(|(_, loc, _)| loc.blob_type == BlobType::Tree);
+                    let (read_offset, read_length) = segment.read_range()?;
+
+                    let data = repo
+                        .backend()
+                        .read(
+                            &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
+                            read_offset,
+                            read_length,
+                        )
+                        .await
+                        .map_err(|e| {
+                            MapacheError::Backend(format!(
+                                "Failed to read pack {}: {}",
+                                segment.pack_id, e
+                            ))
+                        })?;
+
+                    Ok::<(PackSegment<()>, Vec<u8>), MapacheError>((segment, data))
+                }
+            })
+            .buffer_unordered(window.max(1))
+            .map_ok(move |(segment, data)| {
+                let min_offset = segment.min_offset;
+                let secure_storage = decode_secure_storage.clone();
+                // Decode lazily, one blob at a time, as the consumer pulls it.
+                // `data` is moved into this stream and dropped when the last of
+                // the segment's blobs has been decoded.
+                stream::iter(segment.blobs).map(move |(id, loc, ())| {
+                    decode_blob_from_segment(secure_storage.clone(), min_offset, &data, id, loc)
+                })
+            })
+            .try_flatten()
+    }
+}
+
+/// Decodes a single blob out of its pack segment, verifying its content hash.
+fn decode_blob_from_segment(
+    secure_storage: Arc<SecureStorage>,
+    segment_min_offset: u64,
+    data: &[u8],
+    id: ID,
+    loc: BlobLocator,
+) -> Result<(ID, BlobType, Vec<u8>)> {
+    let blob_offset = loc.offset as u64;
+    if blob_offset < segment_min_offset {
+        return Err(MapacheError::Integrity(format!(
+            "Blob offset {} is before segment start {}",
+            blob_offset, segment_min_offset
+        )));
+    }
+    let start = usize::try_from(blob_offset - segment_min_offset).map_err(|_| {
+        MapacheError::Integrity(format!("Blob offset {} does not fit in usize", blob_offset))
+    })?;
+    let length = usize::try_from(loc.length).map_err(|_| {
+        MapacheError::Integrity(format!("Blob length {} does not fit in usize", loc.length))
+    })?;
+    let end = start.checked_add(length).ok_or_else(|| {
+        MapacheError::Integrity(format!(
+            "Blob range overflows usize: offset {start}, length {length}"
+        ))
+    })?;
+    if end > data.len() {
+        return Err(MapacheError::Integrity(format!(
+            "Blob end {} exceeds segment data length {}",
+            end,
+            data.len()
+        )));
+    }
+
+    let blob_data = secure_storage.decode_blob(&data[start..end], loc.compressed)?;
+
+    if loc.blob_type != BlobType::Zero {
+        id.verify_content(&blob_data)?;
+    }
+
+    Ok((id, loc.blob_type, blob_data))
 }

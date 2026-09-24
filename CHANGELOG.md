@@ -53,6 +53,19 @@
 
 ### Changed
 
+- **GC repack memory**: pack segments are downloaded, decoded and immediately
+  re-encoded in a streaming pipeline with a bounded window of concurrent
+  segments (`[runtime] gc-repack-concurrency`), instead of collecting whole
+  decoded batches. Decoding is lazy — blobs are decrypted/decompressed one at a
+  time on the write path — so neither the number of blobs nor a segment's
+  decoded size drives peak RSS; it stays flat regardless of how much data is
+  being repacked. `[runtime] gc-decoded-budget` has been removed: configs
+  that still set it will now fail to parse (a clear unknown-key error) and the
+  key should be deleted. Packer pool buffers are also no longer pre-allocated to
+  the full pack size, removing a fixed RSS cost proportional to `--pack-size`.
+  `[runtime] gc-repack-concurrency` (default 4) tunes the segment pipeline
+  width: higher overlaps more downloads for throughput, lower trims the
+  in-flight encoded/decoded bytes.
 - **`copy` requires a selector**: `mapache copy` now errors unless one of
   `--all`, `--snapshot`, `--host` or `--tags` is given. Previously a bare
   `copy` silently copied every snapshot in the source; use `--all` for that.

@@ -84,11 +84,10 @@ pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.0; // [0 - 1]
 /// Repack files smaller than this factor of the max pack size
 pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 
-/// Maximum decoded bytes in memory during GC repack.
-pub(crate) const DEFAULT_GC_DECODED_BUDGET: u64 = 256 * size::MiB;
-
-/// Maximum concurrent repack chunks during GC.
-pub(crate) const DEFAULT_GC_REPACK_CONCURRENCY: usize = 2;
+/// Maximum pack segments downloaded and decoded concurrently during GC repack.
+/// Larger windows overlap more downloads/decompressions for a higher throughput
+/// in exchange for proportionally more encoded + decoded bytes in flight.
+pub(crate) const DEFAULT_GC_REPACK_CONCURRENCY: usize = 4;
 
 // --- UI ---
 pub(crate) const DEFAULT_PROGRESS_REFRESH_RATE_HZ: f32 = 10.0;
@@ -146,7 +145,6 @@ pub struct RuntimeDefaults {
     pub restore_pack_segment_max_size: u64,
     // GC
     pub min_pack_size_factor: f32,
-    pub gc_decoded_budget: u64,
     pub gc_repack_concurrency: usize,
     // Index
     pub blobs_per_index_file: usize,
@@ -185,9 +183,6 @@ impl RuntimeDefaults {
             min_pack_size_factor: c
                 .and_then(|c| c.min_pack_size_factor)
                 .unwrap_or(DEFAULT_MIN_PACK_SIZE_FACTOR),
-            gc_decoded_budget: c
-                .and_then(|c| c.gc_decoded_budget)
-                .unwrap_or(DEFAULT_GC_DECODED_BUDGET),
             gc_repack_concurrency: c
                 .and_then(|c| c.gc_repack_concurrency)
                 .unwrap_or(DEFAULT_GC_REPACK_CONCURRENCY),

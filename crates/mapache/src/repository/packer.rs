@@ -21,7 +21,10 @@ use crate::{
         repo::{Repository, SizePair},
         storage::{EncodingContext, SecureStorage},
     },
-    utils::binary::{get_array, get_u8, get_u16, get_u32, put_bytes, put_u8, put_u16, put_u32},
+    utils::{
+        binary::{get_array, get_u8, get_u16, get_u32, put_bytes, put_u8, put_u16, put_u32},
+        size,
+    },
 };
 
 //   Pack footer format:
@@ -127,13 +130,22 @@ pub struct Packer {
 }
 
 impl Packer {
+    /// The maximum heap committed by a single, not-yet-used `Packer`.
+    ///
+    /// PackSaver pre-allocates a pool of packers up-front; reserving
+    /// `max_packer_size` for each idle packer wastes RSS proportionally to the
+    /// configured pack size. A modest reservation keeps the early growth cheap
+    /// while the buffer amortizes to the pack size as it fills (and is then
+    /// recycled across packs, so buffers and steady-state reuse are unchanged).
+    const INITIAL_BUFFER_CAPACITY: usize = size::MiB as usize;
+
     /// Creates a new `Packer` with a specified initial buffer capacity.
     pub fn new(capacity: usize, secure_storage: Arc<SecureStorage>) -> Result<Self> {
         let encoding_context = secure_storage.get_encoding_context()?;
 
         Ok(Self {
             instance_id: NEXT_PACKER_ID.fetch_add(1, Ordering::Relaxed),
-            buffer: Vec::with_capacity(capacity),
+            buffer: Vec::with_capacity(capacity.min(Self::INITIAL_BUFFER_CAPACITY)),
             descriptors: Vec::with_capacity(FOOTER_BLOB_MULTIPLE),
             raw_size: 0,
             secure_storage,

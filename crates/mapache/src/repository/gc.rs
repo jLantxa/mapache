@@ -17,7 +17,6 @@ use crate::{
     },
     fs::tree::Tree,
     repository::{
-        index::BlobLocator,
         loader,
         packer::Packer,
         repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
@@ -42,6 +41,19 @@ const GC_DELETE_SMALL_CONCURRENCY: usize = 8;
 const GC_DROPPED_SCAN_CONCURRENCY: usize = 4;
 /// Concurrency for parsing pack footers while detecting duplicate descriptors.
 const GC_DUP_SCAN_CONCURRENCY: usize = 8;
+
+/// Current resident set size in MiB (Linux). Returns 0 when unavailable.
+fn rss_mib() -> u64 {
+    #[cfg(target_os = "linux")]
+    if let Ok(statm) = std::fs::read_to_string("/proc/self/statm")
+        && let Some(field) = statm.split_whitespace().nth(1)
+        && let Ok(pages) = field.parse::<u64>()
+    {
+        const PAGE_SIZE: u64 = 4096;
+        return pages * PAGE_SIZE / (1024 * 1024);
+    }
+    0
+}
 
 #[derive(Clone)]
 struct GcReporter(EventSender);
@@ -293,6 +305,7 @@ pub async fn repack_all(
     let (referenced_blobs, referenced_packs) =
         get_referenced_blobs_and_packs(repo.clone(), event_sender, shutdown_signal.clone()).await?;
     let (all_packs, object_dropped) = repo.list_packs_and_dropped().await?;
+    tracing::debug!(target: "gc", "rss after scan: {} MiB", rss_mib());
 
     let mut unused_packs = all_packs.clone();
     unused_packs.retain(|id| !referenced_packs.contains(id));
@@ -490,6 +503,7 @@ impl Plan {
             reporter.0.clone(),
         )
         .await?;
+        tracing::debug!(target: "gc", "rss after startup: {} MiB", rss_mib());
 
         if self.small_data_packs.len() > 1 {
             tracing::debug!(target: "gc", "Marking {} small data packs as obsolete for repacking", self.small_data_packs.len());
@@ -522,6 +536,7 @@ impl Plan {
             }
 
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
+            tracing::debug!(target: "gc", "rss before repack: {} MiB", rss_mib());
             self.repo
                 .init_pack_saver(common::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
 
@@ -530,6 +545,7 @@ impl Plan {
             // New index is now on disk; subsequent deletions are safe to
             // interrupt partway.
             let repo_stats = self.repo.flush_and_finalize_pack_saver().await?;
+            tracing::debug!(target: "gc", "rss after repack: {} MiB", rss_mib());
 
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
@@ -541,6 +557,7 @@ impl Plan {
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
         }
 
+        tracing::debug!(target: "gc", "rss at end: {} MiB", rss_mib());
         tracing::info!(target: "gc", "Garbage collection execution finished");
         Ok(gc_sizes)
     }
@@ -564,11 +581,11 @@ impl Plan {
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
     async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
         // Gather locators while the index is still intact.
-        // We use a Vec to preserve the exact metadata we need for the loader.
-        // This collects ALL referenced blobs from obsolete packs into memory
-        // upfront so we can chunk them by decoded-byte budget. For repos with
-        // millions of blobs in obsolete packs, this is a significant allocation
-        // (~24 bytes per blob) but is required for the budget-based chunking below.
+        // We use a Vec to preserve the exact metadata we need for the loader and
+        // then stream it pack-by-pack, so memory stays bounded by the repack
+        // concurrency instead of the amount of data repacked. Locators are
+        // small (~24 bytes per blob) and substantially smaller than any other
+        // in-memory structure in the GC path.
         let mut locators_to_repack = Vec::new();
 
         self.repo
@@ -601,125 +618,84 @@ impl Plan {
         );
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        // Partition blobs into chunks that each fit within the decoded-byte
-        // budget, so load_with_locators never exceeds it.
+        // Stream the referenced blobs pack-by-pack (restic-style): each pack
+        // segment is downloaded, decoded and immediately re-encoded, with only a
+        // bounded window of segments in flight. Decoded blobs are never
+        // collected into a batch, so resident decoded+encoded memory is bounded
+        // by the window times the largest segment instead of a decoded-byte
+        // budget.
         let d = defaults::runtime();
-        let max_concurrent = d.gc_repack_concurrency;
-        let budget = d.gc_decoded_budget;
-        let sem_capacity = std::cmp::min(budget as usize, u32::MAX as usize).max(1);
-        let byte_semaphore = Arc::new(tokio::sync::Semaphore::new(sem_capacity));
+        let segment_window = d.gc_repack_concurrency.max(1);
 
-        let chunks: Vec<&[(ID, BlobLocator)]> = {
-            let mut chunks = Vec::new();
-            let mut start = 0usize;
-            let mut acc = 0u64;
-            for (i, (_, loc)) in locators_to_repack.iter().enumerate() {
-                if acc > 0 && acc + loc.raw_length as u64 > budget {
-                    chunks.push(&locators_to_repack[start..i]);
-                    start = i;
-                    acc = 0;
+        let loader = loader::BlobLoader::new(self.repo.clone());
+
+        // Sample RSS periodically so a repack memory curve can be inspected in
+        // the debug log (`MAPACHE_DEBUG_LEVEL=debug`).
+        let shutdown_sampler = self.shutdown_signal.clone();
+        let peak_rss = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let peak_rss_sampler = peak_rss.clone();
+        let sampler = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+            loop {
+                interval.tick().await;
+                let rss = rss_mib();
+                peak_rss_sampler.fetch_max(rss, std::sync::atomic::Ordering::Relaxed);
+                tracing::debug!(target: "gc", "rss repack sample: {} MiB", rss);
+                if shutdown_sampler.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
                 }
-                acc += loc.raw_length as u64;
             }
-            if start < locators_to_repack.len() {
-                chunks.push(&locators_to_repack[start..]);
-            }
-            chunks
-        };
+        });
 
-        stream::iter(chunks)
-            .map(|chunk| {
+        loader
+            .load_with_locators_streaming(locators_to_repack, segment_window)
+            .map(|item| {
                 let repo = self.repo.clone();
                 let r = r.clone();
                 let pos = pos.clone();
                 let shutdown_signal = self.shutdown_signal.clone();
-                let sem = byte_semaphore.clone();
 
                 async move {
-                    // Stay within the decoded-byte budget by acquiring permits for
-                    // the total raw (decoded) size of every blob in this chunk.
-                    let chunk_bytes: usize =
-                        chunk.iter().map(|(_, loc)| loc.raw_length as usize).sum();
-                    let needed = std::cmp::min(chunk_bytes, sem_capacity);
-                    let permit = sem
-                        .acquire_many(u32::try_from(needed).unwrap_or(u32::MAX))
-                        .await
-                        .map_err(|e| {
-                            MapacheError::Repo(format!(
-                                "failed to acquire GC memory budget permit: {}",
-                                e
-                            ))
-                        })?;
-
-                    // Build a fast lookup for blob types to avoid O(n²) linear search
-                    let mut blob_types: IdMap<ID, common::BlobType> = IdMap::default();
-                    for (cid, loc) in chunk.iter() {
-                        blob_types.insert(*cid, loc.blob_type);
-                    }
-
-                    let loader = loader::BlobLoader::new(repo.clone());
-                    let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
-
-                    // Release the memory budget permit before waiting for encode+save to
-                    // finish, so the next chunk can start loading decoded data in parallel.
-                    drop(permit);
-
-                    // Process blobs with bounded concurrency via a stream pipeline instead
-                    // of collecting all futures upfront, so only N data Vecs are in memory
-                    // at any time. The concurrency limit also prevents exhausting the
-                    // blocking thread pool (default 512), which would deadlock when
-                    // LocalBackend::write calls spawn_blocking internally for file I/O.
-                    let blob_write_concurrency = DEFAULT_SNAPSHOT_READERS;
-
-                    stream::iter(loaded_blobs)
-                        .map(|(id, data)| {
-                            let blob_type = blob_types
-                                .get(&id)
-                                .copied()
-                                .unwrap_or(common::BlobType::Data);
-                            let repo_clone = repo.clone();
-                            let r = r.clone();
-                            let pos_clone = pos.clone();
-
-                            async move {
-                                tokio::task::spawn_blocking(move || {
-                                    let result = repo_clone.encode_and_save_blob(
-                                        blob_type,
-                                        WriteContents::Owned(data),
-                                        SaveID::WithID(id),
-                                    );
-                                    let current = pos_clone
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                        + 1;
-                                    r.update_task(GcTaskKind::RepackingBlobs, current);
-                                    result
-                                })
-                                .await
-                                .map_err(|e| MapacheError::task_panicked("repack", e))?
-                                .map_err(|e| {
-                                    MapacheError::Repo(format!("repack blob failed: {}", e))
-                                })?;
-                                Ok::<(), MapacheError>(())
-                            }
-                        })
-                        .buffer_unordered(blob_write_concurrency)
-                        .try_collect::<Vec<_>>()
-                        .await?;
-
-                    // Check shutdown only after a chunk has fully finished
-                    // writing. Abandoning here leaves the on-disk index
-                    // untouched; partial new packs become `unused_packs` on
-                    // the next GC run.
+                    // Check shutdown before writing so an interrupted run does
+                    // not leave a partially written blob behind. Abandoning here
+                    // leaves the on-disk index untouched; partial new packs
+                    // become `unused_packs` on the next GC run.
                     check_shutdown(&shutdown_signal)?;
 
+                    let (id, blob_type, data) = item?;
+
+                    // Process blobs with bounded concurrency via a stream pipeline,
+                    // so only a handful of data Vecs are in memory at any time.
+                    // The concurrency limit also prevents exhausting the blocking
+                    // thread pool (default 512), which would deadlock when
+                    // LocalBackend::write calls spawn_blocking for file I/O.
+                    tokio::task::spawn_blocking(move || {
+                        let result = repo.encode_and_save_blob(
+                            blob_type,
+                            WriteContents::Owned(data),
+                            SaveID::WithID(id),
+                        );
+                        let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        r.update_task(GcTaskKind::RepackingBlobs, current);
+                        result
+                    })
+                    .await
+                    .map_err(|e| MapacheError::task_panicked("repack", e))?
+                    .map_err(|e| MapacheError::Repo(format!("repack blob failed: {}", e)))?;
                     Ok::<(), MapacheError>(())
                 }
             })
-            .buffer_unordered(max_concurrent)
+            .buffer_unordered(DEFAULT_SNAPSHOT_READERS)
             .try_collect::<Vec<_>>()
             .await?;
 
+        sampler.abort();
         r.finish_task(GcTaskKind::RepackingBlobs);
+        tracing::info!(
+            target: "gc",
+            "Repack finished; peak RSS during repack: {} MiB",
+            peak_rss.load(std::sync::atomic::Ordering::Relaxed)
+        );
         Ok(())
     }
 

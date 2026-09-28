@@ -27,7 +27,6 @@
 19. [Environment Variables](#19-environment-variables)
 20. [Global Options Reference](#20-global-options-reference)
 21. [Full Command Reference](#21-full-command-reference)
-22. [Troubleshooting & FAQ](#22-troubleshooting--faq)
 
 ---
 
@@ -2063,71 +2062,3 @@ Launch terminal user interface.
 ```
 mapache tui -r <URL>
 ```
-
----
-
-## 22. Troubleshooting & FAQ
-
-### Lock Issues
-
-**Q:** I get "repository is locked" errors. What should I do?
-
-**A:** If a previous command crashed, run `mapache unlock -r <URL>` to remove
-stale locks. For persistent issues, use `--force`. To avoid this in scripts,
-use `--retry-lock` to automatically wait for locks to be released. For
-read-only operations (e.g. `log`, `ls`, `find`), use `--no-lock` to skip
-lock acquisition entirely.
-
-### Performance
-
-**Q:** Backups are slow on large file trees.
-
-**A:** Adjust parallelism with `--readers` and `--packers`. Monitor disk I/O
-and CPU usage. Consider using a faster compression level (`fastest`) for
-initial backups, or `--exclude` to skip unnecessary paths.
-
-### Repository Corruption
-
-**Q:** I suspect my repository is corrupted.
-
-**A:** Run `mapache verify -r <URL>` to check logical consistency or
-`mapache verify --read-packs -r <URL>` for full physical verification. If
-the index is corrupted but packs are intact, use `mapache rebuild-index -r <URL>`.
-
-### Storage Space
-
-**Q:** The repository is using more space than expected.
-
-**A:** Run `mapache stats --full -r <URL>` to see compression ratios and
-dangling blobs. Then `mapache clean -r <URL>` to run garbage collection. If
-you have deleted many snapshots, consider `mapache clean --tolerance 0 -r <URL>`
-for aggressive cleanup.
-
-### Authentication
-
-**Q:** I forgot my password. Can I recover it?
-
-**A:** No. Mapache uses the password to derive the key that decrypts the
-master key. Without the password, the data is unrecoverable. Always export
-key files as a backup: `mapache key export <KEY_ID> -o ~/safe/keyfile -r <URL>`.
-
-### Cross-Platform
-
-**Q:** Can I use the same repository from Windows, Linux, and macOS?
-
-**A:** Yes, mapache repositories are platform-independent. However, FUSE mount
-is only available on Unix systems. Bundle files are fully portable.
-
-### Data Safety
-
-**Q:** Is it safe to delete old snapshots?
-
-**A:** Yes. Deleting a snapshot only removes its metadata file. The underlying
-data blobs are reference-counted by the index. Garbage collection (`clean`)
-removes only blobs that are no longer referenced by any snapshot.
-
-**Q:** Can I interrupt a snapshot in progress?
-
-**A:** Yes. Press `Ctrl+C`. All data written so far is persisted. Unfinished
-packs not yet indexed are harmless — they will be ignored and eventually
-cleaned up by GC. The snapshot will not be saved.

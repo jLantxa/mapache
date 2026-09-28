@@ -38,24 +38,25 @@ use crate::{
 //   parser to efficiently skip directly to the file's data section. All data except the
 //   footer length field is zstd-compressed then encrypted.
 //
-//   ┌────────┬────────┬─────┬────────┬─────────────────────┐
-//   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
-//   └────────┴────────┴─────┴────────┴─────────────────────┘
+//   ┌─────────┬────────┬────────┬─────┬────────┬─────────────────────┐
+//   │ MPFT v2 │ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
+//   └─────────┴────────┴────────┴─────┴────────┴─────────────────────┘
 //
-//   ┌──────────────────────────────────────────┐
-//   │     Pack footer blob entry (41 bytes)    │
-//   │────────────────────────┬────────┬────────│
-//   │ Field                  │  Size  │ Offset │
-//   │────────────────────────┼────────┼────────│
-//   │ ID (256-bit raw hash)  │   32   │   0    │  Hash of the raw blob data
-//   │────────────────────────┼────────┼────────│
-//   │ Type + Compression     │    1   │   32   │  Low 7 bits: blob type; high bit:
-//   │ (u8)                   │        │        │  0 = uncompressed, 1 = compressed (v2+ marker)
-//   │────────────────────────┼────────┼────────│
-//   │ Encoded length (u32)   │    4   │   33   │  Length of the encoded blob (in-pack)
-//   │────────────────────────┼────────┼────────│
-//   │ Raw length (u32)       │    4   │   37   │
-//   └────────────────────────┴────────┴────────┘
+//   ┌──────────────────────────────────────────────────────────────────────────┐
+//   │                    Pack footer blob entry (41 bytes)                     │
+//   ├──────────────────────────┬────────┬────────┬─────────────────────────────┤
+//   │ Field                    │ Size   │ Offset │ Notes                       │
+//   ├──────────────────────────┼────────┼────────┼─────────────────────────────┤
+//   │ ID (256-bit raw hash)    │ 32     │ 0      │ Hash of the raw blob data   │
+//   ├──────────────────────────┼────────┼────────┼─────────────────────────────┤
+//   │ Type + compression (u8)  │ 1      │ 32     │ Low 7 bits: blob type;      │
+//   │                          │        │        │ high bit: 0 = uncompressed, │
+//   │                          │        │        │ 1 = zstd-compressed         │
+//   ├──────────────────────────┼────────┼────────┼─────────────────────────────┤
+//   │ Encoded length (u32)     │ 4      │ 33     │ Length of the encoded blob  │
+//   ├──────────────────────────┼────────┼────────┼─────────────────────────────┤
+//   │ Raw length (u32)         │ 4      │ 37     │ Length before encoding      │
+//   └──────────────────────────┴────────┴────────┴─────────────────────────────┘
 //     ^ (41 bytes)
 //
 //   The compression algorithm is repo-wide (declared in the manifest), so a single

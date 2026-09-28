@@ -6,11 +6,36 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-# rust-s3 is pinned to a fork (Charles-Johnson/rust-s3 rev 8f2785af) that
-# resolves quick-xml to 0.41.0, patching RUSTSEC-2026-0194 (quadratic CPU in
-# attribute duplicate-name check) and RUSTSEC-2026-0195 (unbounded NsReader
-# namespace allocation). No advisories are ignored.
+# ── Temporary ignores: quick-xml via rust-s3 ──────────────────────────
+#
+# rust-s3 v0.37.2 (crates.io) requires quick-xml ^0.38, which resolves to
+# 0.38.4. That version carries two open advisories with no upstream fix yet:
+#
+#   RUSTSEC-2026-0194  Quadratic CPU exhaustion in the attribute
+#                      duplicate-name check.
+#   RUSTSEC-2026-0195  Unbounded namespace allocation in NsReader (OOM).
+#
+# Why these are accepted:
+#   * Both are DoS issues, not memory-safety or disclosure bugs. They require
+#     a crafted XML document to be parsed.
+#   * mapache never uses quick-xml directly. It only calls rust-s3's object
+#     API (Bucket put/get/list/delete), which parses S3 API *responses* from
+#     the endpoint the user configured — not attacker-supplied input.
+#   * mapache does not use NsReader at all, and never calls attributes() with
+#     the default duplicate check on untrusted data, so neither advisory's
+#     trigger is reachable from mapache's code paths.
+#
+# A fork (Charles-Johnson/rust-s3 rev 8f2785af) exists that resolves quick-xml
+# to 0.41.0 and closes both, but it is not used: a `git` dependency without a
+# `version` field makes the crate unpublishable, and pinning a release to an
+# unpinned third-party fork is not worth the risk for two unreachable DoS
+# advisories.
+#
+# To drop these ignores: bump rust-s3 once a crates.io release requires
+# quick-xml >= 0.41, then delete the two entries below and this comment.
 ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
 
 [licenses]
@@ -52,8 +77,7 @@ skip-tree = []
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# rust-s3 fork until upstream's quick-xml advisories are addressed upstream.
-allow-git = ["https://github.com/Charles-Johnson/rust-s3"]
+allow-git = []
 
 [sources.allow-org]
 github = []

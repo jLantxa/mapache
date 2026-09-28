@@ -14,11 +14,14 @@ designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
 their own validation before relying it for primary backups.
 
-> **⚠️ Development build warning:** The `main` branch contains active
-> development and may include breaking changes between releases. The `mapache
-> migrate` command is available but its behavior may still be refined. If you
-> are building from source, use a tagged release or an official binary instead
-> of `main` unless you are prepared for breaking changes.
+> **⚠️ Repository format v1 is deprecated:** Support for the v1 repository
+> format is deprecated and will be completely removed in future releases. New
+> repositories use v2, and v1 repositories are still readable, so you have time
+> to migrate. To upgrade a v1 repository to v2, run
+> `mapache migrate -r <path/to/repo>`, adding `--dry-run` to preview the
+> changes first. See the
+> [manual](https://jlantxa.github.io/mapache/manual.html#migrate--migrate-repository-format)
+> for details.
 
 ## Documentation
 

@@ -241,7 +241,12 @@ impl IndexMetadata {
             bloom_filter.insert(id);
         }
 
-        let pack_ids: Vec<ID> = index.pack_ids.iter().copied().collect();
+        let pack_ids: Vec<ID> = index
+            .pack_ids
+            .iter()
+            .copied()
+            .filter(|id| *id != ID::default())
+            .collect();
         let blob_count = index.num_blobs();
 
         let mut zero_blobs: Vec<(ID, u32)> = index
@@ -266,7 +271,12 @@ impl IndexMetadata {
     /// Create IndexMetadata directly from an `IndexFile` (without building a full Index).
     pub fn from_index_file(index_file: IndexFile, bloom_filter: BloomFilter, file_id: ID) -> Self {
         let blob_count: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
-        let pack_ids: Vec<ID> = index_file.packs.iter().map(|p| p.id).collect();
+        let pack_ids: Vec<ID> = index_file
+            .packs
+            .iter()
+            .map(|p| p.id)
+            .filter(|id| *id != ID::default())
+            .collect();
         let mut zero_blobs: Vec<(ID, u32)> = index_file
             .packs
             .iter()
@@ -658,8 +668,18 @@ impl Index {
             .chain(self.tree_ids.iter().filter_map(move |(id, loc)| {
                 self.resolve_location(loc, BlobType::Tree).map(|l| (id, l))
             }))
-            .chain(self.zero_ids.iter().filter_map(move |(id, loc)| {
-                self.resolve_location(loc, BlobType::Zero).map(|l| (id, l))
+            .chain(self.zero_ids.iter().map(|(id, loc)| {
+                (
+                    id,
+                    BlobLocator {
+                        pack_id: ID::default(),
+                        blob_type: BlobType::Zero,
+                        offset: 0,
+                        length: 0,
+                        raw_length: loc.raw_length,
+                        compressed: false,
+                    },
+                )
             }))
     }
 
@@ -699,8 +719,20 @@ impl Index {
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
-        // Zero blobs don't live in packs (stored in footer with length=0).
-        // Skip them to avoid phantom descriptors from backward-compat synthetic entries.
+        // Zero blobs have no payload to keep alive. Preserve their ID and length
+        // under the synthetic pack ID used by zero-blob lookups.
+        let zero_descriptors = self.zero_ids.iter().map(|(id, loc)| PackedBlobDescriptor {
+            id: *id,
+            blob_type: BlobType::Zero,
+            offset: 0,
+            length: 0,
+            raw_length: loc.raw_length,
+            compressed: false,
+        });
+        pack_descriptors
+            .entry(ID::default())
+            .or_insert_with(Vec::new)
+            .extend(zero_descriptors);
 
         pack_descriptors
     }
@@ -1438,7 +1470,7 @@ impl MasterIndex {
 
         for idx in &lock.indices {
             for pack_id in idx.pack_ids.iter() {
-                if seen.insert(*pack_id) {
+                if *pack_id != ID::default() && seen.insert(*pack_id) {
                     f(pack_id);
                 }
             }
@@ -1449,7 +1481,7 @@ impl MasterIndex {
         // cold metadata, so include them without a disk load.
         for meta in &lock.cold_metadata {
             for pack_id in &meta.pack_ids {
-                if seen.insert(*pack_id) {
+                if *pack_id != ID::default() && seen.insert(*pack_id) {
                     f(pack_id);
                 }
             }

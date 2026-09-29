@@ -11,7 +11,7 @@ use futures::{StreamExt, TryStreamExt, stream};
 use crate::{
     backend::WriteContents,
     common::{
-        self, ContentIdType, ID, SaveID,
+        self, BlobType, ContentIdType, ID, SaveID,
         defaults::{self, DEFAULT_SNAPSHOT_READERS},
         error::{MapacheError, Result},
     },
@@ -838,7 +838,9 @@ async fn get_referenced_blobs_and_packs(
                                     }
                                 }
 
-                                if let Some(locator) = index.get(&blob_id).await {
+                                if let Some(locator) = index.get(&blob_id).await
+                                    && locator.blob_type != BlobType::Zero
+                                {
                                     referenced_packs.lock().insert(locator.pack_id);
                                 }
                             }

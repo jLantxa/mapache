@@ -61,4 +61,35 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_cmd_repack_preserves_zero_blobs() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let zero_data = vec![0u8; 8192];
+        let zero_file = ctx._tmp_dir.path().join("zeros.bin");
+        std::fs::write(&zero_file, &zero_data)?;
+
+        ctx.snapshot_builder(vec![zero_file])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
+
+        ctx.repack_builder().run(&ctx.global).await?;
+        ctx.verify_builder()
+            .read_packs(true)
+            .fail_early(true)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore_zero_blob");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert_eq!(std::fs::read(restore_path.join("zeros.bin"))?, zero_data);
+
+        Ok(())
+    }
 }

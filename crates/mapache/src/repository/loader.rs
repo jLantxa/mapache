@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use futures::stream::{self, StreamExt};
 use futures::{Stream, TryStreamExt};
@@ -7,7 +7,10 @@ use crate::{
     backend::Handle,
     common::error::{MapacheError, Result},
     common::{BlobType, ContentIdType, ID, defaults},
-    repository::{index::BlobLocator, repo::Repository, storage::SecureStorage},
+    repository::{
+        index::BlobLocator, packer::PackedBlobDescriptor, repo::Repository, storage::SecureStorage,
+    },
+    utils::collections::IdMap,
 };
 
 /// Maximum number of pack segments downloaded concurrently while decoding a
@@ -298,9 +301,16 @@ impl BlobLoader {
         Ok(result)
     }
 
-    /// Streams the blobs referenced by `locators`, decoding each one as its
-    /// pack segment arrives, in offset order, with at most `window` segments
-    /// downloaded concurrently.
+    /// Streams the blobs in `groups`, decoding each one as its pack segment
+    /// arrives, in offset order, with at most `window` segments downloaded
+    /// concurrently.
+    ///
+    /// `groups` maps pack ID to that pack's descriptors. Buckets are segmented
+    /// lazily and released as the stream advances, so a pack's descriptor list
+    /// is freed once its segments have been produced. Callers should therefore
+    /// build the grouping in a single pass rather than materializing a flat
+    /// locator list first: grouping here means the pack ID travels once as the
+    /// map key instead of being repeated inside every `BlobLocator`.
     ///
     /// Downloads overlap (`window` encoded segments resident at once), but
     /// decoding is lazy: blobs are decrypted/decompressed one at a time by the
@@ -309,40 +319,59 @@ impl BlobLoader {
     /// segment. Resident memory is therefore independent of both the total
     /// number of blobs and the size of a segment, so large batches can be
     /// repacked with a small, flat memory profile.
-    pub fn load_with_locators_streaming(
+    pub fn load_with_pack_groups_streaming(
         &self,
-        locators: Vec<(ID, BlobLocator)>,
+        groups: IdMap<ID, Vec<PackedBlobDescriptor>>,
         window: usize,
     ) -> impl Stream<Item = Result<(ID, BlobType, Vec<u8>)>> + '_ {
-        // Group by Pack
-        let locator_count = locators.len();
-        let mut pack_groups: HashMap<ID, Vec<(ID, BlobLocator, ())>> = HashMap::new();
-        for (id, loc) in locators {
-            pack_groups
-                .entry(loc.pack_id)
-                .or_default()
-                .push((id, loc, ()));
-        }
-
-        // Segment
-        let num_packs = pack_groups.len();
-        let all_segments: Vec<_> = pack_groups
-            .into_iter()
-            .flat_map(|(pack_id, blobs)| segment_blobs(pack_id, blobs))
-            .collect();
-
+        let locator_count: usize = groups.values().map(|v| v.len()).sum();
+        let num_packs = groups.len();
         tracing::debug!(
             target: "gc",
-            "streaming {} segments from {} locators ({} packs)",
-            all_segments.len(),
+            "streaming segments from {} locators ({} packs)",
             locator_count,
             num_packs
         );
 
+        // Emit packs in sorted order so a repack run is deterministic.
+        let mut pack_ids: Vec<ID> = groups.keys().copied().collect();
+        pack_ids.sort_unstable();
+        let mut groups = groups;
+
         let repo = self.repo.clone();
         let decode_secure_storage = repo.secure_storage();
 
-        stream::iter(all_segments)
+        let segment_stream: Pin<Box<dyn Stream<Item = PackSegment<()>> + Send>> =
+            Box::pin(stream::iter(pack_ids).flat_map(
+                move |pack_id| -> Pin<Box<dyn Stream<Item = PackSegment<()>> + Send>> {
+                    // Taking the bucket frees it as soon as its segments exist.
+                    match groups.remove(&pack_id) {
+                        Some(blobs) => {
+                            let locators: Vec<(ID, BlobLocator, ())> = blobs
+                                .into_iter()
+                                .map(|d| {
+                                    (
+                                        d.id,
+                                        BlobLocator {
+                                            pack_id,
+                                            blob_type: d.blob_type,
+                                            offset: d.offset,
+                                            length: d.length,
+                                            raw_length: d.raw_length,
+                                            compressed: d.compressed,
+                                        },
+                                        (),
+                                    )
+                                })
+                                .collect();
+                            Box::pin(stream::iter(segment_blobs(pack_id, locators)))
+                        }
+                        None => Box::pin(stream::empty()),
+                    }
+                },
+            ));
+
+        segment_stream
             .map(move |segment| {
                 let repo = repo.clone();
                 async move {

@@ -692,7 +692,12 @@ impl Index {
             }))
     }
 
-    /// Returns a map of Pack ID -> List of descriptors for all packs in this index.
+/// Appends every descriptor in this index to `out`, keyed by pack ID and
+    /// skipping blobs whose pack is in `obsolete_packs`.
+    ///
+    /// Buckets are filled in the caller's iteration order, which is oldest
+    /// index first, so a later push of the same `(pack_id, blob_id)` supersedes
+    /// an earlier one.
     ///
     /// `referenced` prunes zero-blob entries that nothing references any more.
     /// Zero blobs are real blobs with a real footer entry (only the pack's data
@@ -700,13 +705,12 @@ impl Index {
     /// garbage exactly like any other blob and must not survive a GC pass.
     /// `None` keeps every zero blob, which is the right default for callers
     /// that are merging for reasons other than garbage collection.
-    fn get_pack_descriptors(
+    fn push_pack_descriptors(
         &self,
         obsolete_packs: Option<&IdSet<ID>>,
         referenced: Option<&IdSet<ID>>,
-    ) -> IdMap<ID, Vec<PackedBlobDescriptor>> {
-        let mut pack_descriptors = IdMap::default();
-
+        out: &mut IdMap<ID, Vec<PackedBlobDescriptor>>,
+    ) {
         let mut process_map = |map: &BlobMap, b_type: BlobType| {
             for (id, loc) in map.iter() {
                 let Some(pack_id) = self.pack_ids.get_value(loc.pack_array_index as usize) else {
@@ -720,52 +724,45 @@ impl Index {
                     continue;
                 }
 
-                pack_descriptors
-                    .entry(*pack_id)
-                    .or_insert_with(Vec::new)
-                    .push(PackedBlobDescriptor {
-                        id: *id,
-                        blob_type: b_type,
-                        offset: loc.offset,
-                        length: loc.length,
-                        raw_length: loc.raw_length,
-                        compressed: loc.compressed,
-                    });
+                out.entry(*pack_id).or_default().push(PackedBlobDescriptor {
+                    id: *id,
+                    blob_type: b_type,
+                    offset: loc.offset,
+                    length: loc.length,
+                    raw_length: loc.raw_length,
+                    compressed: loc.compressed,
+                });
             }
         };
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
-        // Zero blobs carry a real footer entry in a real pack; only their data
+// Zero blobs carry a real footer entry in a real pack; only their data
         // section is empty. The index attributes them to the sentinel pack ID,
         // so `obsolete_packs` never applies to them — a zero blob whose pack is
         // being repacked or deleted stays valid, because restore synthesizes it
         // from `raw_length` instead of reading the pack. What does make one
         // garbage is having no referrer left, which only `referenced` can say.
-        let zero_descriptors: Vec<PackedBlobDescriptor> = self
+        let mut kept_zero = self
             .zero_ids
             .iter()
             .filter(|(id, _)| referenced.is_none_or(|refs| refs.contains(id)))
-            .map(|(id, loc)| PackedBlobDescriptor {
-                id: *id,
-                blob_type: BlobType::Zero,
-                offset: 0,
-                length: 0,
-                raw_length: loc.raw_length,
-                compressed: false,
-            })
-            .collect();
+            .peekable();
 
-        // Don't register an empty sentinel pack when everything got pruned:
-        // `add_pack` would otherwise insert ID::default() into `pack_ids`.
-        if !zero_descriptors.is_empty() {
-            pack_descriptors
-                .entry(ID::default())
-                .or_insert_with(Vec::new)
-                .extend(zero_descriptors);
+        // Only create the bucket when a zero blob survives `referenced`,
+        // otherwise the sentinel pack would be emitted as an empty pack.
+        if kept_zero.peek().is_some() {
+            out.entry(ID::default()).or_default().extend(
+                kept_zero.map(|(id, loc)| PackedBlobDescriptor {
+                    id: *id,
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: 0,
+                    raw_length: loc.raw_length,
+                    compressed: false,
+                }),
+            );
         }
-
-        pack_descriptors
     }
 }
 
@@ -1545,6 +1542,12 @@ impl MasterIndex {
     }
 
     /// Merges all current indices into a new collection of full indices.
+    ///
+    /// Descriptors are bucketed by pack rather than flattened into one sorted
+    /// `(ID, PackedBlobDescriptor)` vector. Bucketing costs ~48 bytes per blob
+    /// instead of ~80, and each source index is released as soon as its
+    /// descriptors have been bucketed, so the resident index pool and the merge
+    /// workspace never both span the whole repository.
     fn merge_index(
         &self,
         lock: &mut MasterIndexInner,
@@ -1557,49 +1560,50 @@ impl MasterIndex {
         // Sort by instance_id to ensure deterministic merge order.
         old_indices.sort_by_key(|idx| idx.instance_id);
 
-        // Flatten all descriptors into a single Vec, preserving iteration order
-        // (oldest index first) so that dedup keeps the newest occurrence.
-        let mut all: Vec<(ID, PackedBlobDescriptor)> = old_indices
-            .iter()
-            .flat_map(|idx| idx.get_pack_descriptors(obsolete_packs, referenced))
-            .flat_map(|(pack_id, descs)| descs.into_iter().map(move |d| (pack_id, d)))
-            .collect();
+// Fill packs oldest-index-first so the newest occurrence of a duplicated
+        // (pack_id, blob_id) is the one that ends up last within its bucket.
+        let mut pack_buckets: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
+        for idx in old_indices {
+            idx.push_pack_descriptors(obsolete_packs, referenced, &mut pack_buckets);
+            // `idx` drops here, freeing its blob maps.
+        }
 
-        // Sort by (pack_id, blob_id) for deterministic dedup and pack grouping.
-        all.sort_unstable_by_key(|(pack_id, desc)| (*pack_id, desc.id));
-
-        // Dedup: keep last occurrence per (pack_id, blob_id) — the newest index wins.
-        // swap a↔b so that dedup_by (which keeps a) retains the newer entry.
-        all.dedup_by(|a, b| {
-            if a.0 == b.0 && a.1.id == b.1.id {
-                std::mem::swap(a, b);
-                true
-            } else {
-                false
-            }
-        });
+        // Emit packs in sorted order so the resulting index layout is
+        // deterministic, as the previous global (pack_id, blob_id) sort was.
+        let mut pack_ids: Vec<ID> = pack_buckets.keys().copied().collect();
+        pack_ids.sort_unstable();
 
         let mut new_indices = Vec::new();
         let mut current_index = Index::new();
-        let mut current_pack_id = None;
-        let mut current_blobs: Vec<PackedBlobDescriptor> = Vec::new();
 
-        for (pack_id, desc) in all {
-            if current_pack_id != Some(pack_id) {
-                if let Some(pid) = current_pack_id.take() {
-                    current_index.add_pack(&pid, current_blobs);
-                    current_blobs = Vec::new();
-                    if current_index.is_full() {
-                        current_index.set_status(IndexStatus::Finalized);
-                        new_indices.push(std::mem::take(&mut current_index));
-                    }
+        for pack_id in pack_ids {
+            // Remove rather than copy: the bucket is freed once consumed, so the
+            // workspace shrinks as the new indices grow.
+            let Some(mut blobs) = pack_buckets.remove(&pack_id) else {
+                continue;
+            };
+
+            // Dedup by blob ID, keeping the newest occurrence. The bucket is
+            // sorted with a *stable* sort so that entries pushed for the same
+            // blob ID retain oldest-index-first order and the dedup below keeps
+            // the last of each run, matching the previous behavior.
+            blobs.sort_by_key(|d| d.id);
+            blobs.dedup_by(|a, b| {
+                if a.id == b.id {
+                    // swap a↔b so that dedup_by (which keeps a) retains the
+                    // newer entry.
+                    std::mem::swap(a, b);
+                    true
+                } else {
+                    false
                 }
-                current_pack_id = Some(pack_id);
+            });
+
+            current_index.add_pack(&pack_id, blobs);
+            if current_index.is_full() {
+                current_index.set_status(IndexStatus::Finalized);
+                new_indices.push(std::mem::take(&mut current_index));
             }
-            current_blobs.push(desc);
-        }
-        if let Some(pid) = current_pack_id {
-            current_index.add_pack(&pid, current_blobs);
         }
 
         if !current_index.is_empty() {

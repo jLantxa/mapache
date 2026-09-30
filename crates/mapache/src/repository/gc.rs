@@ -18,7 +18,7 @@ use crate::{
     fs::tree::Tree,
     repository::{
         loader,
-        packer::Packer,
+        packer::{PackedBlobDescriptor, Packer},
         repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
@@ -31,6 +31,12 @@ use crate::{
 
 /// Concurrency for tree traversal during referenced-blob discovery.
 const GC_TREE_FETCH_CONCURRENCY: usize = 8;
+/// Total decoded trees resident across all snapshots at once.
+///
+/// Bounds peak memory to this many decoded `Tree`s rather than
+/// GC_SNAPSHOT_CONCURRENCY x GC_TREE_FETCH_CONCURRENCY, while keeping enough
+/// in-flight backend requests to hide latency.
+const GC_TREE_BUDGET: usize = GC_SNAPSHOT_CONCURRENCY * GC_TREE_FETCH_CONCURRENCY / 2;
 /// Concurrency for snapshot-level processing during referenced-blob discovery.
 const GC_SNAPSHOT_CONCURRENCY: usize = 4;
 /// Concurrency for deleting unused packs from the backend.
@@ -99,7 +105,7 @@ pub struct Plan {
     pub obsolete_packs: IdSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
     pub small_data_packs: IdSet<ID>, // Small data packs marked to be repacked (to merge)
     pub small_tree_packs: IdSet<ID>, // Small tree packs marked to be repacked (to merge)
-    pub tolerated_packs: IdSet<ID>, // Packs containing garbage, but keep due to tolerance
+    pub tolerated_packs: usize,    // Packs containing garbage, but keep due to tolerance
     pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
     pub index_ids: IdSet<ID>,      // Current index IDs
     pub object_dropped: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
@@ -139,6 +145,17 @@ pub struct GcSizes {
     pub deleted_bytes: u64,
 }
 
+/// Per-pack byte accounting gathered while scanning the index. `blob_type` is
+/// the type of the first blob seen in the pack, which is enough to decide
+/// whether a small pack should be merged into a data or tree pack.
+#[derive(Debug, Default)]
+struct PackStats {
+    kept_bytes: u64,
+    garbage_bytes: u64,
+    has_garbage: bool,
+    blob_type: Option<BlobType>,
+}
+
 /// Scan the repository and make a plan of what needs to be cleaned.
 ///
 /// `shutdown_signal` is polled at safe checkpoints; if set, scanning aborts
@@ -157,12 +174,20 @@ pub async fn scan(
         get_referenced_blobs_and_packs(repo.clone(), reporter.0.clone(), shutdown_signal.clone())
             .await?;
 
-    let (mut keep_packs, object_dropped) = repo.list_packs_and_dropped().await?;
-    let num_total_packs = keep_packs.len(); // Number of total packs in the repository
-    let mut unused_packs = keep_packs.clone();
+    let (all_packs, object_dropped) = repo.list_packs_and_dropped().await?;
+    let num_total_packs = all_packs.len(); // Number of total packs in the repository
 
-    keep_packs.retain(|id| referenced_packs.contains(id));
-    unused_packs.retain(|id| !referenced_packs.contains(id));
+    // Partition in a single pass instead of cloning `all_packs` and retaining
+    // twice, which would hold three copies of the pack set at once.
+    let mut keep_packs = IdSet::default();
+    let mut unused_packs = IdSet::default();
+    for id in all_packs {
+        if referenced_packs.contains(&id) {
+            keep_packs.insert(id);
+        } else {
+            unused_packs.insert(id);
+        }
+    }
     tracing::debug!(target: "gc", "Found {} referenced packs and {} unused packs", keep_packs.len(), unused_packs.len());
 
     let mut plan = Plan {
@@ -171,7 +196,7 @@ pub async fn scan(
         referenced_blobs,
         referenced_packs,
         obsolete_packs: IdSet::default(),
-        tolerated_packs: IdSet::default(),
+        tolerated_packs: 0,
         unused_packs,
         index_ids: repo.index().ids(),
         small_data_packs: IdSet::default(),
@@ -180,10 +205,10 @@ pub async fn scan(
         shutdown_signal: shutdown_signal.clone(),
     };
 
-    // Count garbage bytes in each pack
-    let mut kept_pack_size: IdMap<ID, u64> = IdMap::default();
-    let mut pack_garbage: IdMap<ID, u64> = IdMap::default();
-    let mut pack_type: IdMap<ID, common::BlobType> = IdMap::default();
+    // Per-pack accounting for kept bytes, garbage bytes and blob type. A single
+    // map serves all three queries, saving two hash tables and two of the three
+    // hash lookups per indexed blob in the hot loop below.
+    let mut pack_stats: IdMap<ID, PackStats> = IdMap::default();
 
     // Find obsolete packs and blobs in index
     reporter.start_task(GcTaskKind::FindingObsoleteBlobs, None);
@@ -191,7 +216,7 @@ pub async fn scan(
 
     repo.index()
         .for_each_id(|id, locator| {
-            // Zero blobs have no bytes in the pack data section, but they do
+// Zero blobs have no bytes in the pack data section, but they do
             // have a real footer entry in a real pack (`Packer::add_blob` pushes
             // the descriptor unconditionally; only the data is skipped). The
             // index nonetheless attributes them to the sentinel pack ID
@@ -206,16 +231,15 @@ pub async fn scan(
                 return;
             }
 
-            *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
-            pack_type
-                .entry(locator.pack_id)
-                .or_insert(locator.blob_type);
+            let stats = pack_stats.entry(locator.pack_id).or_default();
+            stats.kept_bytes += locator.length as u64;
+            if stats.blob_type.is_none() {
+                stats.blob_type = Some(locator.blob_type);
+            }
 
             if !plan.referenced_blobs.contains(id) {
-                pack_garbage
-                    .entry(locator.pack_id)
-                    .and_modify(|size| *size += locator.length as u64)
-                    .or_insert(locator.length as u64);
+                stats.garbage_bytes += locator.length as u64;
+                stats.has_garbage = true;
                 obsolete_blobs_count += 1;
                 reporter.update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
             }
@@ -227,40 +251,43 @@ pub async fn scan(
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
     let min_pack_size_factor = defaults::runtime().min_pack_size_factor;
-    for (pack_id, size) in kept_pack_size {
-        if (size as f64 / current_pack_size as f64) < min_pack_size_factor as f64 {
-            match pack_type.get(&pack_id) {
+    for (pack_id, stats) in &pack_stats {
+        if (stats.kept_bytes as f64 / current_pack_size as f64) < min_pack_size_factor as f64 {
+            match stats.blob_type {
                 Some(common::BlobType::Tree) => {
-                    plan.small_tree_packs.insert(pack_id);
+                    plan.small_tree_packs.insert(*pack_id);
                 }
                 _ => {
-                    plan.small_data_packs.insert(pack_id);
+                    plan.small_data_packs.insert(*pack_id);
                 }
             };
         }
     }
 
-    tracing::debug!(target: "gc", "Found {} obsolete blobs in {} packs", obsolete_blobs_count, pack_garbage.len());
+    let garbage_pack_count = pack_stats.values().filter(|s| s.has_garbage).count();
+    tracing::debug!(target: "gc", "Found {} obsolete blobs in {} packs", obsolete_blobs_count, garbage_pack_count);
     reporter.log(format!(
         "Found {} obsolete blobs in {} packs",
-        obsolete_blobs_count,
-        pack_garbage.len()
+        obsolete_blobs_count, garbage_pack_count
     ));
 
     // Check garbage levels
     reporter.start_task(
         GcTaskKind::CheckingGarbageLevels,
-        Some(pack_garbage.len() as u64),
+        Some(garbage_pack_count as u64),
     );
     let mut checked_packs_count = 0;
-    for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
+    for (pack_id, stats) in pack_stats.into_iter() {
         check_shutdown(&shutdown_signal)?;
-        if (garbage_bytes as f64 / current_pack_size as f64) > tolerance as f64 {
-            tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), garbage_bytes);
+        if !stats.has_garbage {
+            continue;
+        }
+        if (stats.garbage_bytes as f64 / current_pack_size as f64) > tolerance as f64 {
+            tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), stats.garbage_bytes);
             keep_packs.remove(&pack_id);
             plan.obsolete_packs.insert(pack_id);
         } else {
-            plan.tolerated_packs.insert(pack_id);
+            plan.tolerated_packs += 1;
         }
         checked_packs_count += 1;
         reporter.update_task(GcTaskKind::CheckingGarbageLevels, checked_packs_count);
@@ -277,10 +304,9 @@ pub async fn scan(
         Some(keep_packs.len() as u64),
     );
     check_shutdown(&shutdown_signal)?;
-    let candidate_packs: Vec<ID> = keep_packs.iter().copied().collect();
     let duplicate_packs = find_packs_with_duplicate_footers(
         repo.clone(),
-        &candidate_packs,
+        &keep_packs,
         &reporter,
         shutdown_signal.clone(),
     )
@@ -302,7 +328,7 @@ pub async fn scan(
         ));
     }
 
-    tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small ({} data, {} tree), {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_data_packs.len() + plan.small_tree_packs.len(), plan.small_data_packs.len(), plan.small_tree_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
+    tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small ({} data, {} tree), {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_data_packs.len() + plan.small_tree_packs.len(), plan.small_data_packs.len(), plan.small_tree_packs.len(), plan.tolerated_packs, plan.unused_packs.len());
 
     Ok(plan)
 }
@@ -339,7 +365,7 @@ pub async fn repack_all(
         obsolete_packs: referenced_packs,
         small_data_packs: IdSet::default(),
         small_tree_packs: IdSet::default(),
-        tolerated_packs: IdSet::default(),
+        tolerated_packs: 0,
         unused_packs,
         index_ids: repo.index().ids(),
         object_dropped,
@@ -359,7 +385,7 @@ pub async fn repack_all(
 /// invisible to the index-based scan, so the pack must be repacked to drop it.
 async fn find_packs_with_duplicate_footers(
     repo: Arc<Repository>,
-    pack_ids: &[ID],
+    pack_ids: &IdSet<ID>,
     reporter: &GcReporter,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<IdSet<ID>> {
@@ -463,24 +489,23 @@ async fn delete_objects(
             }
         })
         .buffer_unordered(concurrency)
-        .collect::<Vec<_>>()
+        .fold((0u64, 0u64), |acc, res| async move {
+            let (deleted_size, failures) = acc;
+            match res {
+                Ok(size) => (deleted_size + size, failures),
+                Err(e) => {
+                    tracing::error!(target: "gc", "{e}");
+                    emit_event(
+                        &reporter.0,
+                        Event::Backup(BackupEvent::Error(format!("{e}"))),
+                    );
+                    (deleted_size, failures + 1)
+                }
+            }
+        })
         .await;
 
-    let mut failures: u64 = 0;
-    let mut deleted_size: u64 = 0;
-    for res in results {
-        match res {
-            Ok(size) => deleted_size += size,
-            Err(e) => {
-                failures += 1;
-                tracing::error!(target: "gc", "{e}");
-                emit_event(
-                    &reporter.0,
-                    Event::Backup(BackupEvent::Error(format!("{e}"))),
-                );
-            }
-        }
-    }
+    let (deleted_size, failures) = results;
 
     reporter.finish_task(task_kind);
     reporter.log(format!(
@@ -599,13 +624,16 @@ impl Plan {
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
     async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
-        // Gather locators while the index is still intact.
-        // We use a Vec to preserve the exact metadata we need for the loader and
-        // then stream it pack-by-pack, so memory stays bounded by the repack
-        // concurrency instead of the amount of data repacked. Locators are
-        // small (~24 bytes per blob) and substantially smaller than any other
-        // in-memory structure in the GC path.
-        let mut locators_to_repack = Vec::new();
+        // Group the blobs to repack by pack in a single pass over the index.
+        //
+        // Bucketing here rather than collecting a flat `(ID, BlobLocator)` list
+        // means the pack ID is stored once per pack (as the map key) instead of
+        // repeated inside every locator, and it avoids materializing the same
+        // descriptors three times over (flat list, then the loader's grouping,
+        // then its segment list). `PackedBlobDescriptor` is 48 bytes against 80
+        // for `(ID, BlobLocator)`.
+        let mut pack_groups: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
+        let mut blobs_to_repack = 0u64;
 
         self.repo
             .index()
@@ -613,17 +641,28 @@ impl Plan {
                 if self.referenced_blobs.contains(id)
                     && self.obsolete_packs.contains(&locator.pack_id)
                 {
-                    locators_to_repack.push((*id, locator));
+                    pack_groups
+                        .entry(locator.pack_id)
+                        .or_default()
+                        .push(PackedBlobDescriptor {
+                            id: *id,
+                            blob_type: locator.blob_type,
+                            offset: locator.offset,
+                            length: locator.length,
+                            raw_length: locator.raw_length,
+                            compressed: locator.compressed,
+                        });
+                    blobs_to_repack += 1;
                 }
             })
             .await;
 
-        if locators_to_repack.is_empty() {
+        if blobs_to_repack == 0 {
             tracing::debug!(target: "gc", "No blobs to repack");
             return Ok(());
         }
 
-        tracing::info!(target: "gc", "Repacking {} blobs", locators_to_repack.len());
+        tracing::info!(target: "gc", "Repacking {} blobs", blobs_to_repack);
 
         // Clear old references so the saver doesn't treat these blobs as
         // already existing. This only mutates the in-memory index; the
@@ -633,10 +672,7 @@ impl Plan {
             .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs));
 
         let r = GcReporter(event_sender);
-        r.start_task(
-            GcTaskKind::RepackingBlobs,
-            Some(locators_to_repack.len() as u64),
-        );
+        r.start_task(GcTaskKind::RepackingBlobs, Some(blobs_to_repack));
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // Stream the referenced blobs pack-by-pack (restic-style): each pack
@@ -669,7 +705,7 @@ impl Plan {
         });
 
         loader
-            .load_with_locators_streaming(locators_to_repack, segment_window)
+            .load_with_pack_groups_streaming(pack_groups, segment_window)
             .map(|item| {
                 let repo = self.repo.clone();
                 let r = r.clone();
@@ -765,7 +801,21 @@ async fn get_referenced_blobs_and_packs(
     let reporter = GcReporter(event_sender);
     let referenced_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
-    let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
+
+    // Budgets concurrent tree deserialization across *all* snapshots at once.
+    //
+    // A decoded `Tree` holds every `Node` in that directory subtree, and it is
+    // resident alongside the encoded blob it was parsed from. Without a shared
+    // budget the limit is GC_SNAPSHOT_CONCURRENCY x GC_TREE_FETCH_CONCURRENCY
+    // (32) trees in flight, which multiplies peak memory by the snapshot count.
+    //
+    // GC_TREE_BUDGET is halved rather than collapsed to GC_TREE_FETCH_CONCURRENCY
+    // on purpose: each slot is held across a backend round trip, so on a
+    // latency-bound backend (network, or contended disk) a budget of 8 measurably
+    // slows the reference-blob walk down relative to the previous 32. Halving
+    // keeps half the memory win while retaining enough in-flight requests to
+    // cover backend latency.
+    let tree_budget = Arc::new(tokio::sync::Semaphore::new(GC_TREE_BUDGET));
 
     let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
@@ -777,7 +827,7 @@ async fn get_referenced_blobs_and_packs(
             let reporter = reporter.clone();
             let referenced_blobs = referenced_blobs.clone();
             let referenced_packs = referenced_packs.clone();
-            let verified_trees = verified_trees.clone();
+            let tree_budget = tree_budget.clone();
             let shutdown_signal = shutdown_signal.clone();
 
             async move {
@@ -795,25 +845,26 @@ async fn get_referenced_blobs_and_packs(
                             let reporter = reporter.clone();
                             let referenced_blobs = referenced_blobs.clone();
                             let referenced_packs = referenced_packs.clone();
-                            let verified_trees = verified_trees.clone();
+                            let tree_budget = tree_budget.clone();
 
                             async move {
-                                {
-                                    let mut seen = verified_trees.lock();
-                                    if seen.contains(&tree_id) {
-                                        return Ok(None);
-                                    }
-                                    seen.insert(tree_id);
-                                }
-
+                                // `referenced_blobs` doubles as the visited set
+                                // for tree traversal: IDs are content addressed,
+                                // so a tree ID that is already present has had its
+                                // subtree walked by some other snapshot and can be
+                                // skipped. Insert reports whether this is the
+                                // first sighting, keeping the check atomic under
+                                // the lock so concurrent snapshots walk a shared
+                                // subtree once.
                                 {
                                     let mut blobs = referenced_blobs.lock();
-                                    if blobs.insert(tree_id) {
-                                        reporter.update_task(
-                                            GcTaskKind::SearchingReferencedBlobs,
-                                            blobs.len() as u64,
-                                        );
+                                    if !blobs.insert(tree_id) {
+                                        return Ok((None, None));
                                     }
+                                    reporter.update_task(
+                                        GcTaskKind::SearchingReferencedBlobs,
+                                        blobs.len() as u64,
+                                    );
                                 }
 
                                 let index = repo.index();
@@ -826,14 +877,25 @@ async fn get_referenced_blobs_and_packs(
                                     ));
                                 }
 
+                                // Hold a budget slot for as long as the decoded tree is
+                                // resident. The permit is returned alongside the
+                                // tree so the slot is released only after the
+                                // caller has walked its nodes, which is what
+                                // actually bounds peak memory.
+                                let permit = tree_budget
+                                    .acquire_owned()
+                                    .await
+                                    .map_err(|_| MapacheError::Interrupted)?;
+
                                 let tree = Tree::load_from_repo(repo.as_ref(), &tree_id).await?;
-                                Ok::<_, MapacheError>(Some(tree))
+                                Ok::<_, MapacheError>((Some(tree), Some(permit)))
                             }
                         })
                         .buffer_unordered(GC_TREE_FETCH_CONCURRENCY);
 
                     while let Some(tree_res) = fetch_stream.next().await {
-                        let tree = match tree_res? {
+                        let (tree, _permit) = tree_res?;
+                        let tree = match tree {
                             Some(t) => t,
                             None => continue,
                         };
@@ -1123,13 +1185,10 @@ mod tests {
 
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reporter = GcReporter(noop_sender());
-        let duplicates = find_packs_with_duplicate_footers(
-            repo.clone(),
-            &[dup_pack, clean_pack],
-            &reporter,
-            shutdown,
-        )
-        .await?;
+        let candidates: IdSet<ID> = [dup_pack, clean_pack].into_iter().collect();
+        let duplicates =
+            find_packs_with_duplicate_footers(repo.clone(), &candidates, &reporter, shutdown)
+                .await?;
 
         assert!(
             duplicates.contains(&dup_pack),

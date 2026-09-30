@@ -255,6 +255,10 @@ pub trait StorageBackend: Send + Sync {
     async fn list_dir_recursive(&self, path: &Path) -> Result<Vec<BackendNode>> {
         use futures::stream::{self, StreamExt, TryStreamExt};
 
+        // Accumulate by folding rather than collecting `Vec<Vec<BackendNode>>`
+        // and then copying every entry into a second flat `Vec`. Each directory's
+        // entries are appended into the shared output as its futures resolve, so
+        // the nested vectors do not all coexist with a duplicate flat copy.
         let entries = stream::iter(self.list_dir(path).await?)
             .map(|node| {
                 let backend = self;
@@ -269,11 +273,11 @@ pub trait StorageBackend: Send + Sync {
                 }
             })
             .buffer_unordered(LIST_DIR_RECURSIVE_CONCURRENCY)
-            .try_collect::<Vec<_>>()
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
+            .try_fold(Vec::new(), |mut acc, sub| async move {
+                acc.extend(sub);
+                Ok::<_, MapacheError>(acc)
+            })
+            .await?;
 
         Ok(entries)
     }

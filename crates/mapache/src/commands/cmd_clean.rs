@@ -181,7 +181,7 @@ pub async fn run_with_repo(
     let unused_packs = plan.unused_packs.len();
     let obsolete_packs = plan.obsolete_packs.len();
     let actionable_small_packs = plan.actionable_small_packs();
-    let tolerated_packs = plan.tolerated_packs.len();
+    let tolerated_packs = plan.tolerated_packs;
 
     if !json_output {
         ui::cli::log!();

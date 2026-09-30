@@ -176,8 +176,6 @@ mod tests {
             .await?;
 
         // Amending a non-existent snapshot ID must surface a "not found" error.
-        // Before the fix this was misreported as an interrupt (exit 130),
-        // indistinguishable from the user pressing Ctrl-C.
         let err = ctx
             .amend_builder()
             .snapshot(mapache::commands::UseSnapshot::SnapshotId(

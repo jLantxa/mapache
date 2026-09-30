@@ -310,7 +310,6 @@ impl TreeSerializer {
             if let Some((parent_path, completed_dir_node)) = parent_info_opt {
                 self.insert_finalized_node(&parent_path, completed_dir_node);
 
-                // This is the fix: Call recursively and use .boxed()
                 self.finalize_if_complete(&parent_path).await?;
             }
 

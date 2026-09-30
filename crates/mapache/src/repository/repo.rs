@@ -1515,9 +1515,15 @@ impl Repository {
     }
 
     /// Load the master index from file.
+    /// Reload using the mode the repository was configured with.
+    ///
+    /// Read paths (restore, snapshot, diff, ...) go through here and therefore
+    /// keep whatever `index_mode` the config selects, including a lazy pool.
+    /// Callers that need a specific pool must call
+    /// [`Self::reload_master_index_with_mode`] explicitly.
     pub async fn reload_master_index(&self) -> Result<()> {
-        self.reload_master_index_with_mode(common::defaults::DEFAULT_INDEX_MODE)
-            .await
+        let mode = self.master_index.index_mode();
+        self.reload_master_index_with_mode(mode).await
     }
 
     /// Load the master index from file with the specified mode.
@@ -1529,6 +1535,11 @@ impl Repository {
         files.sort_unstable(); // Ensure deterministic order
 
         self.master_index.clear();
+        // The requested mode has to govern the pool itself, otherwise it is only
+        // an initial budget hint: `add_index` enforces `MasterIndex`'s own mode
+        // and would happily evict indices right back to cold, which is what made
+        // the GC believe it had a fully resident index when it did not.
+        self.master_index.set_index_mode(index_mode);
 
         let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
         let budget = match index_mode {
@@ -2290,6 +2301,47 @@ mod tests {
         .await?; // The other expired lock should have been deleted
 
         lock_handle.unlock().await;
+
+        Ok(())
+    }
+
+    /// The GC needs an index pool that is genuinely fully resident, while the
+    /// repository may well be *configured* for lazy loading.
+    ///
+    /// `reload_master_index_with_mode(Eager)` used to be interpreted as nothing
+    /// more than an initial budget hint: `MasterIndex` kept the mode it was
+    /// constructed with, and every `add_index` re-enforced that mode's eviction.
+    /// The GC then believed it held every blob while a large part of the index
+    /// sat in cold metadata, and `merge_index` — which only folds resident
+    /// indices — silently dropped those blobs.
+    #[tokio::test]
+    async fn test_reload_with_eager_mode_overrides_configured_lazy_mode() -> Result<()> {
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        // Configure a tiny lazy budget, then ask for eager explicitly.
+        repo.master_index.set_index_mode(IndexMode::Lazy(1));
+        assert_eq!(repo.master_index.index_mode(), IndexMode::Lazy(1));
+
+        repo.reload_master_index_with_mode(IndexMode::Eager).await?;
+
+        assert_eq!(repo.master_index.index_mode(), IndexMode::Eager);
 
         Ok(())
     }

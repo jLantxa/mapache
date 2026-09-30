@@ -50,6 +50,8 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), Repack
             cleanup_handler.add_lock(lock_handle);
             let shutdown_signal = cleanup_handler.interrupted.clone();
 
+            // Uses the configured mode; `cleanup` streams cold indices into the
+            // rewritten index, so a lazy pool loses nothing.
             repo.reload_master_index().await?;
 
             let start = Instant::now();

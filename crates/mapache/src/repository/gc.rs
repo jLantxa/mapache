@@ -216,7 +216,7 @@ pub async fn scan(
 
     repo.index()
         .for_each_id(|id, locator| {
-// Zero blobs have no bytes in the pack data section, but they do
+            // Zero blobs have no bytes in the pack data section, but they do
             // have a real footer entry in a real pack (`Packer::add_blob` pushes
             // the descriptor unconditionally; only the data is skipped). The
             // index nonetheless attributes them to the sentinel pack ID
@@ -574,7 +574,8 @@ impl Plan {
             if !self.unused_packs.is_empty() {
                 self.repo
                     .index()
-                    .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs));
+                    .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs))
+                    .await?;
             }
 
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
@@ -596,7 +597,8 @@ impl Plan {
             tracing::info!(target: "gc", "Cleaning index for {} unused packs", self.unused_packs.len());
             self.repo
                 .index()
-                .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs));
+                .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs))
+                .await?;
             self.repo.index().persist(&self.repo).await?;
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
         }
@@ -669,7 +671,8 @@ impl Plan {
         // on-disk index is not updated until the post-repack flush.
         self.repo
             .index()
-            .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs));
+            .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs))
+            .await?;
 
         let r = GcReporter(event_sender);
         r.start_task(GcTaskKind::RepackingBlobs, Some(blobs_to_repack));

@@ -130,6 +130,9 @@ pub async fn run_with_repo(
     repo: Arc<Repository>, // The repository must have its master index loaded
     lock_handle: Option<LockHandle>,
 ) -> Result<(), CleanError> {
+    // `reload_master_index` uses the configured mode, so `--index-mode lazy`
+    // (or `index_mode = "lazy"` in the config) applies to the GC too. `cleanup`
+    // streams cold indices into the rewritten index, so nothing is dropped.
     tracing::info!(target: "clean", "Reloading master index");
     repo.reload_master_index().await.map_err(|e| {
         CleanError::ExecuteFailed(format!("failed to reload master index: {}", e.inner()))

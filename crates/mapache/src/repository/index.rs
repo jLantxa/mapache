@@ -1,9 +1,9 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -692,7 +692,7 @@ impl Index {
             }))
     }
 
-/// Appends every descriptor in this index to `out`, keyed by pack ID and
+    /// Appends every descriptor in this index to `out`, keyed by pack ID and
     /// skipping blobs whose pack is in `obsolete_packs`.
     ///
     /// Buckets are filled in the caller's iteration order, which is oldest
@@ -737,7 +737,7 @@ impl Index {
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
-// Zero blobs carry a real footer entry in a real pack; only their data
+        // Zero blobs carry a real footer entry in a real pack; only their data
         // section is empty. The index attributes them to the sentinel pack ID,
         // so `obsolete_packs` never applies to them — a zero blob whose pack is
         // being repacked or deleted stays valid, because restore synthesizes it
@@ -752,16 +752,16 @@ impl Index {
         // Only create the bucket when a zero blob survives `referenced`,
         // otherwise the sentinel pack would be emitted as an empty pack.
         if kept_zero.peek().is_some() {
-            out.entry(ID::default()).or_default().extend(
-                kept_zero.map(|(id, loc)| PackedBlobDescriptor {
+            out.entry(ID::default())
+                .or_default()
+                .extend(kept_zero.map(|(id, loc)| PackedBlobDescriptor {
                     id: *id,
                     blob_type: BlobType::Zero,
                     offset: 0,
                     length: 0,
                     raw_length: loc.raw_length,
                     compressed: false,
-                }),
-            );
+                }));
         }
     }
 }
@@ -793,6 +793,72 @@ impl PendingBlobs {
     }
 }
 
+/// The active index loading mode. Behind an `Arc` so every clone of a
+/// `MasterIndex` observes a mode switch, and behind atomics so the switch needs
+/// no lock (it is read from paths that already hold one).
+struct IndexModeCell {
+    /// Published last on write: a reader that sees `false` never consults
+    /// `budget`, so a stale budget cannot pair with a new mode.
+    lazy: AtomicBool,
+    budget: AtomicU64,
+}
+
+impl IndexModeCell {
+    fn new(mode: IndexMode) -> Self {
+        Self {
+            lazy: AtomicBool::new(matches!(mode, IndexMode::Lazy(_))),
+            budget: AtomicU64::new(match mode {
+                IndexMode::Lazy(budget) => budget,
+                IndexMode::Eager => u64::MAX,
+            }),
+        }
+    }
+
+    fn get(&self) -> IndexMode {
+        if self.lazy.load(Ordering::Acquire) {
+            IndexMode::Lazy(self.budget.load(Ordering::Relaxed))
+        } else {
+            IndexMode::Eager
+        }
+    }
+
+    fn set(&self, mode: IndexMode) {
+        self.budget.store(
+            match mode {
+                IndexMode::Lazy(budget) => budget,
+                IndexMode::Eager => u64::MAX,
+            },
+            Ordering::Relaxed,
+        );
+        self.lazy
+            .store(matches!(mode, IndexMode::Lazy(_)), Ordering::Release);
+    }
+}
+
+/// Restores a cold index that is mid-promotion unless the promotion
+/// succeeded, and always clears its `loading` marker.
+///
+/// The index is invisible for the whole load, so both the marker and the
+/// metadata must be restored on every exit path, panics included: a leftover
+/// marker deadlocks lookups, a lost entry hides the index's blobs for good.
+struct ColdPromotionGuard<'a> {
+    master: &'a MasterIndex,
+    file_id: ID,
+    /// `Some` while the metadata still has to be put back.
+    meta: Option<IndexMetadata>,
+}
+
+impl Drop for ColdPromotionGuard<'_> {
+    fn drop(&mut self) {
+        let mut lock = self.master.inner.write();
+        lock.loading.remove(&self.file_id);
+        if let Some(meta) = self.meta.take() {
+            lock.cold_metadata.retain(|m| m.file_id != self.file_id);
+            lock.cold_metadata.push(meta);
+        }
+    }
+}
+
 /// Manages a collection of `Index` instances, providing a unified view
 /// over all known blobs in the repository.
 #[derive(Clone)]
@@ -803,7 +869,12 @@ pub struct MasterIndex {
     pending_blobs: PendingBlobs,
     auto_save: bool,
     /// Index loading mode: eager (keep all in RAM) or lazy (move persisted to cold).
-    index_mode: IndexMode,
+    ///
+    /// Stored as atomics because the mode is not only fixed at construction:
+    /// `Repository::reload_master_index_with_mode` switches it when a caller
+    /// (notably the GC) requires a specific pool layout, which must take effect
+    /// for every concurrent lookup and eviction decision.
+    mode: Arc<IndexModeCell>,
     /// Async loader for cold indices (provided by Repository).
     loader: OnceLock<Arc<dyn ColdIndexLoader>>,
 }
@@ -823,6 +894,15 @@ struct MasterIndexInner {
     resident_touch: BTreeMap<u64, u64>,
     touch_order: HashMap<u64, u64>,
     next_touch: u64,
+    /// File IDs of cold indices being loaded right now. An index is invisible
+    /// while in this set, so a lookup that finds no candidate consults it before
+    /// reporting "not found" and waits for the promotion instead.
+    loading: IdSet<ID>,
+    /// Instance IDs of indices a lookup is currently searching. Eviction skips
+    /// them: without this, a lookup that promotes an index and then loses it to a
+    /// concurrent promotion must retry, and under pressure it retries the same
+    /// index forever, re-reading it from disk on every attempt.
+    pinned: HashSet<u64>,
 }
 
 impl MasterIndexInner {
@@ -849,10 +929,12 @@ impl MasterIndex {
                 resident_touch: BTreeMap::new(),
                 touch_order: HashMap::new(),
                 next_touch: 0,
+                loading: IdSet::default(),
+                pinned: HashSet::default(),
             })),
             pending_blobs: PendingBlobs::new(),
             auto_save: true,
-            index_mode,
+            mode: Arc::new(IndexModeCell::new(index_mode)),
             loader: OnceLock::new(),
         }
     }
@@ -952,15 +1034,32 @@ impl MasterIndex {
     /// Searches hot indices first; in lazy mode, loads cold indices on demand.
     /// Continues past bloom-filter false positives until the blob is found or no
     /// cold candidate remains.
+    /// The active index loading mode.
+    pub fn index_mode(&self) -> IndexMode {
+        self.mode.get()
+    }
+
+    /// Switch the active index loading mode.
+    ///
+    /// Switching to `Eager` stops further eviction but does not pull already-cold
+    /// indices back into RAM; call `reload_master_index_with_mode(Eager)` to get a
+    /// genuinely fully resident pool.
+    pub fn set_index_mode(&self, mode: IndexMode) {
+        self.mode.set(mode);
+    }
+
     pub async fn get(&self, id: &ID) -> Option<BlobLocator> {
-        let mut tried = IdSet::default();
+        // A candidate is skipped only once it is known to hold no copy of the
+        // blob. A promotion that finds nothing stays retryable: eviction churn
+        // can unseat it before this lookup scans it.
+        let mut exhausted: IdSet<ID> = IdSet::default();
         loop {
             // Fast path: search hot indices.
             if let Some(locator) = self.get_hot(id) {
                 return Some(locator);
             }
 
-            if self.index_mode == IndexMode::Eager {
+            if self.index_mode() == IndexMode::Eager {
                 return None;
             }
 
@@ -972,7 +1071,7 @@ impl MasterIndex {
                 lock.cold_metadata
                     .iter()
                     .rev()
-                    .find(|meta| meta.might_contain(id) && !tried.contains(&meta.file_id))
+                    .find(|meta| meta.might_contain(id) && !exhausted.contains(&meta.file_id))
                     .map(|meta| {
                         let zero_locator = meta
                             .zero_blobs
@@ -996,15 +1095,47 @@ impl MasterIndex {
             match candidate {
                 Some((Some(locator), _)) => return Some(locator),
                 Some((None, file_id)) => {
-                    // Promote the candidate and re-scan hot. If another task is
+                    // Promote the candidate and search it. If another task is
                     // already loading this exact index (concurrent promotion),
                     // yield and rescan.
-                    tried.insert(file_id);
-                    if self.load_and_promote(file_id).await.is_err() {
+                    let Ok(instance_id) = self.load_and_promote(file_id).await else {
+                        // Not promoted (concurrent promotion, or the load
+                        // failed): it may still be on its way in, so yield and
+                        // rescan without burning the candidate.
                         tokio::task::yield_now().await;
+                        continue;
+                    };
+                    // Pin it so eviction cannot take it away again while we
+                    // search. Without the pin this index can be evicted by a
+                    // concurrent promotion before the scan below, and the
+                    // candidate would have to be retried — under eviction
+                    // pressure, indefinitely, re-reading it from disk each time.
+                    self.inner.write().pinned.insert(instance_id);
+                    let found = self.get_hot(id);
+                    self.inner.write().pinned.remove(&instance_id);
+                    if let Some(locator) = found {
+                        return Some(locator);
                     }
+                    // The index was pinned for the whole scan, so its contents
+                    // are now authoritative: if the blob is not here, it is not
+                    // in this index at all.
+                    exhausted.insert(file_id);
                 }
-                None => return None,
+                None => {
+                    // No cold candidate holds the blob. Another task may still be
+                    // promoting an index that does, and until that promotion
+                    // publishes, the index is visible neither hot nor cold — so
+                    // reporting "not found" now would be a false negative.
+                    let promotion_in_flight = {
+                        let lock = self.inner.read();
+                        !lock.loading.is_empty()
+                    };
+                    if promotion_in_flight {
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    return None;
+                }
             }
         }
     }
@@ -1019,7 +1150,7 @@ impl MasterIndex {
                 // `loc` is Copy, so we can drop the guard after reading it.
                 let instance_id = idx.instance_id;
                 drop(lock);
-                if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                     let mut lock = self.inner.write();
                     Self::record_touch(&mut lock, instance_id);
                 }
@@ -1036,7 +1167,8 @@ impl MasterIndex {
     /// index, or the disk load failed. On disk failure the metadata entry is
     /// re-inserted into `cold_metadata` so a future retry can attempt again
     /// instead of permanently losing the index.
-    async fn load_and_promote(&self, file_id: ID) -> std::result::Result<(), ()> {
+    /// Returns the `instance_id` of the index it made resident.
+    async fn load_and_promote(&self, file_id: ID) -> std::result::Result<u64, ()> {
         // Under the write lock: claim the metadata entry by file_id (never by a
         // positional index, which can shift under a concurrent promotion) so two
         // tasks never load the same index concurrently.
@@ -1045,39 +1177,48 @@ impl MasterIndex {
             let Some(pos) = lock.cold_metadata.iter().position(|m| m.file_id == file_id) else {
                 return Err(());
             };
+            // Publish the in-flight load before dropping the metadata, so no
+            // concurrent lookup can mistake the missing entry for a blob that
+            // does not exist.
+            lock.loading.insert(file_id);
             lock.cold_metadata.swap_remove(pos)
         };
 
+        // From here on the index is reachable neither hot nor cold, so every exit
+        // path — including a panic from the loader — must clear `loading` and
+        // put the metadata back. Leaking a `loading` entry would make every
+        // later lookup wait for a promotion that never finishes.
+        let mut guard = ColdPromotionGuard {
+            master: self,
+            file_id,
+            meta: Some(meta),
+        };
+
         let Some(loader) = self.loader.get() else {
-            // No loader available: put the entry back so it isn't lost.
-            let mut lock = self.inner.write();
-            // Prevent duplicates if the same file_id is pushed repeatedly.
-            lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
-            lock.cold_metadata.push(meta);
+            // No loader available. The guard restores the entry.
             return Err(());
         };
-        match loader.load_index(&meta.file_id).await {
+        match loader.load_index(&file_id).await {
             Ok(index) => {
                 tracing::debug!(target: "index", "Loading cold index (file {}) into hot",
-                    meta.file_id.to_short_hex(8));
+                    file_id.to_short_hex(8));
                 let instance_id = index.instance_id;
                 let mut lock = self.inner.write();
                 lock.indices.push(index);
-                if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                     Self::record_touch(&mut lock, instance_id);
                     self.enforce_blob_budget(&mut lock);
                 }
-                Ok(())
+                // The index is resident now, so it must not be restored as cold.
+                guard.meta = None;
+                Ok(instance_id)
             }
             Err(e) => {
                 tracing::warn!(target: "index",
                     "Failed to load cold index {}: {}; re-inserting into cold metadata",
-                    meta.file_id.to_short_hex(8), e);
-                // Re-insert so a future retry can attempt again instead of
-                // permanently losing the blobs that live in this index.
-                let mut lock = self.inner.write();
-                lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
-                lock.cold_metadata.push(meta);
+                    file_id.to_short_hex(8), e);
+                // The guard restores the entry so a future retry can attempt
+                // again instead of permanently losing the blobs it holds.
                 Err(())
             }
         }
@@ -1118,7 +1259,7 @@ impl MasterIndex {
 
         // In lazy mode, track recency and evict the least-recently-used index if
         // the resident pool now exceeds its blob budget.
-        if matches!(self.index_mode, IndexMode::Lazy { .. }) {
+        if matches!(self.index_mode(), IndexMode::Lazy { .. }) {
             Self::record_touch(&mut lock, instance_id);
             self.enforce_blob_budget(&mut lock);
         }
@@ -1163,7 +1304,7 @@ impl MasterIndex {
     /// it would be the only thing left to evict, and then lookups would be
     /// impossible. Such an oversized index is kept resident and only warns.
     fn enforce_blob_budget(&self, lock: &mut MasterIndexInner) {
-        let IndexMode::Lazy(budget) = self.index_mode else {
+        let IndexMode::Lazy(budget) = self.index_mode() else {
             return;
         };
 
@@ -1184,23 +1325,50 @@ impl MasterIndex {
         // but never evict the last one: we must always keep at least one index
         // resident so lookups stay possible (a single oversized index is kept).
         while lock.resident_blobs() as u64 > budget
-            && lock.indices.iter().filter(|i| !i.is_pending()).count() > 1
+            && lock
+                .indices
+                .iter()
+                .filter(|i| i.file_id.is_some() && !lock.pinned.contains(&i.instance_id))
+                .count()
+                > 1
         {
             // Skip pending indices (they are always resident) and only consider
             // non-pending victims. Pick the one with the smallest touch.
+            //
+            // An index with no `file_id` has never been written to disk — it was
+            // just built by `merge_index` and only exists in this process. Its
+            // cold metadata could not be reloaded (there is no file to read) and
+            // its `ID::default()` entry would make `ids()` report a file that
+            // does not exist, which in turn lets the GC delete the *real* index
+            // files that still hold those blobs. Such an index must stay
+            // resident until it is persisted.
+            let evictable = lock
+                .indices
+                .iter()
+                .filter(|i| {
+                    i.file_id.is_some() && !i.is_pending() && !lock.pinned.contains(&i.instance_id)
+                })
+                .count();
+            if evictable == 0 {
+                break;
+            }
             let victim = lock
                 .resident_touch
                 .iter()
                 .find_map(|(&ts, &instance_id)| {
                     lock.indices
                         .iter()
-                        .position(|i| i.instance_id == instance_id && !i.is_pending())
+                        .position(|i| {
+                            i.instance_id == instance_id
+                                && i.file_id.is_some()
+                                && !lock.pinned.contains(&i.instance_id)
+                        })
                         .map(|pos| (ts, pos))
                 })
                 .map(|(_, pos)| pos);
 
             let Some(pos) = victim else {
-                // No evictable non-pending index remains. Accept the overshoot.
+                // No evictable index remains. Accept the overshoot.
                 break;
             };
 
@@ -1337,7 +1505,7 @@ impl MasterIndex {
                     let mut lock = self.inner.write();
                     let instance_id = idx.instance_id;
                     lock.indices.push(idx);
-                    if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                    if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                         Self::record_touch(&mut lock, instance_id);
                     }
                     return Err(e);
@@ -1347,7 +1515,7 @@ impl MasterIndex {
             let mut lock = self.inner.write();
             let instance_id = idx.instance_id;
             lock.indices.push(idx);
-            if matches!(self.index_mode, IndexMode::Lazy(_)) {
+            if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                 Self::record_touch(&mut lock, instance_id);
                 self.enforce_blob_budget(&mut lock);
             }
@@ -1403,7 +1571,7 @@ impl MasterIndex {
                     for remaining in std::iter::once(idx).chain(iter) {
                         let instance_id = remaining.instance_id;
                         lock.indices.push(remaining);
-                        if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                        if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                             Self::record_touch(&mut lock, instance_id);
                         }
                     }
@@ -1416,7 +1584,7 @@ impl MasterIndex {
             let mut lock = self.inner.write();
             let instance_id = idx.instance_id;
             lock.indices.push(idx);
-            if matches!(self.index_mode, IndexMode::Lazy(_)) {
+            if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                 Self::record_touch(&mut lock, instance_id);
                 self.enforce_blob_budget(&mut lock);
             }
@@ -1536,31 +1704,59 @@ impl MasterIndex {
         ids
     }
 
-    pub fn cleanup(&self, obsolete_packs: Option<&IdSet<ID>>, referenced: Option<&IdSet<ID>>) {
-        let mut lock = self.inner.write();
-        self.merge_index(&mut lock, obsolete_packs, referenced);
-    }
-
-    /// Merges all current indices into a new collection of full indices.
+    /// Rewrite the index, dropping every blob in `obsolete_packs`.
     ///
-    /// Descriptors are bucketed by pack rather than flattened into one sorted
-    /// `(ID, PackedBlobDescriptor)` vector. Bucketing costs ~48 bytes per blob
-    /// instead of ~80, and each source index is released as soon as its
-    /// descriptors have been bucketed, so the resident index pool and the merge
-    /// workspace never both span the whole repository.
-    fn merge_index(
+    /// Consumes the whole index: the resident indices *and* the cold ones. Cold
+    /// indices are streamed one at a time — loaded, bucketed, dropped — while
+    /// still ending up with a rewritten index that contains every blob.
+    ///
+    /// Every consumed index file becomes unreferenced, which is what lets the GC
+    /// delete the old files afterwards. Leaving a cold entry behind would point
+    /// at a file that is about to be deleted while its blobs were never merged
+    /// into the replacement.
+    ///
+    /// Descriptors are bucketed by pack (~48 bytes per blob instead of ~80) and
+    /// each source index is released as soon as it has been bucketed.
+    ///
+    /// This bounds the *input* side only: the rewritten indices cannot be evicted
+    /// while unpersisted, so after the merge the whole new index is resident again
+    /// and the peak returns to eager levels. Bounding the peak needs an
+    /// incremental merge, not a lazy pool.
+    ///
+    /// `referenced` prunes zero-blob entries that nothing references any more.
+    /// Zero blobs are real blobs with a real footer entry (only the pack's data
+    /// section is empty for them), so once nothing points at them they are
+    /// garbage exactly like any other blob and must not survive a GC pass.
+    /// `None` keeps every zero blob, which is the right default for callers
+    /// that are merging for reasons other than garbage collection.
+    pub async fn cleanup(
         &self,
-        lock: &mut MasterIndexInner,
         obsolete_packs: Option<&IdSet<ID>>,
         referenced: Option<&IdSet<ID>>,
-    ) {
-        let num_old_indices = lock.indices.len();
-        tracing::info!(target: "index", "Merging {} indices", num_old_indices);
-        let mut old_indices = std::mem::take(&mut lock.indices);
-        // Sort by instance_id to ensure deterministic merge order.
-        old_indices.sort_by_key(|idx| idx.instance_id);
+    ) -> Result<()> {
+        let (mut old_indices, mut cold_ids, loader) = {
+            let mut lock = self.inner.write();
+            let old_indices = std::mem::take(&mut lock.indices);
+            // Claim the cold entries up front: they are about to be consumed, so
+            // they must not stay reachable while the merge runs.
+            let cold_ids: Vec<ID> = lock.cold_metadata.iter().map(|m| m.file_id).collect();
+            lock.cold_metadata.clear();
+            (old_indices, cold_ids, self.loader.get().cloned())
+        };
 
-// Fill packs oldest-index-first so the newest occurrence of a duplicated
+        // Deterministic order in both halves: resident indices by instance_id,
+        // cold ones by file id.
+        old_indices.sort_by_key(|idx| idx.instance_id);
+        cold_ids.sort_unstable();
+
+        tracing::info!(
+            target: "index",
+            "Merging {} indices ({} cold, streamed)",
+            old_indices.len(),
+            cold_ids.len()
+        );
+
+        // Fill packs oldest-index-first so the newest occurrence of a duplicated
         // (pack_id, blob_id) is the one that ends up last within its bucket.
         let mut pack_buckets: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
         for idx in old_indices {
@@ -1568,6 +1764,40 @@ impl MasterIndex {
             // `idx` drops here, freeing its blob maps.
         }
 
+        // Stream the cold indices. A failure here is fatal: continuing would
+        // drop the blobs of the index that could not be read, and the GC would
+        // then delete the packs that hold them.
+        for file_id in cold_ids {
+            let Some(loader) = loader.as_ref() else {
+                return Err(MapacheError::Format(format!(
+                    "cannot merge cold index {}: no cold index loader is configured",
+                    file_id.to_short_hex(8)
+                )));
+            };
+            let idx = loader.load_index(&file_id).await?;
+            idx.push_pack_descriptors(obsolete_packs, referenced, &mut pack_buckets);
+            // `idx` drops here.
+        }
+
+        let new_indices = Self::emit_indices_from_buckets(pack_buckets);
+
+        let mut lock = self.inner.write();
+        lock.indices = new_indices;
+        // The merge produced brand-new index instances, so rebuild the recency
+        // ledger (old entries reference discarded instance_ids).
+        Self::rebuild_recency(&mut lock);
+        // Respect the lazy blob budget over the freshly rebuilt resident pool.
+        if matches!(self.index_mode(), IndexMode::Lazy(_)) {
+            self.enforce_blob_budget(&mut lock);
+        }
+        Ok(())
+    }
+
+    /// Turn per-pack descriptor buckets into full indices, dropping each bucket as
+    /// it is consumed.
+    fn emit_indices_from_buckets(
+        mut pack_buckets: IdMap<ID, Vec<PackedBlobDescriptor>>,
+    ) -> Vec<Index> {
         // Emit packs in sorted order so the resulting index layout is
         // deterministic, as the previous global (pack_id, blob_id) sort was.
         let mut pack_ids: Vec<ID> = pack_buckets.keys().copied().collect();
@@ -1611,26 +1841,8 @@ impl MasterIndex {
             new_indices.push(current_index);
         }
 
-        tracing::info!(target: "index", "Indices merged: {} -> {}", num_old_indices, new_indices.len());
-        lock.indices = new_indices;
-        // The merge produced brand-new index instances, so rebuild the recency
-        // ledger (old entries reference discarded instance_ids).
-        Self::rebuild_recency(lock);
-        // Respect the lazy blob budget over the freshly rebuilt resident pool.
-        if matches!(self.index_mode, IndexMode::Lazy(_)) {
-            self.enforce_blob_budget(lock);
-        }
-
-        // Also clean up cold_metadata that references deleted packs.
-        if let Some(obsolete) = obsolete_packs {
-            let before = lock.cold_metadata.len();
-            lock.cold_metadata
-                .retain(|meta| meta.pack_ids.iter().any(|pid| !obsolete.contains(pid)));
-            let removed = before - lock.cold_metadata.len();
-            if removed > 0 {
-                tracing::info!(target: "index", "Removed {removed} cold index entries referencing deleted packs");
-            }
-        }
+        tracing::info!(target: "index", "Indices merged into {} new indices", new_indices.len());
+        new_indices
     }
 
     pub async fn search_prefix(&self, prefix: &str) -> Result<Option<ID>> {
@@ -2067,8 +2279,8 @@ mod tests {
         assert!(!mi.contains(&id2));
     }
 
-    #[test]
-    fn test_master_index_cleanup_and_merge() {
+    #[tokio::test]
+    async fn test_master_index_cleanup_and_merge() {
         let mi = MasterIndex::default();
 
         // Setup: Multiple small indices with various packs
@@ -2103,7 +2315,7 @@ mod tests {
         let mut obsolete = IdSet::default();
         obsolete.insert(pack2);
 
-        mi.cleanup(Some(&obsolete), None);
+        mi.cleanup(Some(&obsolete), None).await.unwrap();
 
         // Verify results
         let inner = mi.inner.read();
@@ -2193,8 +2405,8 @@ mod tests {
         assert!(mi.contains(&b2.id));
     }
 
-    #[test]
-    fn test_master_index_merge_deduplication() {
+    #[tokio::test]
+    async fn test_master_index_merge_deduplication() {
         let mi = MasterIndex::default();
 
         let pack1 = mock_id("pack1");
@@ -2213,7 +2425,7 @@ mod tests {
         assert_eq!(mi.inner.read().indices.len(), 2);
 
         // Merge indices
-        mi.cleanup(None, None);
+        mi.cleanup(None, None).await.unwrap();
 
         let inner = mi.inner.read();
         assert_eq!(inner.indices.len(), 1);
@@ -2225,8 +2437,8 @@ mod tests {
         assert!(merged.contains(&b1.id));
     }
 
-    #[test]
-    fn test_master_index_merge_multiple_packs() {
+    #[tokio::test]
+    async fn test_master_index_merge_multiple_packs() {
         let mi = MasterIndex::default();
 
         let pack_a = mock_id("pack_a");
@@ -2259,7 +2471,7 @@ mod tests {
 
         assert_eq!(mi.inner.read().indices.len(), 2);
 
-        mi.cleanup(None, None);
+        mi.cleanup(None, None).await.unwrap();
 
         let inner = mi.inner.read();
         assert_eq!(inner.indices.len(), 1);
@@ -3192,6 +3404,23 @@ mod tests {
         }
     }
 
+    /// A single-blob index in the state `Index::from_index_file` produces after a
+    /// reload: frozen maps and a real file ID. Returns it with that file ID.
+    fn persisted_one_blob(pack: &str, blob: &str, file: &str) -> (Index, ID) {
+        let mut index = Index::new();
+        index.add_pack(
+            &mock_id(pack),
+            vec![mock_blob_desc(blob, BlobType::Data, 0, 100)],
+        );
+        index.finalize();
+        let file_id = mock_id(file);
+        index.data_ids.freeze();
+        index.zero_ids.freeze();
+        index.file_id = Some(file_id);
+        index.set_status(IndexStatus::Persisted(file_id));
+        (index, file_id)
+    }
+
     /// Build a repository-like lazy master index: `n` persisted index files,
     /// with a lazy blob budget that keeps the newest indices resident and
     /// pushes the rest to cold metadata. Returns the master index, a map of
@@ -3318,6 +3547,47 @@ mod tests {
     ///
     /// A bounded budget keeps several indices cold, so this assertively exercises
     /// the cold-metadata path of `for_each_pack_id` / `ids()`.
+    /// Regression: `cleanup` must consume the cold indices too.
+    ///
+    /// It used to fold only the resident indices into the rewritten index and
+    /// leave `cold_metadata` behind. The blobs that lived in a cold index then
+    /// vanished from the new index, and because the cold entry still listed that
+    /// index file as referenced, the GC went on to delete the packs holding
+    /// those blobs — a repository that reported a successful clean and then
+    /// failed `verify` with a broken reference.
+    #[tokio::test]
+    async fn test_cleanup_merges_cold_indices_without_losing_blobs() {
+        const N: usize = 12;
+        // A budget of 2 blobs keeps a single index resident, so all but one of
+        // the indices are cold and must be streamed back in from the loader.
+        let (mi, _index_map, _loads) = build_lazy_master(N, 2);
+        {
+            let lock = mi.inner.read();
+            assert_eq!(lock.indices.len(), 1, "one index resident");
+            assert_eq!(lock.cold_metadata.len(), N - 1, "the rest are cold");
+        }
+
+        mi.cleanup(None, None).await.unwrap();
+
+        // Every blob from every index — resident and cold — must still resolve,
+        // and the rewritten index must no longer reference the consumed files.
+        for i in 0..N {
+            for suffix in ["a", "b"] {
+                let id = mock_id(&format!("blob{i}_{suffix}"));
+                let loc = mi
+                    .get(&id)
+                    .await
+                    .unwrap_or_else(|| panic!("{id} must survive cleanup"));
+                assert_eq!(loc.pack_id, mock_id(&format!("lazy_pack_{i}")));
+            }
+        }
+        let lock = mi.inner.read();
+        assert!(
+            lock.cold_metadata.is_empty(),
+            "cleanup consumed every index, so nothing cold may be left"
+        );
+    }
+
     #[tokio::test]
     async fn test_lazy_mode_exposes_cold_packs_and_file_ids() {
         const N: usize = 12;
@@ -3472,5 +3742,125 @@ mod tests {
             assert_eq!(lock.indices.len(), 1, "the oversized index stays hot");
             assert_eq!(lock.cold_metadata.len(), 0, "nothing left cold");
         }
+    }
+
+    /// A promotion that panics must not strand the index.
+    ///
+    /// `load_and_promote` removes the index from `cold_metadata` before awaiting
+    /// the loader. If the panic skipped the cleanup, the index would stay
+    /// invisible *and* its `loading` marker would never clear — and since
+    /// lookups wait whenever any promotion is in flight, every later lookup would
+    /// spin forever.
+    #[tokio::test]
+    async fn test_lazy_get_recovers_after_a_panicking_cold_load() {
+        struct PanickingLoader;
+
+        #[async_trait]
+        impl ColdIndexLoader for PanickingLoader {
+            async fn load_index(&self, _file_id: &ID) -> Result<Index> {
+                panic!("cold index load blew up");
+            }
+        }
+
+        let mi = MasterIndex::new(IndexMode::Lazy(1));
+
+        let (index, file_id) = persisted_one_blob("panic_pack", "panic_blob", "panic_file");
+        mi.add_cold_metadata(IndexMetadata::from_index(&index, file_id));
+        mi.set_loader(Arc::new(PanickingLoader));
+
+        let blob = mock_id("panic_blob");
+
+        // The promotion panics; the lookup itself must not hang or claim a miss.
+        let first = tokio::spawn({
+            let mi = mi.clone();
+            async move { mi.get(&blob).await }
+        });
+        let _ = first.await;
+
+        // No marker may be left behind, and the index must still be reachable as
+        // cold metadata so a later attempt (with a working loader) can find it.
+        let lock = mi.inner.read();
+        assert!(lock.loading.is_empty(), "no promotion may stay in flight");
+        assert!(
+            lock.cold_metadata.iter().any(|m| m.file_id == file_id),
+            "the index must be back in cold metadata"
+        );
+    }
+
+    /// Regression for the window in which a cold index is in neither pool.
+    ///
+    /// `load_and_promote` has to release the write lock while it reads the index
+    /// file. For that window it drops the cold metadata before publishing the
+    /// index as resident, so a concurrent lookup scanning for candidates would
+    /// find neither and report a blob as missing even though it is indexed.
+    /// `MasterIndexInner::loading` makes the in-flight promotion visible, and the
+    /// lookup must wait for it instead of giving up.
+    #[tokio::test]
+    async fn test_lazy_get_waits_for_in_flight_promotion() {
+        /// Loader that parks inside `load_index` until the test releases it, so
+        /// the promotion is deterministically in flight while another lookup
+        /// runs.
+        struct GatedLoader {
+            index: Index,
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait]
+        impl ColdIndexLoader for GatedLoader {
+            async fn load_index(&self, _file_id: &ID) -> Result<Index> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(self.index.clone())
+            }
+        }
+
+        let mi = MasterIndex::new(IndexMode::Lazy(1));
+
+        let (index, file_id) = persisted_one_blob("gated_pack", "gated_blob", "gated_file");
+
+        // Cold: metadata only, the index itself is not resident.
+        mi.add_cold_metadata(IndexMetadata::from_index(&index, file_id));
+        assert_eq!(mi.inner.read().indices.len(), 0, "index starts cold");
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        mi.set_loader(Arc::new(GatedLoader {
+            index: index.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+
+        let blob = mock_id("gated_blob");
+
+        // First lookup triggers the promotion and parks inside the loader.
+        let first = tokio::spawn({
+            let mi = mi.clone();
+            async move { mi.get(&blob).await }
+        });
+        entered.notified().await;
+        assert_eq!(mi.inner.read().indices.len(), 0, "promotion is in flight");
+
+        // Second lookup runs while the promotion is in flight.
+        let second = tokio::spawn({
+            let mi = mi.clone();
+            async move { mi.get(&blob).await }
+        });
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        release.notify_one();
+
+        let first = first
+            .await
+            .expect("first lookup joins")
+            .expect("first lookup resolves");
+        let second = second
+            .await
+            .expect("second lookup joins")
+            .expect("lookup during an in-flight promotion must not report a miss");
+        assert_eq!(first.pack_id, mock_id("gated_pack"));
+        assert_eq!(second.pack_id, mock_id("gated_pack"));
     }
 }

@@ -19,7 +19,7 @@ use crate::{
     },
     repository::{
         repo::{Repository, SizePair},
-        storage::{EncodingContext, SecureStorage},
+        storage::SecureStorage,
     },
     utils::{
         binary::{get_array, get_u8, get_u16, get_u32, put_bytes, put_u8, put_u16, put_u32},
@@ -127,7 +127,6 @@ pub struct Packer {
     descriptors: Vec<PackedBlobDescriptor>,
     raw_size: u64,
     secure_storage: Arc<SecureStorage>,
-    encoding_context: EncodingContext,
 }
 
 impl Packer {
@@ -141,16 +140,20 @@ impl Packer {
     const INITIAL_BUFFER_CAPACITY: usize = size::MiB as usize;
 
     /// Creates a new `Packer` with a specified initial buffer capacity.
+    ///
+    /// No encoding context is created here. Its only use is encrypting the
+    /// footer, once, at finalization, but PackSaver pre-allocates a pool of
+    /// packers up front, so building one eagerly made every packer hold
+    /// compressor state for the whole run, most of it idle. The context is
+    /// instead borrowed from the shared pool when the footer is written, and
+    /// returned immediately.
     pub fn new(capacity: usize, secure_storage: Arc<SecureStorage>) -> Result<Self> {
-        let encoding_context = secure_storage.get_encoding_context()?;
-
         Ok(Self {
             instance_id: NEXT_PACKER_ID.fetch_add(1, Ordering::Relaxed),
             buffer: Vec::with_capacity(capacity.min(Self::INITIAL_BUFFER_CAPACITY)),
             descriptors: Vec::with_capacity(FOOTER_BLOB_MULTIPLE),
             raw_size: 0,
             secure_storage,
-            encoding_context,
         })
     }
 
@@ -230,9 +233,12 @@ impl Packer {
 
         let footer = Self::generate_footer(&mut descriptors);
 
-        let encoded_footer = self
-            .secure_storage
-            .encode_managed(&mut self.encoding_context, &footer)?;
+        // Borrowed from the shared pool for the single use it has, then returned
+        // immediately, so a packer never pins a context between packs.
+        let mut ctx = self.secure_storage.take_encoding_context()?;
+        let encoded_footer = self.secure_storage.encode_managed(&mut ctx, &footer);
+        self.secure_storage.return_encoding_context(ctx);
+        let encoded_footer = encoded_footer?;
         let footer_len: u32 = encoded_footer.len().try_into().map_err(|_| {
             MapacheError::Internal(format!(
                 "pack footer too large ({} bytes)",

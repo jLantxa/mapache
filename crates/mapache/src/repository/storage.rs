@@ -360,6 +360,7 @@ impl SecureStorage {
         self.get_encoding_context()
     }
 
+    /// Returns a context to the pool, keeping it for reuse by the next caller.
     pub fn return_encoding_context(&self, ctx: EncodingContext) {
         let mut pool = self.compressor_pool.lock();
         if pool.len() < defaults::DEFAULT_COMPRESSOR_POOL_SIZE {
@@ -689,6 +690,25 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         // Decrypt with nonce at start — must work.
         let decrypted = ss_at_start.decrypt(&encrypted)?;
         assert_eq!(TEXT.as_slice(), &*decrypted);
+        Ok(())
+    }
+
+    /// The pool caps how many contexts are retained, so recycling must stop at
+    /// the cap rather than growing without bound.
+    #[test]
+    fn compressor_pool_is_capped() -> Result<()> {
+        let ss = SecureStorage::new()
+            .with_key(&TEST_KEY)
+            .expect("valid 32-byte key");
+
+        for _ in 0..defaults::DEFAULT_COMPRESSOR_POOL_SIZE * 4 {
+            let ctx = ss.get_encoding_context()?;
+            ss.return_encoding_context(ctx);
+        }
+        assert_eq!(
+            ss.compressor_pool.lock().len(),
+            defaults::DEFAULT_COMPRESSOR_POOL_SIZE
+        );
         Ok(())
     }
 }

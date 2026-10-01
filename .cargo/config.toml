@@ -1,0 +1,16 @@
+# jemalloc reads its `malloc_conf` string through a weak symbol lookup that
+# resolves against the executable's dynamic symbol table. A plain
+# `#[export_name = "malloc_conf"] static` is not enough: with an LTO'd,
+# stripped binary the linker drops the symbol before jemalloc can see it, and
+# the setting is silently ignored.
+#
+# Exporting the dynamic symbols keeps that symbol reachable, which is what makes
+# the allocator configuration in `main.rs` actually take effect.
+#
+# Scoped to Linux on purpose: jemalloc is only linked there (`tikv-jemallocator`
+# is a `cfg(target_os = "linux")` dependency). A workspace-wide `[build]` flag
+# also reaches every build script and proc macro, and the flag is not portable:
+# Apple's `ld` spells it `-export_dynamic`, so a plain `cargo test` on macOS
+# failed at link time before compiling a single line of mapache.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-Wl,--export-dynamic"]

@@ -327,11 +327,10 @@ impl TreeSerializer {
         self.finalize_if_complete(&root).await?;
 
         // If files were skipped (e.g. unreadable mid-snapshot), some trees never
-        // complete because their pre-registered child counts are never met. With
-        // a file missing, the snapshot previously aborted with "root tree ID not
-        // set" — instead, after the stream has ended, force-finalize the
-        // remaining trees bottom-up so the snapshot still completes and omits
-        // the skipped items.
+        // complete because their pre-registered child counts are never met.
+        // Once the stream has ended, force-finalize the remaining trees
+        // bottom-up so the snapshot still completes and omits the skipped
+        // items; a tree left unfinalized would leave the root without its ID.
         while !self.pending_trees.is_empty() {
             let deepest = self
                 .pending_trees

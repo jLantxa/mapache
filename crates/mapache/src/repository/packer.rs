@@ -708,8 +708,9 @@ impl PackSaver {
         }
     }
 
-    /// Starts the main event loop.
-    /// This loop is now extremely lightweight. It purely moves pointers.
+    /// Starts the main event loop. The loop body only moves pointers
+    /// between the incoming request and the right packer; no encoding,
+    /// encryption or I/O happens here.
     pub fn run(mut self) -> Result<()> {
         tracing::info!(target: "packer", "Pack saver loop started");
         while let Ok(request) = self.rx.recv() {

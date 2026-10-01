@@ -191,6 +191,21 @@ pub async fn scan(
 
     repo.index()
         .for_each_id(|id, locator| {
+            // Zero blobs have no bytes in the pack data section, but they do
+            // have a real footer entry in a real pack (`Packer::add_blob` pushes
+            // the descriptor unconditionally; only the data is skipped). The
+            // index nonetheless attributes them to the sentinel pack ID
+            // `ID::default()` with `length = 0`.
+            //
+            // So the sentinel is not a pack we can delete: counting it here
+            // would register a 0-byte "pack" that always looks small
+            // (`0.0 < min_pack_size_factor`), and the GC would then try to read
+            // `objects/00/0000..0000`, which does not exist — failing the whole
+            // run on any repository containing zero blobs.
+            if locator.blob_type == BlobType::Zero {
+                return;
+            }
+
             *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
             pack_type
                 .entry(locator.pack_id)
@@ -532,7 +547,9 @@ impl Plan {
         // above but the index still references them.
         if !self.obsolete_packs.is_empty() {
             if !self.unused_packs.is_empty() {
-                self.repo.index().cleanup(Some(&self.unused_packs));
+                self.repo
+                    .index()
+                    .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs));
             }
 
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
@@ -552,7 +569,9 @@ impl Plan {
             gc_sizes.deleted_bytes += self.delete_obsolete_packs(reporter.0.clone()).await?;
         } else if !self.unused_packs.is_empty() {
             tracing::info!(target: "gc", "Cleaning index for {} unused packs", self.unused_packs.len());
-            self.repo.index().cleanup(Some(&self.unused_packs));
+            self.repo
+                .index()
+                .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs));
             self.repo.index().persist(&self.repo).await?;
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
         }
@@ -609,7 +628,9 @@ impl Plan {
         // Clear old references so the saver doesn't treat these blobs as
         // already existing. This only mutates the in-memory index; the
         // on-disk index is not updated until the post-repack flush.
-        self.repo.index().cleanup(Some(&self.obsolete_packs));
+        self.repo
+            .index()
+            .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs));
 
         let r = GcReporter(event_sender);
         r.start_task(
@@ -1607,6 +1628,88 @@ mod tests {
         // All referenced blobs must still be loadable after interruption.
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
         assert_eq!(repo.load_blob(&blob_b).await?, b"bbbb");
+
+        Ok(())
+    }
+
+    /// Zero blobs are real blobs: they get a footer entry in a real pack and an
+    /// index entry, only their data section is empty. So the GC must treat them
+    /// like any other blob and drop the unreferenced ones from the index.
+    ///
+    /// The index attributes zero blobs to the sentinel pack ID, so they are
+    /// never covered by `obsolete_packs`; the only thing that can make one
+    /// garbage is having no referrer left. Checked in both directions:
+    /// referenced survives a full clean, unreferenced is pruned afterwards.
+    #[tokio::test]
+    async fn test_zero_blob_pruned_only_when_unreferenced() -> Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        // BlobType::Zero is what the processor tags all-zero content with.
+        let zero_id = repo.encode_and_save_blob(
+            BlobType::Zero,
+            WriteContents::Borrowed(&[0u8; 4096]),
+            SaveID::CalculateID,
+        )?;
+        let data_id = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"payload"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![
+            make_node("zeros.bin", vec![zero_id]),
+            make_node("data.txt", vec![data_id]),
+        ]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        // --- Direction 1: referenced zero blob must survive a clean. ---
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
+        plan.execute(noop_sender()).await?;
+
+        assert!(
+            repo.index().contains(&zero_id),
+            "referenced zero blob must survive the clean"
+        );
+        assert_eq!(
+            repo.load_blob(&zero_id).await?,
+            vec![0u8; 4096],
+            "referenced zero blob must still load"
+        );
+        assert_eq!(repo.load_blob(&data_id).await?, b"payload");
+
+        // --- Direction 2: once nothing references it, it must be pruned. ---
+        for snap_id in repo.list_snapshot_ids().await? {
+            repo.remove_snapshot(&snap_id).await?;
+        }
+        repo.reload_master_index().await?;
+
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
+        plan.execute(noop_sender()).await?;
+
+        assert!(
+            !repo.index().contains(&zero_id),
+            "unreferenced zero blob must be pruned from the index"
+        );
+        assert!(
+            !repo.index().contains(&data_id),
+            "unreferenced data blob must be pruned from the index too"
+        );
 
         Ok(())
     }

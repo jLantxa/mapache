@@ -226,7 +226,8 @@ pub struct IndexMetadata {
     pub bloom_filter: BloomFilter,
     /// Pack IDs referenced by this index file.
     pub pack_ids: Vec<ID>,
-    /// Zero blobs: ID -> raw_length (usually empty, small even when populated).
+    /// Zero blobs: ID -> raw_length. Self-contained on purpose, so cold
+    /// metadata can answer a zero-blob lookup without loading an index file.
     pub zero_blobs: Vec<(ID, u32)>,
     /// Number of blobs in this index (for statistics).
     pub blob_count: usize,
@@ -343,6 +344,10 @@ pub struct Index {
 
     /// Zero blobs: ID -> BlobLocationInternal. Listed in data pack footers
     /// with length=0, raw_length=N. During restore, N bytes of zeros are produced.
+    ///
+    /// `pack_array_index` is the *real* pack. Lookups deliberately report the
+    /// sentinel pack ID instead (see `Self::get`), which is why this mapping is
+    /// the only place the owning pack of a zero blob is still available.
     zero_ids: BlobMap,
 
     /// The Pack IDs referenced in this index. Using an `IndexSet` allows us
@@ -517,8 +522,12 @@ impl Index {
                     .and_then(|l| self.resolve_location(l, BlobType::Tree))
             })
             .or_else(|| {
-                // Zero blobs don't live in packs — synthesize a locator directly.
-                // resolve_location would fail because pack_array_index is synthetic.
+                // A zero blob does have a real footer entry in a real pack — only its
+                // data section is empty. We still report the sentinel pack ID
+                // here because restoring one needs nothing but `raw_length`
+                // (see `Repository::load_blob`), so a lookup must never imply
+                // that a pack has to be read. `resolve_location` is not used
+                // because it would surface the real pack ID instead.
                 self.zero_ids.get(id).map(|l| BlobLocator {
                     pack_id: ID::default(),
                     blob_type: BlobType::Zero,
@@ -684,9 +693,17 @@ impl Index {
     }
 
     /// Returns a map of Pack ID -> List of descriptors for all packs in this index.
+    ///
+    /// `referenced` prunes zero-blob entries that nothing references any more.
+    /// Zero blobs are real blobs with a real footer entry (only the pack's data
+    /// section is empty for them), so once nothing points at them they are
+    /// garbage exactly like any other blob and must not survive a GC pass.
+    /// `None` keeps every zero blob, which is the right default for callers
+    /// that are merging for reasons other than garbage collection.
     fn get_pack_descriptors(
         &self,
         obsolete_packs: Option<&IdSet<ID>>,
+        referenced: Option<&IdSet<ID>>,
     ) -> IdMap<ID, Vec<PackedBlobDescriptor>> {
         let mut pack_descriptors = IdMap::default();
 
@@ -719,20 +736,34 @@ impl Index {
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
-        // Zero blobs have no payload to keep alive. Preserve their ID and length
-        // under the synthetic pack ID used by zero-blob lookups.
-        let zero_descriptors = self.zero_ids.iter().map(|(id, loc)| PackedBlobDescriptor {
-            id: *id,
-            blob_type: BlobType::Zero,
-            offset: 0,
-            length: 0,
-            raw_length: loc.raw_length,
-            compressed: false,
-        });
-        pack_descriptors
-            .entry(ID::default())
-            .or_insert_with(Vec::new)
-            .extend(zero_descriptors);
+        // Zero blobs carry a real footer entry in a real pack; only their data
+        // section is empty. The index attributes them to the sentinel pack ID,
+        // so `obsolete_packs` never applies to them — a zero blob whose pack is
+        // being repacked or deleted stays valid, because restore synthesizes it
+        // from `raw_length` instead of reading the pack. What does make one
+        // garbage is having no referrer left, which only `referenced` can say.
+        let zero_descriptors: Vec<PackedBlobDescriptor> = self
+            .zero_ids
+            .iter()
+            .filter(|(id, _)| referenced.is_none_or(|refs| refs.contains(id)))
+            .map(|(id, loc)| PackedBlobDescriptor {
+                id: *id,
+                blob_type: BlobType::Zero,
+                offset: 0,
+                length: 0,
+                raw_length: loc.raw_length,
+                compressed: false,
+            })
+            .collect();
+
+        // Don't register an empty sentinel pack when everything got pruned:
+        // `add_pack` would otherwise insert ID::default() into `pack_ids`.
+        if !zero_descriptors.is_empty() {
+            pack_descriptors
+                .entry(ID::default())
+                .or_insert_with(Vec::new)
+                .extend(zero_descriptors);
+        }
 
         pack_descriptors
     }
@@ -1212,11 +1243,11 @@ impl MasterIndex {
     /// `false` if the blob is already pending or already in the index.
     ///
     /// This MUST be called **before** encoding and sending the blob to the
-    /// packer. The old pattern (check `contains`, then encode, then
-    /// `add_pending_blob`) had a TOCTOU race: two threads could both pass the
-    /// `contains` check, both encode and send the same blob, and the pack
-    /// footer would end up with duplicate entries while the index deduplicated
-    /// to one — wasting space and confusing stats/GC.
+    /// packer, and it is the only deduplication decision point. Claiming after
+    /// the blob is already on its way to the packer would let two threads
+    /// encoding the same content both send it, producing duplicate footer
+    /// entries for one blob while the index keeps a single entry — wasting
+    /// space and confusing stats/GC.
     pub fn add_pending_blob(&self, id: ID) -> bool {
         // Fast path: check if it's already in pending_blobs or in the index (read-only)
         if self.pending_blobs.contains(&id) {
@@ -1508,13 +1539,18 @@ impl MasterIndex {
         ids
     }
 
-    pub fn cleanup(&self, obsolete_packs: Option<&IdSet<ID>>) {
+    pub fn cleanup(&self, obsolete_packs: Option<&IdSet<ID>>, referenced: Option<&IdSet<ID>>) {
         let mut lock = self.inner.write();
-        self.merge_index(&mut lock, obsolete_packs);
+        self.merge_index(&mut lock, obsolete_packs, referenced);
     }
 
     /// Merges all current indices into a new collection of full indices.
-    fn merge_index(&self, lock: &mut MasterIndexInner, obsolete_packs: Option<&IdSet<ID>>) {
+    fn merge_index(
+        &self,
+        lock: &mut MasterIndexInner,
+        obsolete_packs: Option<&IdSet<ID>>,
+        referenced: Option<&IdSet<ID>>,
+    ) {
         let num_old_indices = lock.indices.len();
         tracing::info!(target: "index", "Merging {} indices", num_old_indices);
         let mut old_indices = std::mem::take(&mut lock.indices);
@@ -1525,7 +1561,7 @@ impl MasterIndex {
         // (oldest index first) so that dedup keeps the newest occurrence.
         let mut all: Vec<(ID, PackedBlobDescriptor)> = old_indices
             .iter()
-            .flat_map(|idx| idx.get_pack_descriptors(obsolete_packs))
+            .flat_map(|idx| idx.get_pack_descriptors(obsolete_packs, referenced))
             .flat_map(|(pack_id, descs)| descs.into_iter().map(move |d| (pack_id, d)))
             .collect();
 
@@ -2063,7 +2099,7 @@ mod tests {
         let mut obsolete = IdSet::default();
         obsolete.insert(pack2);
 
-        mi.cleanup(Some(&obsolete));
+        mi.cleanup(Some(&obsolete), None);
 
         // Verify results
         let inner = mi.inner.read();
@@ -2173,7 +2209,7 @@ mod tests {
         assert_eq!(mi.inner.read().indices.len(), 2);
 
         // Merge indices
-        mi.cleanup(None);
+        mi.cleanup(None, None);
 
         let inner = mi.inner.read();
         assert_eq!(inner.indices.len(), 1);
@@ -2219,7 +2255,7 @@ mod tests {
 
         assert_eq!(mi.inner.read().indices.len(), 2);
 
-        mi.cleanup(None);
+        mi.cleanup(None, None);
 
         let inner = mi.inner.read();
         assert_eq!(inner.indices.len(), 1);

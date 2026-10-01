@@ -380,8 +380,8 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
 
             // Resolve blob lengths from the loader's index (no decryption), so
             // blobs entirely before `offset` can be skipped without loading
-            // them. Previously every syscall loaded and decrypted every blob
-            // from the start of the file — O(n) per read.
+            // them. Without the known lengths, reading at `offset` would have
+            // to decrypt every blob from the start of the file — O(n) per read.
             let known_lengths = {
                 let mut lens = Vec::with_capacity(blobs.len());
                 let mut all_known = true;

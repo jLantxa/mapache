@@ -354,4 +354,96 @@ mod tests {
 
         Ok(())
     }
+
+    /// Zero blobs are synthesized under the sentinel pack ID `ID::default()`
+    /// with `length = 0`. The GC must not account for them as a real 0-byte
+    /// pack, otherwise it classifies that non-existent pack as "small",
+    /// schedules it for repack, and fails the run trying to delete a file that
+    /// was never written. Other tests here deliberately avoid zero content, so
+    /// without this one the failure mode is never exercised.
+    #[tokio::test]
+    async fn test_gc_with_zero_blobs_and_small_packs() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        // Zero-length and all-zero files produce zero blobs.
+        let zero_dir = ctx._tmp_dir.path().join("zero");
+        std::fs::create_dir_all(&zero_dir)?;
+        std::fs::write(zero_dir.join("empty.bin"), b"")?;
+        std::fs::write(zero_dir.join("zeros.bin"), vec![0u8; 8192])?;
+        std::fs::write(zero_dir.join("zeros_sparse.bin"), vec![0u8; 1024 * 1024])?;
+
+        // Plus a small non-zero file so there is a genuine small pack to
+        // repack, which is what put the sentinel pack on the deletion path.
+        std::fs::write(zero_dir.join("small.txt"), b"not all zero")?;
+
+        ctx.snapshot(vec![zero_dir.clone()]).await?;
+        ctx.forget_builder().keep_last(1).run(&ctx.global).await?;
+
+        // The GC must complete without error and leave the repo verifiable.
+        ctx.clean_builder().tolerance(0.0).run(&ctx.global).await?;
+
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await?;
+
+        // Restoring must still yield the zero content byte-for-byte.
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        for name in ["empty.bin", "zeros.bin", "zeros_sparse.bin"] {
+            let restored = restore_path.join("zero").join(name);
+            assert!(restored.exists(), "{name} was not restored");
+            assert_eq!(
+                std::fs::read(&restored)?,
+                std::fs::read(zero_dir.join(name))?,
+                "{name} did not round-trip"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Repository format v1 has no zero-blob type, so a v1 repo must never
+    /// store one. `Index::persist` degrades zero entries to `Data` with
+    /// `length = 0` on v1, and such an entry is unrestorable: `load_blob` only
+    /// takes the zero-blob fast path when the locator type is `Zero`, so it
+    /// would read zero bytes and fail to decrypt them. Snapshot of all-zero
+    /// content into a v1 repo must therefore round-trip.
+    #[tokio::test]
+    async fn test_v1_repo_round_trips_zero_content() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_builder().format(1).run(&ctx.global).await?;
+
+        let zero_dir = ctx._tmp_dir.path().join("zero");
+        std::fs::create_dir_all(&zero_dir)?;
+        std::fs::write(zero_dir.join("empty.bin"), b"")?;
+        std::fs::write(zero_dir.join("zeros.bin"), vec![0u8; 65536])?;
+
+        ctx.snapshot(vec![zero_dir.clone()]).await?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        for name in ["empty.bin", "zeros.bin"] {
+            let restored = restore_path.join("zero").join(name);
+            assert!(restored.exists(), "{name} was not restored from v1 repo");
+            assert_eq!(
+                std::fs::read(&restored)?,
+                std::fs::read(zero_dir.join(name))?,
+                "{name} did not round-trip through a v1 repo"
+            );
+        }
+
+        // And the v1 repo must still survive a GC pass.
+        ctx.forget_builder().keep_last(1).run(&ctx.global).await?;
+        ctx.clean_builder().tolerance(0.0).run(&ctx.global).await?;
+
+        Ok(())
+    }
 }

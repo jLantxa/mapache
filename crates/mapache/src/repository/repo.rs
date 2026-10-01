@@ -578,17 +578,34 @@ impl Repository {
         // Atomically claim this blob. If it's already pending (another thread
         // is encoding the same content) or already in the index, skip.
         //
-        // This MUST happen before any encoding or channel send. The old pattern
-        // (check `contains`, then encode+send, then `add_pending_blob`) had a
-        // TOCTOU race: two threads could both pass `contains`, both encode and
-        // send the same blob, and the pack footer would end up with duplicate
-        // entries while the index deduplicated to one.
+        // This MUST happen before any encoding or channel send, so that the
+        // claim is the only decision point. Claiming later — after the blob is
+        // already on its way to the packer — would let two threads encoding the
+        // same content both send it, producing duplicate footer entries for one
+        // blob while the index keeps a single entry.
         if !self.master_index.add_pending_blob(id) {
             return Ok(id);
         }
 
         // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
         // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
+        //
+        // BlobType::Zero only exists in repository format v2. v1 footers have no
+        // zero type and no per-blob compression marker, so `Index::persist`
+        // downgrades zero entries to BlobType::Data with length=0. A zero blob
+        // stored that way is unrestorable: `load_blob` only takes the zero-blob
+        // fast path when the locator type is Zero, so it would instead read zero
+        // bytes out of the pack and fail to decrypt them. Downgrade to Data here,
+        // at the single point every zero blob passes through, so the v1 index is
+        // written with a normal full-length Data blob and v1 never stores one.
+        //
+        // TODO(v1-removal): Drop this branch along with the v1 format.
+        let blob_type = if blob_type == BlobType::Zero && self.repo_version() < 2 {
+            BlobType::Data
+        } else {
+            blob_type
+        };
+
         if blob_type == BlobType::Zero {
             let raw_length = u32::try_from(data.len()).map_err(|_| {
                 MapacheError::Integrity(format!(
@@ -1698,9 +1715,9 @@ mod tests {
     /// Test init a repo with password and open it
     #[tokio::test]
     async fn test_load_blob_rejects_oversized_zero_blob() -> Result<()> {
-        // Regression: an index claiming an oversized zero blob used to drive a
-        // giant allocation before the content hash was verified. It must be
-        // rejected as an integrity error instead.
+        // An index claiming an oversized zero blob must be rejected as an
+        // integrity error before it can drive a giant allocation, i.e.
+        // before the content hash of the synthesized bytes is verified.
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
         Repository::init(

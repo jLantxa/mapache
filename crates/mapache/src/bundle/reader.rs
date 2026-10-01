@@ -851,9 +851,9 @@ mod tests {
 
     #[test]
     fn test_ecc_repair_rejects_inverted_data_section() {
-        // Regression: a data section whose end precedes its start used to be
-        // turned into a wrapping usize subtraction and then a giant allocation.
-        // It must instead be rejected with a Format error.
+        // A data section whose end precedes its start must be rejected with a
+        // Format error, rather than becoming a wrapping usize subtraction
+        // that drives a giant allocation.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("bundle.b");
         std::fs::write(&path, b"x").unwrap();

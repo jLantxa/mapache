@@ -1,4 +1,4 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use futures::stream::{self, StreamExt};
 use futures::{Stream, TryStreamExt};
@@ -8,7 +8,10 @@ use crate::{
     common::error::{MapacheError, Result},
     common::{BlobType, ContentIdType, ID, defaults},
     repository::{
-        index::BlobLocator, packer::PackedBlobDescriptor, repo::Repository, storage::SecureStorage,
+        index::BlobLocator,
+        packer::{PackedBlobDescriptor, Packer},
+        repo::Repository,
+        storage::SecureStorage,
     },
     utils::collections::IdMap,
 };
@@ -301,86 +304,66 @@ impl BlobLoader {
         Ok(result)
     }
 
-    /// Streams the blobs in `groups`, decoding each one as its pack segment
-    /// arrives, in offset order, with at most `window` segments downloaded
-    /// concurrently.
-    ///
-    /// `groups` maps pack ID to that pack's descriptors. Buckets are segmented
-    /// lazily and released as the stream advances, so a pack's descriptor list
-    /// is freed once its segments have been produced. Callers should therefore
-    /// build the grouping in a single pass rather than materializing a flat
-    /// locator list first: grouping here means the pack ID travels once as the
-    /// map key instead of being repeated inside every `BlobLocator`.
-    ///
-    /// Downloads overlap (`window` encoded segments resident at once), but
-    /// decoding is lazy: blobs are decrypted/decompressed one at a time by the
-    /// consumer, so at any moment only the in-flight download buffers plus the
-    /// blobs currently being written are resident — never a whole decoded
-    /// segment. Resident memory is therefore independent of both the total
-    /// number of blobs and the size of a segment, so large batches can be
-    /// repacked with a small, flat memory profile.
-    pub fn load_with_pack_groups_streaming(
+    /// Streams referenced blobs from pack footers, holding descriptors for only
+    /// a bounded number of packs at a time. Pack data is read in merged segments
+    /// and decoded lazily as the consumer pulls it.
+    pub fn load_referenced_from_packs_streaming(
         &self,
-        groups: IdMap<ID, Vec<PackedBlobDescriptor>>,
+        pack_ids: Vec<ID>,
+        repack_blob_packs: Arc<parking_lot::Mutex<IdMap<ID, ID>>>,
         window: usize,
-    ) -> impl Stream<Item = Result<(ID, BlobType, Vec<u8>)>> + '_ {
-        let locator_count: usize = groups.values().map(|v| v.len()).sum();
-        let num_packs = groups.len();
-        tracing::debug!(
-            target: "gc",
-            "streaming segments from {} locators ({} packs)",
-            locator_count,
-            num_packs
-        );
+    ) -> impl Stream<Item = Result<(ID, BlobType, Vec<u8>)>> + 'static {
+        let window = window.max(1);
+        let repo = self.repo.clone();
+        let backend = repo.backend();
+        let footer_secure_storage = repo.secure_storage();
+        let decode_secure_storage = footer_secure_storage.clone();
+        let nonce_at_end = repo.nonce_at_end();
 
-        // Emit packs in sorted order so a repack run is deterministic.
-        let mut pack_ids: Vec<ID> = groups.keys().copied().collect();
-        pack_ids.sort_unstable();
-        let mut groups = groups;
+        let segment_stream = stream::iter(pack_ids)
+            .map(move |pack_id| {
+                let repo = repo.clone();
+                let backend = backend.clone();
+                let secure_storage = footer_secure_storage.clone();
+                let repack_blob_packs = repack_blob_packs.clone();
+                async move {
+                    let mut descriptors = Packer::parse_pack_footer(
+                        repo.as_ref(),
+                        backend.as_ref(),
+                        secure_storage.as_ref(),
+                        &pack_id,
+                        nonce_at_end,
+                    )
+                    .await?;
+                    descriptors.retain(|blob| {
+                        if blob.blob_type == BlobType::Zero {
+                            return false;
+                        }
+                        let mut selected = repack_blob_packs.lock();
+                        selected
+                            .get(&blob.id)
+                            .is_some_and(|expected_pack| *expected_pack == pack_id)
+                            && selected.remove(&blob.id).is_some()
+                    });
+
+                    Ok::<_, MapacheError>(
+                        stream::iter(packed_blob_segments(pack_id, descriptors))
+                            .map(Ok::<_, MapacheError>),
+                    )
+                }
+            })
+            .buffer_unordered(window)
+            .try_flatten();
 
         let repo = self.repo.clone();
-        let decode_secure_storage = repo.secure_storage();
-
-        let segment_stream: Pin<Box<dyn Stream<Item = PackSegment<()>> + Send>> =
-            Box::pin(stream::iter(pack_ids).flat_map(
-                move |pack_id| -> Pin<Box<dyn Stream<Item = PackSegment<()>> + Send>> {
-                    // Taking the bucket frees it as soon as its segments exist.
-                    match groups.remove(&pack_id) {
-                        Some(blobs) => {
-                            let locators: Vec<(ID, BlobLocator, ())> = blobs
-                                .into_iter()
-                                .map(|d| {
-                                    (
-                                        d.id,
-                                        BlobLocator {
-                                            pack_id,
-                                            blob_type: d.blob_type,
-                                            offset: d.offset,
-                                            length: d.length,
-                                            raw_length: d.raw_length,
-                                            compressed: d.compressed,
-                                        },
-                                        (),
-                                    )
-                                })
-                                .collect();
-                            Box::pin(stream::iter(segment_blobs(pack_id, locators)))
-                        }
-                        None => Box::pin(stream::empty()),
-                    }
-                },
-            ));
-
         segment_stream
-            .map(move |segment| {
+            .map_ok(move |segment| {
                 let repo = repo.clone();
                 async move {
                     let path = repo.get_path(ContentIdType::Pack, &segment.pack_id);
-                    // Hint if all blobs are trees
-                    let is_tree = segment
-                        .blobs
+                    let is_tree = segment.blobs[segment.blob_range.clone()]
                         .iter()
-                        .all(|(_, loc, _)| loc.blob_type == BlobType::Tree);
+                        .all(|blob| blob.blob_type == BlobType::Tree);
                     let (read_offset, read_length) = segment.read_range()?;
 
                     let data = repo
@@ -398,33 +381,108 @@ impl BlobLoader {
                             ))
                         })?;
 
-                    Ok::<(PackSegment<()>, Vec<u8>), MapacheError>((segment, data))
+                    Ok::<(PackedBlobSegment, Vec<u8>), MapacheError>((segment, data))
                 }
             })
-            .buffer_unordered(window.max(1))
+            .try_buffer_unordered(window)
             .map_ok(move |(segment, data)| {
                 let min_offset = segment.min_offset;
                 let secure_storage = decode_secure_storage.clone();
-                // Decode lazily, one blob at a time, as the consumer pulls it.
-                // `data` is moved into this stream and dropped when the last of
-                // the segment's blobs has been decoded.
-                stream::iter(segment.blobs).map(move |(id, loc, ())| {
-                    decode_blob_from_segment(secure_storage.clone(), min_offset, &data, id, loc)
+                let blobs = segment.blobs;
+                stream::iter(segment.blob_range).map(move |blob_index| {
+                    decode_packed_blob_from_segment(
+                        secure_storage.clone(),
+                        min_offset,
+                        &data,
+                        &blobs[blob_index],
+                    )
                 })
             })
             .try_flatten()
     }
 }
 
-/// Decodes a single blob out of its pack segment, verifying its content hash.
-fn decode_blob_from_segment(
+struct PackedBlobSegment {
+    pack_id: ID,
+    min_offset: u64,
+    max_offset: u64,
+    blobs: Arc<Vec<PackedBlobDescriptor>>,
+    blob_range: std::ops::Range<usize>,
+}
+
+impl PackedBlobSegment {
+    fn read_range(&self) -> Result<(isize, usize)> {
+        let length = self.max_offset.saturating_sub(self.min_offset);
+        Ok((
+            isize::try_from(self.min_offset).map_err(|_| {
+                MapacheError::Format(format!(
+                    "pack offset {} does not fit in isize",
+                    self.min_offset
+                ))
+            })?,
+            usize::try_from(length).map_err(|_| {
+                MapacheError::Format(format!(
+                    "pack segment length {length} does not fit in usize"
+                ))
+            })?,
+        ))
+    }
+}
+
+fn packed_blob_segments(
+    pack_id: ID,
+    mut blobs: Vec<PackedBlobDescriptor>,
+) -> impl Iterator<Item = PackedBlobSegment> {
+    let defaults = defaults::runtime();
+    let merge_threshold = defaults.restore_pack_read_merge_threshold;
+    let segment_max_size = defaults.restore_pack_segment_max_size;
+    blobs.sort_unstable_by_key(|blob| blob.offset);
+    let blobs = Arc::new(blobs);
+    let mut next_blob = 0;
+
+    std::iter::from_fn(move || {
+        if next_blob == blobs.len() {
+            return None;
+        }
+
+        let segment_start = next_blob;
+        let min_offset = blobs[next_blob].offset as u64;
+        let mut max_offset = min_offset + blobs[next_blob].length as u64;
+        next_blob += 1;
+
+        loop {
+            let can_merge = blobs.get(next_blob).is_some_and(|blob| {
+                let blob_start = blob.offset as u64;
+                let next_max = max_offset.max(blob_start + blob.length as u64);
+                blob_start <= max_offset.saturating_add(merge_threshold)
+                    && next_max - min_offset <= segment_max_size
+            });
+            if !can_merge {
+                break;
+            }
+
+            let blob = &blobs[next_blob];
+            max_offset = max_offset.max(blob.offset as u64 + blob.length as u64);
+            next_blob += 1;
+        }
+
+        Some(PackedBlobSegment {
+            pack_id,
+            min_offset,
+            max_offset,
+            blobs: blobs.clone(),
+            blob_range: segment_start..next_blob,
+        })
+    })
+}
+
+fn decode_packed_blob_from_segment(
     secure_storage: Arc<SecureStorage>,
     segment_min_offset: u64,
     data: &[u8],
-    id: ID,
-    loc: BlobLocator,
+    blob: &PackedBlobDescriptor,
 ) -> Result<(ID, BlobType, Vec<u8>)> {
-    let blob_offset = loc.offset as u64;
+    let blob_offset = blob.offset as u64;
     if blob_offset < segment_min_offset {
         return Err(MapacheError::Integrity(format!(
             "Blob offset {} is before segment start {}",
@@ -434,8 +492,8 @@ fn decode_blob_from_segment(
     let start = usize::try_from(blob_offset - segment_min_offset).map_err(|_| {
         MapacheError::Integrity(format!("Blob offset {} does not fit in usize", blob_offset))
     })?;
-    let length = usize::try_from(loc.length).map_err(|_| {
-        MapacheError::Integrity(format!("Blob length {} does not fit in usize", loc.length))
+    let length = usize::try_from(blob.length).map_err(|_| {
+        MapacheError::Integrity(format!("Blob length {} does not fit in usize", blob.length))
     })?;
     let end = start.checked_add(length).ok_or_else(|| {
         MapacheError::Integrity(format!(
@@ -450,11 +508,10 @@ fn decode_blob_from_segment(
         )));
     }
 
-    let blob_data = secure_storage.decode_blob(&data[start..end], loc.compressed)?;
-
-    if loc.blob_type != BlobType::Zero {
-        id.verify_content(&blob_data)?;
+    let blob_data = secure_storage.decode_blob(&data[start..end], blob.compressed)?;
+    if blob.blob_type != BlobType::Zero {
+        blob.id.verify_content(&blob_data)?;
     }
 
-    Ok((id, loc.blob_type, blob_data))
+    Ok((blob.id, blob.blob_type, blob_data))
 }

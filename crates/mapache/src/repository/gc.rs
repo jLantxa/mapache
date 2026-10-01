@@ -18,7 +18,7 @@ use crate::{
     fs::tree::Tree,
     repository::{
         loader,
-        packer::{PackedBlobDescriptor, Packer},
+        packer::Packer,
         repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
@@ -626,89 +626,99 @@ impl Plan {
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
     async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
-        // Group the blobs to repack by pack in a single pass over the index.
-        //
-        // Bucketing here rather than collecting a flat `(ID, BlobLocator)` list
-        // means the pack ID is stored once per pack (as the map key) instead of
-        // repeated inside every locator, and it avoids materializing the same
-        // descriptors three times over (flat list, then the loader's grouping,
-        // then its segment list). `PackedBlobDescriptor` is 48 bytes against 80
-        // for `(ID, BlobLocator)`.
-        let mut pack_groups: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
-        let mut blobs_to_repack = 0u64;
-
-        self.repo
-            .index()
-            .for_each_id(|id, locator| {
-                if self.referenced_blobs.contains(id)
-                    && self.obsolete_packs.contains(&locator.pack_id)
-                {
-                    pack_groups
-                        .entry(locator.pack_id)
-                        .or_default()
-                        .push(PackedBlobDescriptor {
-                            id: *id,
-                            blob_type: locator.blob_type,
-                            offset: locator.offset,
-                            length: locator.length,
-                            raw_length: locator.raw_length,
-                            compressed: locator.compressed,
-                        });
-                    blobs_to_repack += 1;
-                }
-            })
-            .await;
-
-        if blobs_to_repack == 0 {
-            tracing::debug!(target: "gc", "No blobs to repack");
-            return Ok(());
-        }
-
-        tracing::info!(target: "gc", "Repacking {} blobs", blobs_to_repack);
-
-        // Clear old references so the saver doesn't treat these blobs as
-        // already existing. This only mutates the in-memory index; the
-        // on-disk index is not updated until the post-repack flush.
-        self.repo
-            .index()
-            .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs))
-            .await?;
-
-        let r = GcReporter(event_sender);
-        r.start_task(GcTaskKind::RepackingBlobs, Some(blobs_to_repack));
-        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        // Stream the referenced blobs pack-by-pack (restic-style): each pack
-        // segment is downloaded, decoded and immediately re-encoded, with only a
-        // bounded window of segments in flight. Decoded blobs are never
-        // collected into a batch, so resident decoded+encoded memory is bounded
-        // by the window times the largest segment instead of a decoded-byte
-        // budget.
-        let d = defaults::runtime();
-        let segment_window = d.gc_repack_concurrency.max(1);
-
-        let loader = loader::BlobLoader::new(self.repo.clone());
-
-        // Sample RSS periodically so a repack memory curve can be inspected in
-        // the debug log (`MAPACHE_DEBUG_LEVEL=debug`).
         let shutdown_sampler = self.shutdown_signal.clone();
         let peak_rss = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let peak_rss_sampler = peak_rss.clone();
+        let sampled_index = self.repo.index();
+        let memory_reporter = GcReporter(event_sender.clone());
         let sampler = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut samples = 0u32;
             loop {
                 interval.tick().await;
                 let rss = rss_mib();
                 peak_rss_sampler.fetch_max(rss, std::sync::atomic::Ordering::Relaxed);
-                tracing::debug!(target: "gc", "rss repack sample: {} MiB", rss);
+                tracing::debug!(
+                    target: "gc",
+                    "rss repack sample: {} MiB (index blobs: {} resident, {} total)",
+                    rss,
+                    sampled_index.num_blobs(),
+                    sampled_index.num_blobs_total()
+                );
+                if samples != 0 && samples.is_multiple_of(20) {
+                    let index_hot = sampled_index.num_blobs();
+                    let index_total = sampled_index.num_blobs_total();
+                    memory_reporter.log(format!(
+                        "repack memory: RSS {rss} MiB, index {index_hot} hot / {index_total} total blobs"
+                    ));
+                }
+                samples += 1;
                 if shutdown_sampler.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
             }
         });
 
-        loader
-            .load_with_pack_groups_streaming(pack_groups, segment_window)
+        // Retain only the authoritative pack for each referenced blob. Obsolete
+        // pack footers can contain phantom copies that are not represented by
+        // the index and must not be submitted for repacking.
+        let mut repack_blob_packs: IdMap<ID, ID> = IdMap::default();
+        self.repo
+            .index()
+            .for_each_id(|id, locator| {
+                if self.referenced_blobs.contains(id)
+                    && self.obsolete_packs.contains(&locator.pack_id)
+                    && locator.blob_type != BlobType::Zero
+                {
+                    repack_blob_packs.insert(*id, locator.pack_id);
+                }
+            })
+            .await;
+        let blobs_to_repack = repack_blob_packs.len() as u64;
+
+        // Clear old references so the saver doesn't treat these blobs as
+        // already existing. This only mutates the in-memory index; the
+        // on-disk index is not updated until the post-repack flush.
+        if let Err(error) = self
+            .repo
+            .index()
+            .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs))
+            .await
+        {
+            sampler.abort();
+            return Err(error);
+        }
+
+        if !self.repo.index().index_mode().is_eager()
+            && let Err(error) = self.repo.index().persist(&self.repo).await
+        {
+            sampler.abort();
+            return Err(error);
+        }
+
+        if blobs_to_repack == 0 {
+            sampler.abort();
+            tracing::debug!(target: "gc", "No blobs to repack");
+            return Ok(());
+        }
+
+        let r = GcReporter(event_sender);
+        r.start_task(GcTaskKind::RepackingBlobs, Some(blobs_to_repack));
+        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        // Read obsolete-pack footers and stream only indexed authoritative
+        // entries; no encoded blob payloads are accumulated in a batch.
+        let d = defaults::runtime();
+        let segment_window = d.gc_repack_concurrency.max(1);
+        let mut pack_ids: Vec<ID> = self.obsolete_packs.iter().copied().collect();
+        pack_ids.sort_unstable();
+        tracing::info!(target: "gc", "Repacking referenced blobs from {} packs", pack_ids.len());
+        let repack_blob_packs = Arc::new(parking_lot::Mutex::new(repack_blob_packs));
+
+        let loader = loader::BlobLoader::new(self.repo.clone());
+
+        let repack_result = loader
+            .load_referenced_from_packs_streaming(pack_ids, repack_blob_packs, segment_window)
             .map(|item| {
                 let repo = self.repo.clone();
                 let r = r.clone();
@@ -746,10 +756,11 @@ impl Plan {
                 }
             })
             .buffer_unordered(DEFAULT_SNAPSHOT_READERS)
-            .try_collect::<Vec<_>>()
-            .await?;
+            .try_for_each(|_| async { Ok(()) })
+            .await;
 
         sampler.abort();
+        repack_result?;
         r.finish_task(GcTaskKind::RepackingBlobs);
         tracing::info!(
             target: "gc",
@@ -1337,6 +1348,8 @@ mod tests {
         let (pack_q, desc_q) = write_raw_pack(&repo, vec![(blob_a, b"aaa")]).await?;
         repo.index().add_pack(&repo, &pack_p, desc_p).await?;
         repo.index().add_pack(&repo, &pack_q, desc_q).await?;
+        repo.index()
+            .set_index_mode(crate::repository::index::IndexMode::Lazy(1));
 
         let plan = super::scan(
             repo.clone(),

@@ -216,6 +216,10 @@ impl DashboardScreen {
     }
 
     fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
+        const LENGTH_CONSTRAINT: u16 = 32;
+        const LENGTH_MIN: u16 = 12;
+        const REPO_ID_LEN: usize = 12;
+
         let bg = Block::default().style(Style::new().bg(theme::THEME.surface));
         frame.render_widget(&bg, area);
 
@@ -226,7 +230,10 @@ impl DashboardScreen {
 
         let row1 = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(22), Constraint::Min(10)])
+            .constraints([
+                Constraint::Length(LENGTH_CONSTRAINT),
+                Constraint::Min(LENGTH_MIN),
+            ])
             .split(chunks[0]);
 
         let header = Paragraph::new(Line::from(vec![
@@ -240,7 +247,7 @@ impl DashboardScreen {
             Span::styled(&self.repo_path, theme::THEME.snap_host),
             Span::styled(" [", theme::THEME.footer),
             Span::styled(
-                self.repo_id.chars().take(8).collect::<String>(),
+                self.repo_id.chars().take(REPO_ID_LEN).collect::<String>(),
                 theme::THEME.snap_id,
             ),
             Span::styled("]", theme::THEME.footer),
@@ -251,7 +258,10 @@ impl DashboardScreen {
 
         let row2 = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(22), Constraint::Min(10)])
+            .constraints([
+                Constraint::Length(LENGTH_CONSTRAINT),
+                Constraint::Min(LENGTH_MIN),
+            ])
             .split(chunks[1]);
 
         let stats_left = Paragraph::new(Line::from(vec![

@@ -18,4 +18,4 @@ case "$TOOL" in
   xwin)     CMD="cargo xwin build" ;;
 esac
 
-exec $CMD --release --target "$TARGET" -p mapache $FEAT_ARGS "$@"
+exec $CMD --release --locked --target "$TARGET" -p mapache $FEAT_ARGS "$@"

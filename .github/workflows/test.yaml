@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            cargo test --verbose --no-default-features
+            cargo test --locked --verbose --no-default-features
           else
-            cargo test --verbose
+            cargo test --locked --verbose
           fi

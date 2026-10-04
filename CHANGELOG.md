@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Updated `rust-s3` to v0.38, resolving RUSTSEC-2026-0194 (quadratic CPU
+  exhaustion in the attribute duplicate-name check) and RUSTSEC-2026-0195
+  (unbounded namespace allocation in `NsReader`). Both were reachable only
+  through `quick-xml`, which v0.38 raises to v0.41.
+
 ## v0.7.0 (2026-10-03)
 
 ### Added

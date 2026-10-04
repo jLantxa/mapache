@@ -33,12 +33,12 @@ percent-encoding = "2.3"
 rand = "0.10"
 ratatui = "0.30"
 rayon = "1.12"
-russh = { version = "0.63", default-features = false, features = [
+russh = { version = "0.64", default-features = false, features = [
   "flate2",
   "ring",
 ] }
 russh-sftp = "3.0"
-rust-s3 = { version = "0.37", default-features = false, features = [
+rust-s3 = { version = "0.38", default-features = false, features = [
   "with-tokio",
 ] }
 serde = { version = "1.0", features = ["derive"] }

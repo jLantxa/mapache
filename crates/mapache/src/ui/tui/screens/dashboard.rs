@@ -13,7 +13,11 @@ use ratatui::{
 
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
-    common::{defaults::SHORT_SNAPSHOT_ID_LEN, error::Result, global::THIS_MAPACHE_VERSION},
+    common::{
+        defaults::{APP_NAME, SHORT_SNAPSHOT_ID_LEN},
+        error::Result,
+        global::THIS_MAPACHE_VERSION,
+    },
     repository::{
         lock::LockHandle,
         repo::Repository,
@@ -216,9 +220,23 @@ impl DashboardScreen {
     }
 
     fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
-        const LENGTH_CONSTRAINT: u16 = 32;
+        const SNAPSHOTS_SUFFIX: &str = " snapshots";
+        const LENGTH_MAX: u16 = 32;
         const LENGTH_MIN: u16 = 12;
         const REPO_ID_LEN: usize = 12;
+
+        // Both rows share one left-hand column so their right-hand columns line
+        // up. It is sized to the wider of the two labels that live in it — the
+        // tool name plus version above, and the snapshot count below — plus a
+        // column of breathing room. Sizing to the version alone clipped the
+        // count once a repo passed ~100k snapshots. The cap keeps an unusually
+        // long version string from starving the repository info column.
+        let name = format!("{APP_NAME} ");
+        let needed = std::cmp::max(
+            name.len() + THIS_MAPACHE_VERSION.len(),
+            self.stats.total.to_string().len() + SNAPSHOTS_SUFFIX.len(),
+        ) as u16;
+        let row_constraint = std::cmp::min(needed + 1, LENGTH_MAX);
 
         let bg = Block::default().style(Style::new().bg(theme::THEME.surface));
         frame.render_widget(&bg, area);
@@ -231,13 +249,13 @@ impl DashboardScreen {
         let row1 = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(LENGTH_CONSTRAINT),
+                Constraint::Length(row_constraint),
                 Constraint::Min(LENGTH_MIN),
             ])
             .split(chunks[0]);
 
         let header = Paragraph::new(Line::from(vec![
-            Span::styled("mapache ", theme::THEME.header),
+            Span::styled(name, theme::THEME.header),
             Span::styled(THIS_MAPACHE_VERSION, theme::THEME.snap_size),
         ]))
         .style(theme::THEME.footer);
@@ -259,14 +277,14 @@ impl DashboardScreen {
         let row2 = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(LENGTH_CONSTRAINT),
+                Constraint::Length(row_constraint),
                 Constraint::Min(LENGTH_MIN),
             ])
             .split(chunks[1]);
 
         let stats_left = Paragraph::new(Line::from(vec![
             Span::styled(self.stats.total.to_string(), theme::THEME.snap_id),
-            Span::styled(" snapshots", theme::THEME.footer),
+            Span::styled(SNAPSHOTS_SUFFIX, theme::THEME.footer),
         ]))
         .style(theme::THEME.footer);
         frame.render_widget(stats_left, row2[0]);

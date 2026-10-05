@@ -4,13 +4,19 @@
 
 ### Fixed
 
-- Removed leftover RSS/memory debug instrumentation from the GC repack path. The
-  periodic `repack memory: RSS ...` lines were emitted through the progress
-  reporter and so printed during `clean`/`repack` regardless of log level.
-- Updated `rust-s3` to v0.38, resolving RUSTSEC-2026-0194 (quadratic CPU
-  exhaustion in the attribute duplicate-name check) and RUSTSEC-2026-0195
-  (unbounded namespace allocation in `NsReader`). Both were reachable only
-  through `quick-xml`, which v0.38 raises to v0.41.
+- Removed leftover RSS debug logging from the GC repack path; the periodic
+  `repack memory:` lines printed during `clean`/`repack` at any log level.
+- **Lazy index mode no longer ignores cold indices.** `verify`, `copy`, `bundle`
+  and `stats` resolved blobs only against resident indices, so correctly indexed
+  cold blobs were reported as dangling, re-transferred or re-imported. All now
+  resolve exactly. `MasterIndex` methods that only see resident indices were
+  renamed to say so (`num_blobs` → `num_resident_blobs`, `contains` →
+  `contains_exact`). `stats` also stopped trusting the in-memory pending-blob
+  set, so its integrity counters no longer depend on whether a backup is running.
+- TUI dashboard: the `mapache <version>` label now sizes itself instead of
+  reserving a fixed 32 columns, giving the space to the repository path and ID.
+- Updated `rust-s3` to v0.38, resolving RUSTSEC-2026-0194 and RUSTSEC-2026-0195,
+  both reachable only through `quick-xml`, which v0.38 raises to v0.41.
 
 ## v0.7.0 (2026-10-03)
 

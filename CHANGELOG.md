@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Removed leftover RSS/memory debug instrumentation from the GC repack path. The
+  periodic `repack memory: RSS ...` lines were emitted through the progress
+  reporter and so printed during `clean`/`repack` regardless of log level.
 - Updated `rust-s3` to v0.38, resolving RUSTSEC-2026-0194 (quadratic CPU
   exhaustion in the attribute duplicate-name check) and RUSTSEC-2026-0195
   (unbounded namespace allocation in `NsReader`). Both were reachable only

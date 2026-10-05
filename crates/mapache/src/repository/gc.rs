@@ -48,19 +48,6 @@ const GC_DROPPED_SCAN_CONCURRENCY: usize = 4;
 /// Concurrency for parsing pack footers while detecting duplicate descriptors.
 const GC_DUP_SCAN_CONCURRENCY: usize = 8;
 
-/// Current resident set size in MiB (Linux). Returns 0 when unavailable.
-fn rss_mib() -> u64 {
-    #[cfg(target_os = "linux")]
-    if let Ok(statm) = std::fs::read_to_string("/proc/self/statm")
-        && let Some(field) = statm.split_whitespace().nth(1)
-        && let Ok(pages) = field.parse::<u64>()
-    {
-        const PAGE_SIZE: u64 = 4096;
-        return pages * PAGE_SIZE / (1024 * 1024);
-    }
-    0
-}
-
 #[derive(Clone)]
 struct GcReporter(EventSender);
 
@@ -346,7 +333,6 @@ pub async fn repack_all(
     let (referenced_blobs, referenced_packs) =
         get_referenced_blobs_and_packs(repo.clone(), event_sender, shutdown_signal.clone()).await?;
     let (all_packs, object_dropped) = repo.list_packs_and_dropped().await?;
-    tracing::debug!(target: "gc", "rss after scan: {} MiB", rss_mib());
 
     let mut unused_packs = all_packs.clone();
     unused_packs.retain(|id| !referenced_packs.contains(id));
@@ -543,7 +529,6 @@ impl Plan {
             reporter.0.clone(),
         )
         .await?;
-        tracing::debug!(target: "gc", "rss after startup: {} MiB", rss_mib());
 
         if self.small_data_packs.len() > 1 {
             tracing::debug!(target: "gc", "Marking {} small data packs as obsolete for repacking", self.small_data_packs.len());
@@ -579,7 +564,6 @@ impl Plan {
             }
 
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
-            tracing::debug!(target: "gc", "rss before repack: {} MiB", rss_mib());
             self.repo
                 .init_pack_saver(common::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
 
@@ -588,7 +572,6 @@ impl Plan {
             // New index is now on disk; subsequent deletions are safe to
             // interrupt partway.
             let repo_stats = self.repo.flush_and_finalize_pack_saver().await?;
-            tracing::debug!(target: "gc", "rss after repack: {} MiB", rss_mib());
 
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
@@ -603,7 +586,6 @@ impl Plan {
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
         }
 
-        tracing::debug!(target: "gc", "rss at end: {} MiB", rss_mib());
         tracing::info!(target: "gc", "Garbage collection execution finished");
         Ok(gc_sizes)
     }
@@ -626,39 +608,6 @@ impl Plan {
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
     async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
-        let shutdown_sampler = self.shutdown_signal.clone();
-        let peak_rss = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let peak_rss_sampler = peak_rss.clone();
-        let sampled_index = self.repo.index();
-        let memory_reporter = GcReporter(event_sender.clone());
-        let sampler = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
-            let mut samples = 0u32;
-            loop {
-                interval.tick().await;
-                let rss = rss_mib();
-                peak_rss_sampler.fetch_max(rss, std::sync::atomic::Ordering::Relaxed);
-                tracing::debug!(
-                    target: "gc",
-                    "rss repack sample: {} MiB (index blobs: {} resident, {} total)",
-                    rss,
-                    sampled_index.num_blobs(),
-                    sampled_index.num_blobs_total()
-                );
-                if samples != 0 && samples.is_multiple_of(20) {
-                    let index_hot = sampled_index.num_blobs();
-                    let index_total = sampled_index.num_blobs_total();
-                    memory_reporter.log(format!(
-                        "repack memory: RSS {rss} MiB, index {index_hot} hot / {index_total} total blobs"
-                    ));
-                }
-                samples += 1;
-                if shutdown_sampler.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-            }
-        });
-
         // Retain only the authoritative pack for each referenced blob. Obsolete
         // pack footers can contain phantom copies that are not represented by
         // the index and must not be submitted for repacking.
@@ -679,25 +628,18 @@ impl Plan {
         // Clear old references so the saver doesn't treat these blobs as
         // already existing. This only mutates the in-memory index; the
         // on-disk index is not updated until the post-repack flush.
-        if let Err(error) = self
-            .repo
+        self.repo
             .index()
             .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs))
-            .await
-        {
-            sampler.abort();
-            return Err(error);
-        }
+            .await?;
 
         if !self.repo.index().index_mode().is_eager()
             && let Err(error) = self.repo.index().persist(&self.repo).await
         {
-            sampler.abort();
             return Err(error);
         }
 
         if blobs_to_repack == 0 {
-            sampler.abort();
             tracing::debug!(target: "gc", "No blobs to repack");
             return Ok(());
         }
@@ -759,14 +701,8 @@ impl Plan {
             .try_for_each(|_| async { Ok(()) })
             .await;
 
-        sampler.abort();
         repack_result?;
         r.finish_task(GcTaskKind::RepackingBlobs);
-        tracing::info!(
-            target: "gc",
-            "Repack finished; peak RSS during repack: {} MiB",
-            peak_rss.load(std::sync::atomic::Ordering::Relaxed)
-        );
         Ok(())
     }
 

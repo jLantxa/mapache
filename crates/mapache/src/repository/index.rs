@@ -955,28 +955,28 @@ impl MasterIndex {
         self.pending_blobs.clear();
     }
 
-    /// Returns the total number of blobs in all finalized indices (hot only).
-    pub fn num_blobs(&self) -> usize {
-        let lock = self.inner.read();
-        lock.indices.iter().map(|idx| idx.num_blobs()).sum()
-    }
-
-    /// Returns the total number of blobs in all indices (hot + cold).
-    pub fn num_blobs_total(&self) -> usize {
-        let lock = self.inner.read();
-        let hot: usize = lock.indices.iter().map(|idx| idx.num_blobs()).sum();
-        let cold: usize = lock.cold_metadata.iter().map(|meta| meta.blob_count).sum();
-        hot + cold
-    }
-
-    /// Returns `true` if the object ID is known either in a finalized index
-    /// or is currently a pending blob.
+    /// Returns the number of blobs held in the resident (in-RAM) indices.
     ///
-    /// In lazy mode, data/tree blobs that only live in cold indices return
-    /// `false`: they cannot be resolved exactly without a disk load, and a
-    /// bloom-only answer risks skipping the storage of a genuinely new blob.
-    /// Zero blobs are resolved exactly from cold metadata.
-    pub fn contains(&self, id: &ID) -> bool {
+    /// This is a *resident* count, not a repository-wide one: in lazy mode the
+    /// blobs of every cold index are excluded, so it under-reports the real
+    /// total and must not be used as a repository-wide blob count.
+    pub fn num_resident_blobs(&self) -> usize {
+        self.inner.read().resident_blobs()
+    }
+
+    /// Returns `true` if the object ID is known exactly, without any disk load.
+    ///
+    /// Covers pending blobs, the resident indices, and cold zero blobs (which
+    /// carry their locator in the lightweight metadata).
+    ///
+    /// In lazy mode a data/tree blob that lives *only* in a cold index returns
+    /// `false`. This is deliberate and is the safe direction for deduplication:
+    /// answering `true` from a bloom filter could skip storing a genuinely new
+    /// blob, whereas answering `false` merely re-sends a duplicate that the GC
+    /// collapses later. Callers that need an answer covering cold indices must
+    /// use the async [`Self::get`] (exact) or [`Self::might_contain`]
+    /// (no false negatives).
+    pub fn contains_exact(&self, id: &ID) -> bool {
         if self.pending_blobs.contains(id) {
             return true;
         }
@@ -1386,12 +1386,18 @@ impl MasterIndex {
         }
     }
 
-    /// Initializes a Bloom Filter for all blobs currently in the master index (hot only).
-    pub fn initialize_bloom_filter(&self, total_blobs: usize) {
+    /// Initializes the master Bloom Filter for the blobs currently resident in RAM.
+    ///
+    /// `resident_blobs` sizes the filter and must match the number of blobs
+    /// actually inserted below, otherwise the false-positive rate drifts from
+    /// the intended 1%. Cold indices are deliberately *not* included: they carry
+    /// their own per-file filters in [`IndexMetadata`], and loading every cold
+    /// index here to populate one global filter would defeat lazy mode.
+    pub fn initialize_bloom_filter(&self, resident_blobs: usize) {
         const BLOOM_FILTER_FALSE_POSITIVE_RATE: f64 = 0.01;
 
         let mut lock = self.inner.write();
-        let mut bf = BloomFilter::new(total_blobs, BLOOM_FILTER_FALSE_POSITIVE_RATE);
+        let mut bf = BloomFilter::new(resident_blobs, BLOOM_FILTER_FALSE_POSITIVE_RATE);
 
         for idx in &lock.indices {
             for (id, _) in idx.iter_ids() {
@@ -1413,17 +1419,17 @@ impl MasterIndex {
     /// encoding the same content both send it, producing duplicate footer
     /// entries for one blob while the index keeps a single entry — wasting
     /// space and confusing stats/GC.
+    ///
+    /// In lazy mode a data/tree blob that lives only in a cold index is *not*
+    /// recognised and gets written a second time. That is the safe direction:
+    /// the alternative — consulting the cold bloom filters — would skip roughly
+    /// 1% of genuinely new blobs, silently losing data. The resulting duplicate
+    /// costs pack space until a GC run collapses it.
     pub fn add_pending_blob(&self, id: ID) -> bool {
-        // Fast path: check if it's already in pending_blobs or in the index (read-only)
-        if self.pending_blobs.contains(&id) {
+        // Known already: pending, resident, or a cold zero blob (whose locator
+        // rides along in the metadata, so this stays exact and load-free).
+        if self.contains_exact(&id) {
             return false;
-        }
-
-        {
-            let lock = self.inner.read();
-            if lock.indices.iter().rev().any(|idx| idx.contains(&id)) {
-                return false;
-            }
         }
 
         // Try to insert into pending_blobs. This is sharded so it's low contention.
@@ -2256,11 +2262,11 @@ mod tests {
         let id1 = mock_id("blob1");
         let id2 = mock_id("blob2");
 
-        assert!(!mi.contains(&id1));
+        assert!(!mi.contains_exact(&id1));
 
         // Add pending blob
         assert!(mi.add_pending_blob(id1));
-        assert!(mi.contains(&id1));
+        assert!(mi.contains_exact(&id1));
         assert!(!mi.add_pending_blob(id1)); // Already exists
 
         // Add an index
@@ -2270,13 +2276,13 @@ mod tests {
         idx.add_pack(&pack_id, vec![b2.clone()]);
         mi.add_index(idx);
 
-        assert!(mi.contains(&id2));
+        assert!(mi.contains_exact(&id2));
         let loc = mi.get(&id2).await.unwrap();
         assert_eq!(loc.pack_id, pack_id);
 
         mi.clear();
-        assert!(!mi.contains(&id1));
-        assert!(!mi.contains(&id2));
+        assert!(!mi.contains_exact(&id1));
+        assert!(!mi.contains_exact(&id2));
     }
 
     #[tokio::test]
@@ -2307,9 +2313,9 @@ mod tests {
 
         // Verify initial state
         assert_eq!(mi.inner.read().indices.len(), 2);
-        assert!(mi.contains(&b1.id));
-        assert!(mi.contains(&b3.id));
-        assert!(mi.contains(&b4.id));
+        assert!(mi.contains_exact(&b1.id));
+        assert!(mi.contains_exact(&b3.id));
+        assert!(mi.contains_exact(&b4.id));
 
         // Perform cleanup with pack2 as obsolete
         let mut obsolete = IdSet::default();
@@ -2393,8 +2399,8 @@ mod tests {
         mi.initialize_bloom_filter(10);
         assert!(mi.inner.read().bloom_filter.is_some());
 
-        assert!(mi.contains(&b1.id));
-        assert!(!mi.contains(&b2.id));
+        assert!(mi.contains_exact(&b1.id));
+        assert!(!mi.contains_exact(&b2.id));
 
         // Adding an index should update the Bloom filter
         let mut idx2 = Index::new();
@@ -2402,7 +2408,7 @@ mod tests {
         idx2.add_pack(&pack2, vec![b2.clone()]);
         mi.add_index(idx2);
 
-        assert!(mi.contains(&b2.id));
+        assert!(mi.contains_exact(&b2.id));
     }
 
     #[tokio::test]
@@ -2551,7 +2557,7 @@ mod tests {
         mi.add_index(idx);
 
         // The pending blob should still be found
-        assert!(mi.contains(&id));
+        assert!(mi.contains_exact(&id));
     }
 
     #[test]
@@ -2604,14 +2610,14 @@ mod tests {
         idx.add_pack(&pack, vec![b.clone()]);
         mi.add_index(idx);
 
-        assert!(mi.contains(&id1));
-        assert!(mi.contains(&b.id));
+        assert!(mi.contains_exact(&id1));
+        assert!(mi.contains_exact(&b.id));
 
         mi.clear();
 
-        assert!(!mi.contains(&id1));
-        assert!(!mi.contains(&id2));
-        assert!(!mi.contains(&b.id));
+        assert!(!mi.contains_exact(&id1));
+        assert!(!mi.contains_exact(&id2));
+        assert!(!mi.contains_exact(&b.id));
     }
 
     #[test]
@@ -3078,7 +3084,7 @@ mod tests {
 
         // Zero blobs are exact from cold metadata, no disk load required.
         assert!(
-            mi.contains(&zero_id),
+            mi.contains_exact(&zero_id),
             "cold zero blobs are resolvable exactly"
         );
         let locator = mi
@@ -3139,8 +3145,8 @@ mod tests {
 
         mi.add_cold_metadata(meta);
 
-        assert!(mi.contains(&zero_a));
-        assert!(mi.contains(&zero_b));
+        assert!(mi.contains_exact(&zero_a));
+        assert!(mi.contains_exact(&zero_b));
         let locator = mi
             .get_data(&zero_a)
             .expect("cold zero blob from index file should resolve");
@@ -3483,6 +3489,20 @@ mod tests {
         (mi, index_map, loads)
     }
 
+    /// Repository-wide blob count across the resident indices *and* the cold
+    /// metadata.
+    ///
+    /// The public API deliberately exposes only the resident count (see
+    /// [`MasterIndex::num_resident_blobs`]), so tests that assert the lazy-mode
+    /// "no blob is lost between hot and cold" invariant compute it here from the
+    /// internals instead.
+    fn total_blob_count(mi: &MasterIndex) -> usize {
+        let lock = mi.inner.read();
+        let resident: usize = lock.indices.iter().map(Index::num_blobs).sum();
+        let cold: usize = lock.cold_metadata.iter().map(|m| m.blob_count).sum();
+        resident + cold
+    }
+
     /// Dedicated lazy-index-mode test: many index files so older ones fall out of
     /// the hot set, and a small blob budget so the hot pool cannot keep
     /// everything, forcing genuine cold reloads from the loader.
@@ -3491,8 +3511,12 @@ mod tests {
         const N: usize = 24;
         let (mi, _index_map, loads) = build_lazy_master(N, 4);
 
-        // Sanity: every blob is accounted for across hot + cold.
-        assert_eq!(mi.num_blobs_total(), N * 2, "every blob across hot+cold");
+        // Sanity: every blob is accounted for across resident + cold.
+        assert_eq!(
+            total_blob_count(&mi),
+            N * 2,
+            "every blob across resident+cold"
+        );
 
         // Every blob, hot or cold, must resolve to the correct pack regardless
         // of whether it is reached from cold metadata or a genuine disk reload.
@@ -3596,9 +3620,9 @@ mod tests {
         // Prove some indices really are cold, otherwise the assertions below
         // would pass trivially from the hot pool alone.
         assert!(
-            mi.num_blobs() < N * 2,
-            "budget must leave some indices cold (hot blobs: {})",
-            mi.num_blobs()
+            mi.num_resident_blobs() < N * 2,
+            "budget must leave some indices cold (resident blobs: {})",
+            mi.num_resident_blobs()
         );
 
         // for_each_pack_id must include the packs referenced only by cold indices.
@@ -3670,18 +3694,71 @@ mod tests {
             .expect("cold zero blob via get_data");
         assert_eq!(loc.blob_type, BlobType::Zero);
         assert_eq!(loc.raw_length, 12345);
-        assert!(mi.contains(&mock_id("lazy_zero_blob")));
+        assert!(mi.contains_exact(&mock_id("lazy_zero_blob")));
+    }
+
+    /// The lookup predicates deliberately disagree in lazy mode, and the
+    /// disagreement is load-bearing rather than a bug:
+    ///
+    /// * [`MasterIndex::might_contain`] has no false negatives and covers cold
+    ///   indices through their bloom filters. This is what `verify`, `copy` and
+    ///   `bundle` use, so a cold-only blob is never mistaken for a missing one.
+    /// * [`MasterIndex::contains_exact`] is exact but load-free, so a cold
+    ///   data/tree blob reports `false`. This is what deduplication uses, because
+    ///   answering `true` from a bloom filter would silently skip storing
+    ///   genuinely new blobs.
+    /// * [`MasterIndex::get`] is exact and complete, at the cost of a disk load.
+    ///
+    /// Cold *zero* blobs are the documented exception: their locator rides along
+    /// in the cold metadata, so the predicates agree (covered by
+    /// `test_lazy_mode_resolves_cold_zero_blob`).
+    #[tokio::test]
+    async fn test_lazy_mode_predicates_disagree_only_for_cold_data_blobs() {
+        const N: usize = 12;
+        let (mi, _index_map, _loads) = build_lazy_master(N, 4);
+
+        // Precondition: the budget really did push indices out of RAM.
+        assert!(
+            mi.num_resident_blobs() < N * 2,
+            "budget must leave some indices cold"
+        );
+
+        // Find a blob that lives only in a cold index.
+        let mut cold_data = None;
+        'outer: for i in 0..N {
+            for suffix in ["a", "b"] {
+                let id = mock_id(&format!("blob{i}_{suffix}"));
+                if !mi.contains_exact(&id) && mi.might_contain(&id) {
+                    cold_data = Some(id);
+                    break 'outer;
+                }
+            }
+        }
+        let cold_data = cold_data.expect("budget must leave a cold data blob");
+
+        assert!(
+            !mi.contains_exact(&cold_data),
+            "cold data blob is not resolvable exactly without a load"
+        );
+        assert!(
+            mi.might_contain(&cold_data),
+            "cold data blob must never be reported as absent"
+        );
+        assert!(
+            mi.get(&cold_data).await.is_some(),
+            "cold data blob resolves once its index is loaded"
+        );
     }
 
     /// Under a small blob budget the master index must remain fully consistent:
-    /// num_blobs_total, might_contain, and exact lookups agree over repeated
-    /// churn between hot and cold-index reloads.
+    /// the resident+cold blob total, `might_contain`, and exact lookups agree
+    /// over repeated churn between resident and cold-index reloads.
     #[tokio::test]
     async fn test_lazy_mode_consistency_under_budget_churn() {
         const N: usize = 20;
         let (mi, _index_map, _loads) = build_lazy_master(N, 3);
 
-        let total = mi.num_blobs_total();
+        let total = total_blob_count(&mi);
         assert_eq!(total, N * 2);
 
         let mut found = 0usize;

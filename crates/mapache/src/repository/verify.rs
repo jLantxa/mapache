@@ -379,78 +379,98 @@ async fn verify_pack_inline(
         ))
     })?;
 
-    tokio::task::spawn_blocking(move || {
-        let file_hash = ID::from_content(&raw_data);
-        let bit_rot = file_hash != pack_id;
+    // Hoisted: the blocking closure below captures `repo` by move, but the
+    // dangling count needs an async lookup once it returns.
+    let index = repo.index();
 
-        let pack_header = Packer::parse_footer(
-            &secure_storage,
-            &raw_data,
-            secure_storage.nonce_at_end(),
-            repo.repo_version(),
-        )?;
+    let (pack_header, verified_blobs, corrupt_blobs, bytes_processed, bit_rot) =
+        tokio::task::spawn_blocking(move || {
+            let file_hash = ID::from_content(&raw_data);
+            let bit_rot = file_hash != pack_id;
 
-        let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
-            .par_iter()
-            .fold(
-                || (0usize, Vec::new(), 0u64),
-                |(mut v, mut corrupt, mut bytes), desc| {
-                    // Zero blobs have no data in the pack (length=0); skip physical verification.
-                    if matches!(desc.blob_type, BlobType::Zero) {
-                        v += 1;
-                        return (v, corrupt, bytes);
-                    }
+            let pack_header = Packer::parse_footer(
+                &secure_storage,
+                &raw_data,
+                secure_storage.nonce_at_end(),
+                repo.repo_version(),
+            )?;
 
-                    let start = desc.offset as usize;
-                    let Some(end) = start.checked_add(desc.length as usize) else {
-                        corrupt.push(desc.id);
-                        return (v, corrupt, bytes);
-                    };
-
-                    if end > raw_data.len() {
-                        corrupt.push(desc.id);
-                        return (v, corrupt, bytes);
-                    }
-
-                    match secure_storage.decode_blob(&raw_data[start..end], desc.compressed) {
-                        Ok(plaintext) => {
-                            if ID::from_content(&plaintext) != desc.id {
-                                corrupt.push(desc.id);
-                            } else {
-                                v += 1;
-                            }
+            let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
+                .par_iter()
+                .fold(
+                    || (0usize, Vec::new(), 0u64),
+                    |(mut v, mut corrupt, mut bytes), desc| {
+                        // Zero blobs have no data in the pack (length=0); skip physical verification.
+                        if matches!(desc.blob_type, BlobType::Zero) {
+                            v += 1;
+                            return (v, corrupt, bytes);
                         }
-                        Err(_) => corrupt.push(desc.id),
-                    }
-                    bytes += desc.length as u64;
-                    (v, corrupt, bytes)
-                },
-            )
-            .reduce(
-                || (0, Vec::new(), 0),
-                |(v1, mut c1, b1), (v2, c2, b2)| {
-                    c1.extend(c2);
-                    (v1 + v2, c1, b1 + b2)
-                },
-            );
 
-        let index = repo.index();
-        let num_dangling = pack_header
-            .iter()
-            .filter(|b| !index.contains(&b.id))
-            .count();
+                        let start = desc.offset as usize;
+                        let Some(end) = start.checked_add(desc.length as usize) else {
+                            corrupt.push(desc.id);
+                            return (v, corrupt, bytes);
+                        };
 
-        Ok(PackStats {
-            dangling: num_dangling,
-            verified_blobs,
-            corrupt_blobs,
-            bytes_processed,
-            bit_rot,
-            repaired: false,
+                        if end > raw_data.len() {
+                            corrupt.push(desc.id);
+                            return (v, corrupt, bytes);
+                        }
+
+                        match secure_storage.decode_blob(&raw_data[start..end], desc.compressed) {
+                            Ok(plaintext) => {
+                                if ID::from_content(&plaintext) != desc.id {
+                                    corrupt.push(desc.id);
+                                } else {
+                                    v += 1;
+                                }
+                            }
+                            Err(_) => corrupt.push(desc.id),
+                        }
+                        bytes += desc.length as u64;
+                        (v, corrupt, bytes)
+                    },
+                )
+                .reduce(
+                    || (0, Vec::new(), 0),
+                    |(v1, mut c1, b1), (v2, c2, b2)| {
+                        c1.extend(c2);
+                        (v1 + v2, c1, b1 + b2)
+                    },
+                );
+
+            Ok::<_, MapacheError>((
+                pack_header,
+                verified_blobs,
+                corrupt_blobs,
+                bytes_processed,
+                bit_rot,
+            ))
         })
+        .await
+        .map_err(|e| MapacheError::task_panicked("verification", e))??;
+
+    // Exact resolution, deliberately: a bloom filter can false-positive, and a
+    // false positive here would hide a genuinely dangling blob — the one thing
+    // this count exists to find. `might_contain` is not enough; verify has to
+    // verify. Resident lookups short-circuit without a disk load, and a cold
+    // index is promoted at most once, so the extra cost is bounded by the number
+    // of distinct cold indices.
+    let mut num_dangling = 0usize;
+    for desc in &pack_header {
+        if index.get(&desc.id).await.is_none() {
+            num_dangling += 1;
+        }
+    }
+
+    Ok(PackStats {
+        dangling: num_dangling,
+        verified_blobs,
+        corrupt_blobs,
+        bytes_processed,
+        bit_rot,
+        repaired: false,
     })
-    .await
-    .map_err(|e| MapacheError::task_panicked("verification", e))?
 }
 
 /// Streaming path for packs > CHUNK_SIZE: read footer, then stream data in chunks,
@@ -636,10 +656,14 @@ async fn verify_pack_streaming(
 
     let bit_rot = bit_rot_hasher.finalize() != pack_id;
     let index = repo.index();
-    let num_dangling = pack_header
-        .iter()
-        .filter(|b| !index.contains(&b.id))
-        .count();
+    // Exact resolution, as in the inline path: a bloom false positive would hide
+    // a dangling blob.
+    let mut num_dangling = 0usize;
+    for blob in &pack_header {
+        if index.get(&blob.id).await.is_none() {
+            num_dangling += 1;
+        }
+    }
 
     Ok(PackStats {
         dangling: num_dangling,

@@ -488,12 +488,17 @@ async fn copy_snapshots(
 ) -> Result<(), CopyError> {
     let total_blobs = blob_list.len();
 
-    // Filter out blobs already present in destination
+    // Filter out blobs already present in destination.
+    // Exact resolution, not `might_contain`: a bloom false positive would make us
+    // skip a blob the destination genuinely lacks, leaving the copied snapshot
+    // referencing a blob that was never transferred.
     let dest_index = dst_repo.index();
-    let to_copy: Vec<(ID, BlobType)> = blob_list
-        .into_iter()
-        .filter(|(id, _)| !dest_index.contains(id))
-        .collect();
+    let mut to_copy: Vec<(ID, BlobType)> = Vec::with_capacity(blob_list.len());
+    for (id, blob_type) in blob_list {
+        if dest_index.get(&id).await.is_none() {
+            to_copy.push((id, blob_type));
+        }
+    }
 
     if to_copy.is_empty() {
         if !json_out && total_blobs > 0 {

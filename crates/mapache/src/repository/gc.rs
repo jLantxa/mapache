@@ -1688,7 +1688,7 @@ mod tests {
         plan.execute(noop_sender()).await?;
 
         assert!(
-            repo.index().contains(&zero_id),
+            repo.index().contains_exact(&zero_id),
             "referenced zero blob must survive the clean"
         );
         assert_eq!(
@@ -1714,11 +1714,11 @@ mod tests {
         plan.execute(noop_sender()).await?;
 
         assert!(
-            !repo.index().contains(&zero_id),
+            !repo.index().contains_exact(&zero_id),
             "unreferenced zero blob must be pruned from the index"
         );
         assert!(
-            !repo.index().contains(&data_id),
+            !repo.index().contains_exact(&data_id),
             "unreferenced data blob must be pruned from the index too"
         );
 

@@ -363,14 +363,21 @@ async fn scan_pack_footers(
                     if *entry > 1 {
                         // Same ID twice in this pack's footer.
                         scan.duplicate_blobs += 1;
-                    } else if !index.contains(&d.id) {
+                    } else if let Some(loc) = index.get(&d.id).await {
+                        if loc.pack_id != pack_id || loc.offset != d.offset {
+                            // Phantom: the authoritative copy lives in another pack
+                            // or at another offset.
+                            scan.duplicate_blobs += 1;
+                        }
+                    } else {
+                        // No persisted index entry, resident or cold. Both counters
+                        // compare a persisted pack footer against the persisted
+                        // index, so `contains_exact` would be wrong twice over: it
+                        // reports `false` for cold-only blobs, and it trusts the
+                        // in-memory `pending_blobs` set. The latter would mask a
+                        // genuinely missing blob, and make the answer depend on
+                        // whether a backup happens to be running in this process.
                         scan.dangling += 1;
-                    } else if let Some(loc) = index.get(&d.id).await
-                        && (loc.pack_id != pack_id || loc.offset != d.offset)
-                    {
-                        // Phantom: the authoritative copy lives in another pack
-                        // or at another offset.
-                        scan.duplicate_blobs += 1;
                     }
                     scan.blobs += 1;
                     scan.encoded_bytes = scan.encoded_bytes.saturating_add(d.length as u64);

@@ -1010,14 +1010,17 @@ async fn run_import_bundle(
         );
     }
 
-    // Filter blobs: only import those not already in the repo
+    // Filter blobs: only import those not already in the repo.
+    // Exact resolution, not `might_contain`: a bloom false positive would make us
+    // skip a blob the repo genuinely lacks, and the imported snapshot would then
+    // reference a blob that was never imported.
     let dest_index = repo.index();
-    let to_import: Vec<BundleIndexEntry> = bundle_index
-        .entries
-        .iter()
-        .filter(|entry| !dest_index.contains(&entry.id))
-        .cloned()
-        .collect();
+    let mut to_import: Vec<BundleIndexEntry> = Vec::with_capacity(bundle_index.entries.len());
+    for entry in &bundle_index.entries {
+        if dest_index.get(&entry.id).await.is_none() {
+            to_import.push(entry.clone());
+        }
+    }
 
     let skipped = total_blobs - to_import.len();
     let import_bytes: u64 = to_import.iter().map(|e| e.raw_length as u64).sum();

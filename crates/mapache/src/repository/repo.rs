@@ -1629,10 +1629,12 @@ impl Repository {
         tracing::info!(target: "repo", "Loaded {num_hot} hot + {num_cold} cold index files");
         ui::cli::verbose_1!("Loaded {} hot + {} cold index files", num_hot, num_cold);
 
-        let total_blobs = self.master_index.num_blobs();
-        if total_blobs > 0 {
-            tracing::debug!(target: "repo", "Initializing Bloom Filter for {} blobs", total_blobs);
-            self.master_index.initialize_bloom_filter(total_blobs);
+        // The master bloom filter only ever holds resident blobs (cold indices keep
+        // their own per-file filters), so size it from the resident count.
+        let resident_blobs = self.master_index.num_resident_blobs();
+        if resident_blobs > 0 {
+            tracing::debug!(target: "repo", "Initializing Bloom Filter for {} blobs", resident_blobs);
+            self.master_index.initialize_bloom_filter(resident_blobs);
         }
 
         Ok(())
@@ -1961,7 +1963,7 @@ mod tests {
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
         repo2.reload_master_index().await?;
 
-        assert!(repo2.index().contains(&id));
+        assert!(repo2.index().contains_exact(&id));
 
         let loaded = repo2.load_blob(&id).await?;
         assert_eq!(loaded, data);
@@ -2048,7 +2050,7 @@ mod tests {
     /// Regression test for the TOCTOU race in `encode_and_save_blob`.
     ///
     /// Many *OS threads* save the *same* content concurrently, gated by a
-    /// barrier so they all pass the `contains`/`add_pending_blob` gate at about
+    /// barrier so they all pass the `add_pending_blob` gate at about
     /// the same time, and use a large payload so the encoding window (between
     /// the gate and the packer send in the old buggy code) is wide. Before the
     /// fix, several threads could all send the same blob, producing duplicate

@@ -9,6 +9,12 @@
 - `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
   unreadable source items are omitted. The default behavior is unchanged.
 
+### Changed
+
+- Snapshot progress scanning now reads only node type, size, and filesystem
+  device metadata, avoiding extended attribute, file flag, and symlink target
+  queries. Snapshots continue to capture full metadata.
+
 ## v0.7.1 (2026-10-05)
 
 ### Fixed

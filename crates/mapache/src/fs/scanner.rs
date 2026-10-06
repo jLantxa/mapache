@@ -1,7 +1,10 @@
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use crate::{
-    fs::{filter::PathFilter, node::Node, tree::crosses_filesystem_boundary},
+    fs::{
+        filesystem::scan_metadata, filter::PathFilter, node::NodeType,
+        tree::crosses_filesystem_boundary,
+    },
     ui::events::{BackupEvent, Event, EventSender, emit_event},
 };
 
@@ -37,15 +40,14 @@ where
             continue;
         }
 
-        match Node::from_path_sync(&current, false) {
+        match scan_metadata(&current) {
             Ok(node) => {
-                if one_file_system && crosses_filesystem_boundary(parent_device, node.metadata.dev)
-                {
+                if one_file_system && crosses_filesystem_boundary(parent_device, node.dev) {
                     continue;
                 }
 
-                let size = if node.is_file() {
-                    node.metadata.size
+                let size = if node.node_type == NodeType::File {
+                    node.size
                 } else {
                     0
                 };
@@ -61,11 +63,15 @@ where
                     }),
                 );
 
-                if node.is_dir() {
-                    match std::fs::read_dir(&current) {
+                if node.node_type == NodeType::Directory {
+                    match std::fs::read_dir(&current).and_then(|entries| {
+                        entries
+                            .map(|entry| entry.map(|entry| entry.file_name()))
+                            .collect::<std::io::Result<Vec<_>>>()
+                    }) {
                         Ok(entries) => {
-                            for entry in entries.flatten() {
-                                stack.push_back((entry.path(), node.metadata.dev));
+                            for name in entries {
+                                stack.push_back((current.join(name), node.dev));
                             }
                         }
                         Err(e) => {

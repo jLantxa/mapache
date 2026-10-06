@@ -19,6 +19,7 @@ use crate::{
     common::error::{MapacheError, Result},
     common::{self, BlobType, ID, SaveID, traits::BlobSaver},
     fs::{
+        filesystem::open_for_sequential_read,
         node::Node,
         tree::{NodeDiff, StreamNode},
     },
@@ -544,52 +545,6 @@ fn store_small_file<R: Read>(
     );
 
     Ok((vec![id], bytes))
-}
-
-pub(crate) fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
-            .open(path)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::io::AsRawFd;
-
-        let file = std::fs::File::open(path)?;
-
-        // Try to set O_NOATIME to prevent updating the file's access time on read.
-        // This call fails when we're not the owner of the file or root, which is fine.
-        let fd = file.as_raw_fd();
-
-        let flags = unsafe {
-            // SAFETY: FFI call to fcntl to get current flags. fd is valid.
-            libc::fcntl(fd, libc::F_GETFL)
-        };
-        if flags >= 0 {
-            unsafe {
-                // SAFETY: FFI call to fcntl to set O_NOATIME. fd is valid.
-                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NOATIME);
-            }
-        }
-
-        // Inform the kernel that we will read this file sequentially.
-        // This triggers the kernel's internal read-ahead optimization.
-        unsafe {
-            // SAFETY: FFI call to posix_fadvise with a valid file descriptor.
-            libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-        }
-
-        Ok(file)
-    }
-    #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        std::fs::File::open(path)
-    }
 }
 
 #[cfg(test)]

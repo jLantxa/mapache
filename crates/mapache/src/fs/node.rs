@@ -432,7 +432,7 @@ impl Node {
         .map_err(|e| MapacheError::Internal(format!("metadata fetching panicked: {}", e)))?
     }
 
-    fn fetch_metadata_and_type_sync(
+    pub(crate) fn fetch_metadata_and_type_sync(
         path: &Path,
         follow_symlinks: bool,
         with_atime: bool,

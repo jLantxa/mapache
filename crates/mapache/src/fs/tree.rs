@@ -19,7 +19,10 @@ use crate::{
     backend::WriteContents,
     common::error::{MapacheError, Result},
     common::{BlobType, ID, SaveID, traits::BlobSaver},
-    fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
+    fs::{
+        calculate_lcp, filter::PathFilter, get_absolute_normalized_path, get_intermediate_paths,
+        node::Node,
+    },
     repository::repo::Repository,
 };
 
@@ -76,7 +79,6 @@ pub struct StreamNode {
 pub type StreamNodeInfo = (PathBuf, Result<StreamNode>);
 
 /// Internal traversal state for FSNodeStream.
-#[derive(Debug)]
 struct FSNodeState {
     /// Stack stores (shared_parent_path, entry_name, maybe_node) to avoid duplicating parent PathBufs.
     /// `maybe_node` is `Option<Result<Node>>`: `Some(Ok)` for pre-stated entries,
@@ -143,12 +145,16 @@ impl FSNodeStream {
                 use rayon::prelude::*;
                 paths
                     .into_par_iter()
-                    .filter(|path| filter.allow(path))
                     .map(|path| {
+                        let path = get_absolute_normalized_path(&path)?;
+                        if !filter.allow(&path) {
+                            return Ok(None);
+                        }
                         let node = Node::from_path_sync(&path, with_atime)?;
-                        Ok((path, node))
+                        Ok(Some((path, node)))
                     })
                     .collect::<Result<Vec<_>>>()
+                    .map(|nodes| nodes.into_iter().flatten().collect())
             })
             .await
             .map_err(|e| MapacheError::Internal(format!("path statting panicked: {}", e)))??
@@ -182,11 +188,7 @@ impl FSNodeStream {
 
         let mut stack = Vec::with_capacity(allowed_paths.len());
         for (p, node) in allowed_paths {
-            let parent = Arc::new(
-                p.parent()
-                    .map(|path| path.to_path_buf())
-                    .unwrap_or_default(),
-            );
+            let parent = Arc::new(p.parent().unwrap_or_else(|| Path::new("")).to_path_buf());
             let name = p.file_name().unwrap_or_default().to_os_string();
             stack.push((parent, name, Some(Ok(node))));
         }
@@ -217,7 +219,9 @@ impl FSNodeStream {
                     }
                     (Some(_), None) => true,
                     (None, Some(_)) => false,
-                    (Some((ip, _, _)), Some((parent, name, _))) => ip < &parent.join(name),
+                    (Some((ip, _, _)), Some((parent, name, _))) => {
+                        ip < &parent.join(name)
+                    }
                 };
 
                 if take_intermediate {
@@ -228,7 +232,12 @@ impl FSNodeStream {
                         let node_res = if let Some(n) = maybe_node {
                             Ok(n)
                         } else {
-                            Node::from_path(&path, with_atime).await
+                            let node_path = path.clone();
+                            tokio::task::spawn_blocking(move || {
+                                Node::from_path_sync(&node_path, with_atime)
+                            })
+                            .await
+                            .map_err(|e| MapacheError::Internal(format!("node creation panicked: {e}")))?
                         };
 
                         match node_res {
@@ -240,7 +249,7 @@ impl FSNodeStream {
                 }
 
                 let (parent, name, maybe_node) = state.stack.pop().expect("stack is non-empty (checked via take_intermediate)");
-                let path = parent.join(&name);
+                let path = parent.join(name);
                 if !state.filter.allow(&path) {
                     tracing::trace!(target: "fs", "Path excluded by filter: {:?}", path);
                     continue;
@@ -257,7 +266,14 @@ impl FSNodeStream {
                         yield (path, Err(e));
                         continue;
                     }
-                    None => match Node::from_path(&path, with_atime).await {
+                    None => match {
+                        let node_path = path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            Node::from_path_sync(&node_path, with_atime)
+                        })
+                        .await
+                        .map_err(|e| MapacheError::Internal(format!("node creation panicked: {e}")))?
+                    } {
                         Ok(n) => n,
                         Err(e) => {
                             yield (path, Err(e));
@@ -279,25 +295,24 @@ impl FSNodeStream {
                     let children_res = tokio::task::spawn_blocking(move || {
                         use rayon::prelude::*;
 
-                        let entries = std::fs::read_dir(&path_clone)
-                            .map_err(MapacheError::Io)?;
-
-                        // Collect entries into a vector to allow parallel processing.
-                        // We avoid stating everything here, just collecting the names and paths.
-                        let entries_vec: Vec<_> = entries.collect::<std::io::Result<Vec<_>>>()?;
+                        let entries = std::fs::read_dir(&path_clone)?
+                            .map(|entry| entry.map(|entry| entry.file_name()))
+                            .collect::<std::io::Result<Vec<_>>>()?;
 
                         // Stat children in parallel. A single child that fails to
                         // stat (e.g. permission denied) is kept as a per-path
                         // error and yielded further down so the consumer can warn
                         // the user, instead of dropping the whole directory or
                         // silently omitting the child from the snapshot.
-                        let mut children: Vec<(std::ffi::OsString, Result<Node>)> = entries_vec
+                        let mut children: Vec<(std::ffi::OsString, Result<Node>)> = entries
                             .into_par_iter()
-                            .filter(|entry| filter.allow(&entry.path()))
-                            .map(|entry| {
-                                let child_path = entry.path();
+                            .filter_map(|name| {
+                                let child_path = path_clone.join(&name);
+                                filter.allow(&child_path).then_some((name, child_path))
+                            })
+                            .map(|(name, child_path)| {
                                 let child_res = Node::from_path_sync(&child_path, with_atime);
-                                (entry.file_name(), child_res)
+                                (name, child_res)
                             })
                             .collect();
 
@@ -932,6 +947,37 @@ mod tests {
         std::fs::create_dir(root.join("dir_b"))?;
         std::fs::File::create(root.join("dir_b").join("file2"))?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_scanner_counts_items_and_bytes() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let root = temp_dir.path();
+        create_tree(root)?;
+        std::fs::write(root.join("dir_a/file0"), b"abc")?;
+        std::fs::write(root.join("dir_b/file2"), b"12345")?;
+
+        for one_file_system in [false, true] {
+            for exclude in [false, true] {
+                let excluded_paths = if exclude {
+                    vec![root.join("dir_a")]
+                } else {
+                    Vec::new()
+                };
+                let stats = crate::fs::scanner::scan_directories(
+                    &[root.to_path_buf()],
+                    Arc::new(PathFilter::new(None, Some(excluded_paths))),
+                    one_file_system,
+                    &crate::ui::events::noop_sender(),
+                    || false,
+                );
+
+                let expected_items = if exclude { 3 } else { 9 };
+                assert_eq!(stats.total_items, expected_items);
+                assert_eq!(stats.total_bytes, if exclude { 5 } else { 8 });
+            }
+        }
         Ok(())
     }
 

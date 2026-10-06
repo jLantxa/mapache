@@ -696,8 +696,11 @@ Migrates a repository from format v1 to v2. The migration performs four steps:
 4. **Update manifest** — The manifest version is updated to `2`, completing the
    migration atomically.
 
-After each step completes, old files are deleted. The migration is safe to
-interrupt — all new data is written before old data is removed.
+The original files are kept while the new packs, snapshots, and index are
+written. Updating the manifest is the migration's commit point; only after it
+succeeds are the old files removed. This makes the migration safe to interrupt:
+before the commit point, the original repository remains intact, and after it,
+the repository uses the new format.
 
 | Flag | Description |
 |---|---|
@@ -1075,7 +1078,7 @@ Prints the contents of a single file from a snapshot to stdout. The
 
 ---
 
-### `cat` — Print Raw Repository Objects
+### `cat` — Print Repository Objects
 
 ```bash
 mapache cat manifest -r <URL>
@@ -1088,8 +1091,10 @@ mapache cat key:ID -r <URL>
 mapache cat lock:ID -r <URL>
 ```
 
-Prints the raw JSON content of repository objects. Useful for debugging and
-manual inspection.
+Prints a decoded representation of the selected repository object, which is
+useful for debugging and manual inspection. Structured objects are printed as
+JSON; `blob:ID` prints the blob as UTF-8 text and fails if its contents are not
+valid UTF-8. This is not the raw on-disk representation.
 
 ---
 

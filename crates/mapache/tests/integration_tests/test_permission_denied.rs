@@ -50,6 +50,47 @@ mod tests {
         let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 
+        let result = ctx
+            .snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .root(true)
+            .fail_on_skipped(true)
+            .run(&ctx.global)
+            .await;
+        assert!(
+            result.is_err(),
+            "strict snapshot should fail on skipped items"
+        );
+        assert_eq!(
+            utils::count_files(&snapshots_dir)?,
+            1,
+            "strict snapshot must not save snapshot metadata"
+        );
+
+        let mut dir_perms = std::fs::metadata(&inaccessible_dir)?.permissions();
+        dir_perms.set_mode(0o755);
+        std::fs::set_permissions(&inaccessible_dir, dir_perms)?;
+
+        let file_path = inaccessible_dir.join("file2.txt");
+        let mut file_perms = std::fs::metadata(&file_path)?.permissions();
+        file_perms.set_mode(0o000);
+        std::fs::set_permissions(&file_path, file_perms)?;
+
+        let result = ctx
+            .snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .root(true)
+            .fail_on_skipped(true)
+            .run(&ctx.global)
+            .await;
+        assert!(
+            result.is_err(),
+            "strict snapshot should fail on unreadable files"
+        );
+        assert_eq!(
+            utils::count_files(&snapshots_dir)?,
+            1,
+            "strict snapshot must not save snapshot metadata"
+        );
+
         Ok(())
     }
 }

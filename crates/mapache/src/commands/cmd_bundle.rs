@@ -460,6 +460,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
                 .join(", ")
         )),
         no_scan: false,
+        fail_on_skipped: false,
         with_atime: false,
         stdin: false,
     };

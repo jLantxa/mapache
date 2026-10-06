@@ -6,7 +6,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
 };
@@ -83,6 +83,7 @@ pub(crate) struct ItemContext<'a> {
     pub progress: &'a SnapshotProgress,
     pub event_sender: &'a EventSender,
     pub shutdown_signal: &'a AtomicBool,
+    pub skipped_items: &'a AtomicU64,
     pub bufs: Option<&'a mut ReusableBuffers>,
 }
 
@@ -218,6 +219,7 @@ pub(crate) fn process_item_sync(
                         next.node.metadata.size = bytes_stored;
                     }
                     Err(e) => {
+                        ctx.skipped_items.fetch_add(1, Ordering::Relaxed);
                         emit_event(
                             ctx.event_sender,
                             Event::Backup(BackupEvent::Warning(format!(

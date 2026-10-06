@@ -21,6 +21,8 @@ undocumented_unsafe_blocks = "deny"
 
 [workspace.package]
 repository = "https://github.com/jlantxa/mapache"
+homepage = "https://jlantxa.github.io/mapache/"
+documentation = "https://jlantxa.github.io/mapache/"
 
 [profile.dev]
 opt-level = 1

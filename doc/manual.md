@@ -82,6 +82,28 @@ Download binaries from the
 Linux and Windows binaries are statically linked and require no dependencies;
 macOS binaries link Apple's system libraries.
 
+### Install from crates.io
+
+```bash
+cargo install mapache
+```
+
+Builds the latest published version from source and links it against your
+system's libraries (glibc on Linux, system frameworks on macOS). Requires
+the [Rust toolchain](https://rustup.rs/) and a C toolchain, but no other
+build dependencies. To install a specific version:
+
+```bash
+cargo install mapache --version 0.7.1
+```
+
+> **macOS:** the `mount` feature needs FUSE on your machine, which is up
+> to you to install — `brew install --cask macfuse`. This is the same deal
+> as Linux, where mounting needs the system's `fuse3` package. macFUSE is
+> required both to build and to run; without it, install without mount:
+> `cargo install mapache --no-default-features`. The pre-built binaries
+> include `mount` and only need macFUSE at runtime.
+
 ### Build from Source
 
 Requires the [Rust toolchain](https://rustup.rs/).
@@ -102,9 +124,10 @@ make release-static
 
 ### Feature Flags
 
-- `mount` (default on Linux) — FUSE mount support. Requires `libfuse` headers at
-  build time.
-
+- `mount` (default) — FUSE mount support (Unix). FUSE is a user-provided
+  prerequisite: Linux needs the `fuse3` package (the `fusermount` helper
+  is used at runtime); macOS needs macFUSE (`brew install --cask macfuse`),
+  both to build and to run.
 
 To build without FUSE:
 
@@ -120,7 +143,9 @@ cargo build --release --all-features
 
 ### Docker
 
-A multi-stage Dockerfile is included in the repository root.
+A Docker image with all cross-compilation toolchains is available at
+[`tools/docker/`](https://github.com/jlantxa/mapache/tree/main/tools/docker).
+See the README or CONTRIBUTING for usage.
 
 ---
 

@@ -59,38 +59,53 @@ before opening the PR. I may ask you to explain or modify your approach.
 
 ### Running Tests
 
-```bash
-# All tests
-cargo test
+CI runs the following, so please run them locally before opening a PR:
 
-# Without FUSE mount tests (macOS CI, or systems without FUSE)
-cargo test -- --skip integration_tests::test_cmd_mount
+```bash
+# All tests (Linux/Windows, same as CI)
+cargo test --locked
+
+# macOS: build without the FUSE `mount` feature
+cargo test --locked --no-default-features
 ```
 
 ### Building with Docker
 
-A multi-stage Dockerfile is provided for contributors. To build with your
-local changes:
+A Docker image with all cross-compilation toolchains is provided for
+contributors. Build the image once:
 
 ```bash
-sudo docker build --build-arg BUILD_SOURCE=local -t mapache-builder .
+docker build -t mapache-builder tools/docker
 ```
 
-This builds mapache for all supported targets (Linux x64/ARM/ARMv7, Windows,
-macOS) and runs tests inside the container. Useful to verify your changes
-compile on all platforms without setting up cross-compilation toolchains.
-
-To build and also extract the built binaries:
+Build your local changes for a single target (the project directory is
+mounted into the container):
 
 ```bash
-sudo python3 build_with_docker.py --local
+docker run --rm -v "$(pwd)":/mapache mapache-builder \
+  sh /build-target.sh x86_64-unknown-linux-musl \
+    "-C target-feature=+crt-static" "" build
 ```
+
+Or build every supported target (Linux/ARM, Android, Windows, macOS) with
+the helper script, which packs the results under `build/`:
+
+```bash
+python3 tools/docker/build.py --ref <label>                  # all targets
+python3 tools/docker/build.py --ref <label> --target linux   # subset
+```
+
+Useful to verify your changes compile on all platforms without setting up
+cross-compilation toolchains. Note that `--ref` only names the output
+directory — the build always compiles your current working tree, not a git
+tag.
 
 ### Feature Flags
 
-- `mount` (default on Linux) — FUSE mount support. Requires `libfuse-dev` to
-  build.
-
+- `mount` (default) — FUSE mount support (Unix). To build with it on macOS
+  you need macFUSE installed (`brew install --cask macfuse`); Linux needs
+  no headers to build — only the `fuse3` package at runtime, when using
+  `mount`.
 
 ```bash
 cargo build --no-default-features   # without mount

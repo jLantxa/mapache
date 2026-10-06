@@ -1,6 +1,9 @@
 # mapache — Fast, Encrypted, Deduplicating Backup Tool
 
-![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
+[![CI](https://github.com/jLantxa/mapache/actions/workflows/main.yaml/badge.svg)](https://github.com/jLantxa/mapache/actions/workflows/main.yaml)
+[![crates.io](https://img.shields.io/crates/v/mapache)](https://crates.io/crates/mapache)
+[![License](https://img.shields.io/crates/l/mapache)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-mdBook-blue)](https://jlantxa.github.io/mapache/)
 
 `mapache` (Spanish for raccoon 🦝) is a high-performance, deduplicating backup
 tool designed for speed, reliability, and uncompromising security. Inspired by
@@ -12,7 +15,7 @@ approach to incremental backups.
 Mapache is a feature-complete backup solution. While the architecture is
 designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
-their own validation before relying it for primary backups.
+their own validation before relying on it for primary backups.
 
 > **⚠️ Repository format v1 is deprecated:** Support for the v1 repository
 > format is deprecated and will be completely removed in future releases. New
@@ -25,7 +28,7 @@ their own validation before relying it for primary backups.
 
 ## Documentation
 
-Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.github.io/mapache/)**.
+Full documentation is available at **[jlantxa.github.io/mapache](https://jlantxa.github.io/mapache/)**.
 
 - [Manual](https://jlantxa.github.io/mapache/manual.html) — complete usage reference
 - [Design](https://jlantxa.github.io/mapache/design_v2.html) — repository format and architecture
@@ -39,9 +42,11 @@ Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.githu
   and machines. Only new data is stored.
 - **Encryption:** AES-256-GCM-SIV with Argon2id key derivation. Data is
   never stored or transmitted in the clear.
-- **Zero-config operation:** single self-contained binary with no runtime
-  dependencies (statically linked on Linux and Windows; macOS binaries link
-  Apple's system libraries). Point it at a directory and run.
+- **Zero-config operation:** single self-contained release binary with
+  no runtime dependencies (statically linked on Linux and Windows; macOS
+  binaries link Apple's system libraries). Point it at a directory and
+  run. Binaries built from source with `cargo build` link your system's
+  libraries instead.
 - **Backends:** local filesystem, SFTP, and S3-compatible object storage.
 - **Terminal UI:** interactive TUI with dashboard, snapshot and restore
   wizards, file explorer, diff viewer, and search across snapshots.
@@ -103,29 +108,64 @@ Workloads:
 
 ### Installation
 
-**Quick install** (Linux, macOS, Windows):
+**Option 1 — Pre-built binaries (recommended)** (Linux, macOS, Windows,
+Android):
 
 ```bash
 curl -fsSL https://github.com/jlantxa/mapache/raw/main/tools/install.sh | sh
 ```
 
-Or compile from source with the [Rust toolchain]:
+Binary builds are also available on the
+[Releases page](https://github.com/jlantxa/mapache/releases). Linux and
+Windows binaries are statically linked and fully self-contained — no
+runtime dependencies to install, and they run on any Linux distro or
+modern Windows. macOS binaries link Apple's system libraries. Use this
+when you want to be up and running in seconds, or need a binary to
+deploy on a machine that has no build toolchain.
+
+**Option 2 — Install from crates.io**:
+
+```bash
+cargo install mapache
+```
+
+Builds the latest published version from source and links against your
+system's libraries (glibc on Linux, system frameworks on macOS). Requires
+the [Rust toolchain] and a C toolchain, but no other build dependencies.
+Prefer this when you want a specific version (`--version 0.7.1`), rebuild
+regularly, or prefer to audit and control exactly what the binary links
+against.
+
+> **macOS:** the default `mount` feature needs FUSE on your machine, which
+> is up to you to install — `brew install --cask macfuse`. This is the same
+> deal as Linux, where mounting needs the system's `fuse3` package. macFUSE
+> is required both to build and to run; without it, build without mount:
+> `cargo install mapache --no-default-features`. Pre-built binaries (Option 1)
+> include `mount` and only need macFUSE at runtime.
+
+**Option 3 — Build from source**:
 
 [Rust toolchain]: https://rustup.rs/
 
 ```bash
+# Development build
 cargo build --release
+
+# Install a local build into your cargo bin path
 cargo install --path crates/mapache
+
+# Fully static, self-contained build (Linux/Windows)
+make release-static
 ```
 
-`cargo build` compiles binaries with some dynamically linked dependencies.
-While this is fine for testing and development on the same hardware, if
-you need a statically linked binary (which I strongly recommend for
-portability), run `make release-static` or use the binaries provided in
-the `Releases` page for a specific released version.
+`cargo build` compiles a binary linked against your system's libraries.
+This is fine for testing and development on the same hardware; for a
+portable static binary, run `make release-static` or use Option 1.
 
-> **Note for Linux users:** The `mount` command requires FUSE development
-> headers (e.g., `libfuse-dev`). To build without FUSE support, use
+> **Feature flags:** `mount` is enabled by default (Unix). The FUSE
+> support on your system is a user-provided prerequisite — Linux needs the
+> `fuse3` package (uses the `fusermount` helper at runtime); macOS needs
+> macFUSE, both to build and to run. To build without it, use
 > `--no-default-features`.
 
 ### Quick Start

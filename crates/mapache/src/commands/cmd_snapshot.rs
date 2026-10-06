@@ -132,6 +132,10 @@ pub struct CmdArgs {
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub no_scan: Option<bool>,
 
+    /// Do not descend into a different filesystem
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    pub one_file_system: Option<bool>,
+
     /// Fail instead of saving a snapshot when source items are skipped
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub fail_on_skipped: Option<bool>,
@@ -185,6 +189,7 @@ impl CmdArgs {
             description: Some("Daily backup".to_string()),
             no_parent: false,
             no_scan: Some(false),
+            one_file_system: Some(false),
             fail_on_skipped: Some(false),
             skip_if_unchanged: Some(false),
             parent: Some(crate::commands::UseSnapshot::Latest),
@@ -215,6 +220,7 @@ impl Merge for CmdArgs {
         // skip: no_parent
 
         merge_opt(&mut self.no_scan, other.no_scan);
+        merge_opt(&mut self.one_file_system, other.one_file_system);
         merge_opt(&mut self.fail_on_skipped, other.fail_on_skipped);
         merge_opt(&mut self.skip_if_unchanged, other.skip_if_unchanged);
         merge_opt(&mut self.parent, other.parent);
@@ -248,6 +254,7 @@ pub struct SnapshotRunOptions {
     pub tags: Option<String>,
     pub description: Option<String>,
     pub no_scan: bool,
+    pub one_file_system: bool,
     pub fail_on_skipped: bool,
     pub skip_if_unchanged: bool,
     pub with_atime: bool,
@@ -266,6 +273,7 @@ impl From<&CmdArgs> for SnapshotRunOptions {
             tags: args.tags_str.clone(),
             description: args.description.clone(),
             no_scan: args.no_scan.unwrap_or(false),
+            one_file_system: args.one_file_system.unwrap_or(false),
             fail_on_skipped: args.fail_on_skipped.unwrap_or(false),
             skip_if_unchanged: args.skip_if_unchanged.unwrap_or(false),
             with_atime: args.with_atime.unwrap_or(false),
@@ -636,6 +644,7 @@ pub(crate) async fn run_with_repo(
             tags,
             description: options.description.clone(),
             no_scan,
+            one_file_system: options.one_file_system,
             fail_on_skipped: options.fail_on_skipped,
             with_atime,
             stdin,

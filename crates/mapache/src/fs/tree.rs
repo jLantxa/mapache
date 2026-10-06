@@ -87,6 +87,7 @@ struct FSNodeState {
     intermediate_paths: Vec<(PathBuf, usize, Option<Node>)>,
     filter: Arc<PathFilter>,
     with_atime: bool,
+    one_file_system: bool,
     skipped_items: Option<Arc<AtomicU64>>,
 }
 
@@ -104,22 +105,31 @@ impl FSNodeStream {
         exclude_paths: Vec<PathBuf>,
         with_atime: bool,
     ) -> Result<Self> {
-        Self::from_paths_inner(paths, exclude_paths, with_atime, None).await
+        Self::from_paths_inner(paths, exclude_paths, with_atime, false, None).await
     }
 
     pub(crate) async fn from_paths_tracking_skips(
         paths: Vec<PathBuf>,
         exclude_paths: Vec<PathBuf>,
         with_atime: bool,
+        one_file_system: bool,
         skipped_items: Arc<AtomicU64>,
     ) -> Result<Self> {
-        Self::from_paths_inner(paths, exclude_paths, with_atime, Some(skipped_items)).await
+        Self::from_paths_inner(
+            paths,
+            exclude_paths,
+            with_atime,
+            one_file_system,
+            Some(skipped_items),
+        )
+        .await
     }
 
     async fn from_paths_inner(
         paths: Vec<PathBuf>,
         exclude_paths: Vec<PathBuf>,
         with_atime: bool,
+        one_file_system: bool,
         skipped_items: Option<Arc<AtomicU64>>,
     ) -> Result<Self> {
         tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?}, with_atime: {})", paths, exclude_paths, with_atime);
@@ -143,6 +153,16 @@ impl FSNodeStream {
             .await
             .map_err(|e| MapacheError::Internal(format!("path statting panicked: {}", e)))??
         };
+
+        if one_file_system
+            && allowed_paths
+                .iter()
+                .any(|(_, node)| node.metadata.dev.is_none())
+        {
+            return Err(MapacheError::Config(
+                "--one-file-system requires filesystem device IDs, which are unavailable for one or more source paths".to_string(),
+            ));
+        }
 
         let mut allowed_paths = allowed_paths;
 
@@ -176,6 +196,7 @@ impl FSNodeStream {
             intermediate_paths,
             filter,
             with_atime,
+            one_file_system,
             skipped_items,
         };
 
@@ -251,6 +272,8 @@ impl FSNodeStream {
                     let filter = state.filter.clone();
                     let path_clone = path.clone();
                     let with_atime = state.with_atime;
+                    let one_file_system = state.one_file_system;
+                    let parent_device = node.metadata.dev;
 
                     tracing::trace!(target: "fs", "Scanning directory: {:?}", path);
                     let children_res = tokio::task::spawn_blocking(move || {
@@ -277,6 +300,15 @@ impl FSNodeStream {
                                 (entry.file_name(), child_res)
                             })
                             .collect();
+
+                        if one_file_system {
+                            children.retain(|(_, child_res)| match child_res {
+                                Ok(child) => {
+                                    !crosses_filesystem_boundary(parent_device, child.metadata.dev)
+                                }
+                                Err(_) => true,
+                            });
+                        }
 
                         children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
                         Ok::<_, MapacheError>(children)
@@ -336,6 +368,26 @@ impl Stream for FSNodeStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+pub(crate) fn crosses_filesystem_boundary(
+    parent_device: Option<u64>,
+    child_device: Option<u64>,
+) -> bool {
+    matches!((parent_device, child_device), (Some(parent), Some(child)) if parent != child)
+}
+
+#[cfg(test)]
+mod filesystem_boundary_tests {
+    use super::crosses_filesystem_boundary;
+
+    #[test]
+    fn detects_only_known_different_devices() {
+        assert!(crosses_filesystem_boundary(Some(1), Some(2)));
+        assert!(!crosses_filesystem_boundary(Some(1), Some(1)));
+        assert!(!crosses_filesystem_boundary(None, Some(2)));
+        assert!(!crosses_filesystem_boundary(Some(1), None));
     }
 }
 

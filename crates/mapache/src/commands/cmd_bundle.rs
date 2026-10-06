@@ -460,6 +460,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
                 .join(", ")
         )),
         no_scan: false,
+        one_file_system: false,
         fail_on_skipped: false,
         with_atime: false,
         stdin: false,
@@ -486,6 +487,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         false,
         snapshot_options.absolute_source_paths.clone(),
         exclude_paths.clone(),
+        false,
         status.clone(),
         event_sender.clone(),
     );

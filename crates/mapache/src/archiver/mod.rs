@@ -74,6 +74,8 @@ pub struct SnapshotOptions<'a> {
     pub description: Option<String>,
     /// If true, skip the initial filesystem scan (estimated progress will be less accurate).
     pub no_scan: bool,
+    /// If true, do not traverse entries on a different filesystem.
+    pub one_file_system: bool,
     /// If true, fail when one or more source items are omitted.
     pub fail_on_skipped: bool,
     /// If true, store the access time (atime) for all files and directories.
@@ -401,6 +403,7 @@ pub(crate) fn spawn_scanner_task(
     no_scan: bool,
     absolute_source_paths: Vec<PathBuf>,
     exclude_paths: Vec<PathBuf>,
+    one_file_system: bool,
     status: Arc<PipelineStatus>,
     event_sender: EventSender,
 ) -> tokio::task::JoinHandle<()> {
@@ -414,6 +417,7 @@ pub(crate) fn spawn_scanner_task(
         let handle = spawn_background_scanner(
             absolute_source_paths,
             exclude_paths,
+            one_file_system,
             event_sender,
             move || status_clone.is_failed() || status_clone.is_finished(),
         );
@@ -463,6 +467,7 @@ pub(crate) async fn snapshot(
             snapshot_options.no_scan,
             snapshot_options.absolute_source_paths.clone(),
             snapshot_options.exclude_paths.clone(),
+            snapshot_options.one_file_system,
             status.clone(),
             event_sender.clone(),
         ))
@@ -520,6 +525,7 @@ pub(crate) async fn snapshot(
             snapshot_options.absolute_source_paths.clone(),
             snapshot_options.exclude_paths.clone(),
             snapshot_options.with_atime,
+            snapshot_options.one_file_system,
             status.skipped_items.clone(),
         )
         .await?;
@@ -709,6 +715,7 @@ mod tests {
                 tags: BTreeSet::new(),
                 description: None,
                 no_scan: false,
+                one_file_system: false,
                 fail_on_skipped: false,
                 with_atime: false,
                 stdin: false,
@@ -742,6 +749,7 @@ mod tests {
                 tags: BTreeSet::new(),
                 description: None,
                 no_scan: false,
+                one_file_system: false,
                 fail_on_skipped: false,
                 with_atime: false,
                 stdin: false,
@@ -820,6 +828,7 @@ mod tests {
             tags: BTreeSet::new(),
             description: None,
             no_scan: false,
+            one_file_system: false,
             fail_on_skipped: false,
             with_atime: false,
             stdin: false,
@@ -927,6 +936,7 @@ mod tests {
             tags: BTreeSet::new(),
             description: None,
             no_scan: false,
+            one_file_system: false,
             fail_on_skipped: false,
             with_atime: false,
             stdin: false,
@@ -1151,6 +1161,7 @@ mod tests {
                 tags: BTreeSet::new(),
                 description: Some("stdin test snapshot".to_string()),
                 no_scan: true,
+                one_file_system: false,
                 fail_on_skipped: false,
                 with_atime: false,
                 stdin: true,

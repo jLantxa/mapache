@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use crate::{
-    fs::{filter::PathFilter, node::Node},
+    fs::{filter::PathFilter, node::Node, tree::crosses_filesystem_boundary},
     ui::events::{BackupEvent, Event, EventSender, emit_event},
 };
 
@@ -16,6 +16,7 @@ pub struct ScanStats {
 pub fn scan_directories<F>(
     paths: &[PathBuf],
     filter: Arc<PathFilter>,
+    one_file_system: bool,
     event_sender: &EventSender,
     mut is_cancelled: F,
 ) -> ScanStats
@@ -24,9 +25,10 @@ where
 {
     let mut scan_items = 0u64;
     let mut scan_bytes = 0u64;
-    let mut stack: VecDeque<PathBuf> = paths.iter().cloned().collect();
+    let mut stack: VecDeque<(PathBuf, Option<u64>)> =
+        paths.iter().cloned().map(|path| (path, None)).collect();
 
-    while let Some(current) = stack.pop_front() {
+    while let Some((current, parent_device)) = stack.pop_front() {
         if is_cancelled() {
             break;
         }
@@ -37,6 +39,11 @@ where
 
         match Node::from_path_sync(&current, false) {
             Ok(node) => {
+                if one_file_system && crosses_filesystem_boundary(parent_device, node.metadata.dev)
+                {
+                    continue;
+                }
+
                 let size = if node.is_file() {
                     node.metadata.size
                 } else {
@@ -58,7 +65,7 @@ where
                     match std::fs::read_dir(&current) {
                         Ok(entries) => {
                             for entry in entries.flatten() {
-                                stack.push_back(entry.path());
+                                stack.push_back((entry.path(), node.metadata.dev));
                             }
                         }
                         Err(e) => {
@@ -93,6 +100,7 @@ where
 pub fn spawn_background_scanner<F>(
     paths: Vec<PathBuf>,
     exclude_paths: Vec<PathBuf>,
+    one_file_system: bool,
     event_sender: EventSender,
     is_cancelled: F,
 ) -> tokio::task::JoinHandle<std::result::Result<ScanStats, String>>
@@ -105,7 +113,7 @@ where
         let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
         let sender = event_sender.clone();
         let res = tokio::task::spawn_blocking(move || {
-            scan_directories(&paths, filter, &sender, is_cancelled)
+            scan_directories(&paths, filter, one_file_system, &sender, is_cancelled)
         })
         .await;
 

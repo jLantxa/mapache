@@ -461,6 +461,7 @@ impl SnapshotBuilder {
                 no_parent: false,
                 skip_if_unchanged: Some(false),
                 no_scan: Some(false),
+                one_file_system: Some(false),
                 fail_on_skipped: Some(false),
                 parent: Some(UseSnapshot::Latest),
                 num_readers: Some(2),
@@ -500,6 +501,11 @@ impl SnapshotBuilder {
 
     pub fn fail_on_skipped(mut self, fail: bool) -> Self {
         self.args.fail_on_skipped = Some(fail);
+        self
+    }
+
+    pub fn one_file_system(mut self, one_file_system: bool) -> Self {
+        self.args.one_file_system = Some(one_file_system);
         self
     }
 

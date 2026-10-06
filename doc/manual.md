@@ -353,6 +353,7 @@ index-mode = "eager"
 paths = ["/home/user/Documents"]
 exclude = ["**/node_modules", "**/.git"]
 tags = "work,important"
+one-file-system = false
 fail-on-skipped = false
 skip-if-unchanged = false
 readers = 4
@@ -735,6 +736,7 @@ shared content across all of them.
 | `--description <TEXT>` | Snapshot description |
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
 | `--no-scan` | Skip the initial file system scan |
+| `--one-file-system` | Do not descend into entries on another filesystem (Unix; errors if device IDs are unavailable) |
 | `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
@@ -743,6 +745,10 @@ shared content across all of them.
 | `--dry-run` | Simulate the backup without storing any data |
 | `--stdin` | Read backup data from stdin as a single file at `/stdin`. Mutually exclusive with paths, excludes, and parent snapshot |
 | `--with-atime` | Store file access times (off by default; may increase metadata size) |
+
+With `--one-file-system`, each explicitly supplied source path starts its own
+filesystem boundary. Entries on another device are not traversed. The option
+requires filesystem device IDs and is currently supported on Unix.
 
 ### Exclusions
 
@@ -1716,6 +1722,7 @@ mapache snapshot [PATHS...] -r <URL>
   --description <TEXT>    Snapshot description
   --no-parent             Force complete analysis (no parent diff)
   --no-scan               Skip the initial file system scan
+  --one-file-system       Do not descend into a different filesystem (Unix)
   --fail-on-skipped       Fail if any source item is skipped
   --skip-if-unchanged     Skip saving if no changes detected
   --parent <ID|latest>    Use specific parent snapshot

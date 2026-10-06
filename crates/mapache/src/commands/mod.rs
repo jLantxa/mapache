@@ -240,7 +240,7 @@ pub struct CliGlobalArgs {
     )]
     pub limit_download: Option<u64>,
 
-    /// Index loading mode: eager (load all, ~50 bytes/blob) or lazy (hot+cold, ~2 bytes/blob)
+    /// Index loading mode: eager (load all indices in memory) or lazy (load indices on demand)
     #[clap(long = "index-mode", value_parser = parse_index_mode)]
     #[serde(rename = "index-mode")]
     pub index_mode: Option<IndexMode>,

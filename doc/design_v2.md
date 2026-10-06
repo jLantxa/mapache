@@ -758,21 +758,21 @@ bundle password (not the repository key).
 ### Bundle layout
 
 ```text
-┌─────────────────────────────────┐
-│ BundleHeader (58 bytes, plain)  │
-├─────────────────────────────────┤
-│ Encrypted blob data sections... │
-├─────────────────────────────────┤
-│ Encrypted ECC section (optional)  │
-├─────────────────────────────────┤
-│ Encrypted BundleIndex           │
-├─────────────────────────────────┤
-│ Encrypted Manifest              │
-├─────────────────────────────────┤
-│ Encrypted BundleTrailer         │
-├─────────────────────────────────┤
-│ Trailer size (u32, LE, plain)   │
-└─────────────────────────────────┘
+┌──────────────────────────────────┐
+│ BundleHeader (58 bytes, plain)   │
+├──────────────────────────────────┤
+│ Encrypted blob data sections...  │
+├──────────────────────────────────┤
+│ Encrypted ECC section (optional) │
+├──────────────────────────────────┤
+│ Encrypted BundleIndex            │
+├──────────────────────────────────┤
+│ Encrypted Manifest               │
+├──────────────────────────────────┤
+│ Encrypted BundleTrailer          │
+├──────────────────────────────────┤
+│ Trailer size (u32, LE, plain)    │
+└──────────────────────────────────┘
 ```
 
 The header and trailer size are stored unencrypted to allow efficient random

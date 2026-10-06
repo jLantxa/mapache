@@ -236,7 +236,7 @@ impl DashboardScreen {
             name.len() + THIS_MAPACHE_VERSION.len(),
             self.stats.total.to_string().len() + SNAPSHOTS_SUFFIX.len(),
         ) as u16;
-        let row_constraint = std::cmp::min(needed + 1, LENGTH_MAX);
+        let row_constraint = std::cmp::min(needed + 2, LENGTH_MAX);
 
         let bg = Block::default().style(Style::new().bg(theme::THEME.surface));
         frame.render_widget(&bg, area);

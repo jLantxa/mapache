@@ -1,6 +1,9 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64},
+    },
     thread,
 };
 
@@ -23,6 +26,7 @@ pub(crate) struct ChunkerJob {
     pub progress: Arc<SnapshotProgress>,
     pub event_sender: EventSender,
     pub shutdown_signal: Arc<AtomicBool>,
+    pub skipped_items: Arc<AtomicU64>,
     pub is_stdin: bool,
 }
 
@@ -73,6 +77,7 @@ impl ChunkerPool {
                                 progress: job.progress.as_ref(),
                                 event_sender: &job.event_sender,
                                 shutdown_signal: job.shutdown_signal.as_ref(),
+                                skipped_items: job.skipped_items.as_ref(),
                                 bufs: Some(bufs),
                             };
                             processor::process_item_sync(

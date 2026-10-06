@@ -159,6 +159,7 @@ impl SnapshotForm {
             tags,
             description,
             no_scan: false,
+            fail_on_skipped: false,
             skip_if_unchanged: false,
             with_atime: false,
             stdin: false,

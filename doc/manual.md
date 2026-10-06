@@ -353,6 +353,7 @@ index-mode = "eager"
 paths = ["/home/user/Documents"]
 exclude = ["**/node_modules", "**/.git"]
 tags = "work,important"
+fail-on-skipped = false
 skip-if-unchanged = false
 readers = 4
 packers = 4
@@ -734,6 +735,7 @@ shared content across all of them.
 | `--description <TEXT>` | Snapshot description |
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
 | `--no-scan` | Skip the initial file system scan |
+| `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
 | `--readers <N>` | Number of parallel file readers (default: 4) |
@@ -1714,6 +1716,7 @@ mapache snapshot [PATHS...] -r <URL>
   --description <TEXT>    Snapshot description
   --no-parent             Force complete analysis (no parent diff)
   --no-scan               Skip the initial file system scan
+  --fail-on-skipped       Fail if any source item is skipped
   --skip-if-unchanged     Skip saving if no changes detected
   --parent <ID|latest>    Use specific parent snapshot
   --readers <N>           Parallel file readers (default: 4)

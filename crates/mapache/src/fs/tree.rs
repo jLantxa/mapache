@@ -2,7 +2,10 @@ use std::{
     cmp::Ordering,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
     task::{Context as TaskContext, Poll},
 };
 
@@ -84,6 +87,7 @@ struct FSNodeState {
     intermediate_paths: Vec<(PathBuf, usize, Option<Node>)>,
     filter: Arc<PathFilter>,
     with_atime: bool,
+    skipped_items: Option<Arc<AtomicU64>>,
 }
 
 /// A depth‑first pre‑order filesystem stream.
@@ -99,6 +103,24 @@ impl FSNodeStream {
         paths: Vec<PathBuf>,
         exclude_paths: Vec<PathBuf>,
         with_atime: bool,
+    ) -> Result<Self> {
+        Self::from_paths_inner(paths, exclude_paths, with_atime, None).await
+    }
+
+    pub(crate) async fn from_paths_tracking_skips(
+        paths: Vec<PathBuf>,
+        exclude_paths: Vec<PathBuf>,
+        with_atime: bool,
+        skipped_items: Arc<AtomicU64>,
+    ) -> Result<Self> {
+        Self::from_paths_inner(paths, exclude_paths, with_atime, Some(skipped_items)).await
+    }
+
+    async fn from_paths_inner(
+        paths: Vec<PathBuf>,
+        exclude_paths: Vec<PathBuf>,
+        with_atime: bool,
+        skipped_items: Option<Arc<AtomicU64>>,
     ) -> Result<Self> {
         tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?}, with_atime: {})", paths, exclude_paths, with_atime);
         let mut exclude_paths = exclude_paths;
@@ -154,6 +176,7 @@ impl FSNodeStream {
             intermediate_paths,
             filter,
             with_atime,
+            skipped_items,
         };
 
         Ok(Self {
@@ -293,6 +316,9 @@ impl FSNodeStream {
                             // so the snapshot degrades gracefully instead of
                             // aborting on one unreadable directory.
                             tracing::warn!(target: "fs", "Failed to scan directory {:?}: {}", path, e);
+                            if let Some(skipped_items) = &state.skipped_items {
+                                skipped_items.fetch_add(1, AtomicOrdering::Relaxed);
+                            }
                             yield (path, Ok(StreamNode { node, num_children: 0 }));
                         }
                     }

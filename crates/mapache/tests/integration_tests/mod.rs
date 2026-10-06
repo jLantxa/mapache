@@ -461,6 +461,7 @@ impl SnapshotBuilder {
                 no_parent: false,
                 skip_if_unchanged: Some(false),
                 no_scan: Some(false),
+                fail_on_skipped: Some(false),
                 parent: Some(UseSnapshot::Latest),
                 num_readers: Some(2),
                 num_packers: Some(2),
@@ -494,6 +495,11 @@ impl SnapshotBuilder {
 
     pub fn no_scan(mut self, no_scan: bool) -> Self {
         self.args.no_scan = Some(no_scan);
+        self
+    }
+
+    pub fn fail_on_skipped(mut self, fail: bool) -> Self {
+        self.args.fail_on_skipped = Some(fail);
         self
     }
 

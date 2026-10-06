@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
+  unreadable source items are omitted. The default behavior is unchanged.
+
 ## v0.7.1 (2026-10-05)
 
 ### Fixed

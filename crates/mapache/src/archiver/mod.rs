@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::SystemTime,
 };
@@ -74,6 +74,8 @@ pub struct SnapshotOptions<'a> {
     pub description: Option<String>,
     /// If true, skip the initial filesystem scan (estimated progress will be less accurate).
     pub no_scan: bool,
+    /// If true, fail when one or more source items are omitted.
+    pub fail_on_skipped: bool,
     /// If true, store the access time (atime) for all files and directories.
     pub with_atime: bool,
     /// If true, read backup data from stdin as a single file at /stdin.
@@ -92,6 +94,7 @@ pub(crate) struct PipelineStatus {
     /// Stores the first error that triggered the shutdown to report back to the user.
     pub(crate) first_error: Mutex<Option<error::MapacheError>>,
     pub(crate) shutdown_signal: Arc<AtomicBool>,
+    pub(crate) skipped_items: Arc<AtomicU64>,
 
     pub(crate) event_sender: EventSender,
     pub(crate) progress: Arc<SnapshotProgress>,
@@ -108,6 +111,7 @@ impl PipelineStatus {
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
             shutdown_signal,
+            skipped_items: Arc::new(AtomicU64::new(0)),
             event_sender,
             progress,
         }
@@ -199,6 +203,7 @@ pub(crate) async fn run_pipeline(
             // Resolve result wrappers
             let next_node = match next_res {
                 Some(Err(e)) => {
+                    status.skipped_items.fetch_add(1, Ordering::Relaxed);
                     emit_event(
                         &event_sender,
                         Event::Backup(BackupEvent::Warning(format!(
@@ -235,6 +240,7 @@ pub(crate) async fn run_pipeline(
                     progress,
                     event_sender,
                     shutdown_signal,
+                    skipped_items: status.skipped_items.clone(),
                     is_stdin: is_stdin_item,
                 };
 
@@ -254,6 +260,7 @@ pub(crate) async fn run_pipeline(
                     progress: &progress,
                     event_sender: &event_sender,
                     shutdown_signal: &shutdown_signal,
+                    skipped_items: status.skipped_items.as_ref(),
                     bufs: None,
                 };
                 match processor::process_item_sync(
@@ -509,10 +516,11 @@ pub(crate) async fn snapshot(
         })
     } else {
         tracing::info!(target: "archiver", "Setting up input streams");
-        let fs_stream = FSNodeStream::from_paths(
+        let fs_stream = FSNodeStream::from_paths_tracking_skips(
             snapshot_options.absolute_source_paths.clone(),
             snapshot_options.exclude_paths.clone(),
             snapshot_options.with_atime,
+            status.skipped_items.clone(),
         )
         .await?;
 
@@ -588,6 +596,15 @@ pub(crate) async fn snapshot(
     tracing::info!(target: "archiver", "Finalizing snapshot tree");
 
     let result = pipeline_result?;
+
+    if snapshot_options.fail_on_skipped {
+        let skipped_items = status.skipped_items.load(Ordering::Relaxed);
+        if skipped_items > 0 {
+            return Err(error::MapacheError::Repo(format!(
+                "snapshot incomplete: skipped {skipped_items} source item(s); no snapshot was saved"
+            )));
+        }
+    }
 
     let summary = progress.summary();
     emit_event(
@@ -692,6 +709,7 @@ mod tests {
                 tags: BTreeSet::new(),
                 description: None,
                 no_scan: false,
+                fail_on_skipped: false,
                 with_atime: false,
                 stdin: false,
             },
@@ -724,6 +742,7 @@ mod tests {
                 tags: BTreeSet::new(),
                 description: None,
                 no_scan: false,
+                fail_on_skipped: false,
                 with_atime: false,
                 stdin: false,
             },
@@ -801,6 +820,7 @@ mod tests {
             tags: BTreeSet::new(),
             description: None,
             no_scan: false,
+            fail_on_skipped: false,
             with_atime: false,
             stdin: false,
         };
@@ -907,6 +927,7 @@ mod tests {
             tags: BTreeSet::new(),
             description: None,
             no_scan: false,
+            fail_on_skipped: false,
             with_atime: false,
             stdin: false,
         };
@@ -1130,6 +1151,7 @@ mod tests {
                 tags: BTreeSet::new(),
                 description: Some("stdin test snapshot".to_string()),
                 no_scan: true,
+                fail_on_skipped: false,
                 with_atime: false,
                 stdin: true,
             },

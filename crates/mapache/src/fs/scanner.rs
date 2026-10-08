@@ -2,7 +2,9 @@ use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use crate::{
     fs::{
-        filesystem::scan_metadata, filter::PathFilter, node::NodeType,
+        filesystem::{fill_device_id, scan_metadata},
+        filter::PathFilter,
+        node::NodeType,
         tree::crosses_filesystem_boundary,
     },
     ui::events::{BackupEvent, Event, EventSender, emit_event},
@@ -41,9 +43,14 @@ where
         }
 
         match scan_metadata(&current) {
-            Ok(node) => {
-                if one_file_system && crosses_filesystem_boundary(parent_device, node.dev) {
-                    continue;
+            Ok(mut node) => {
+                if one_file_system {
+                    if node.node_type == NodeType::Directory {
+                        fill_device_id(&mut node.dev, &current);
+                    }
+                    if crosses_filesystem_boundary(parent_device, node.dev) {
+                        continue;
+                    }
                 }
 
                 let size = if node.node_type == NodeType::File {

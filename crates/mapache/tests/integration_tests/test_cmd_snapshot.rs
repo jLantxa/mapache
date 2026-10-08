@@ -16,7 +16,6 @@ mod tests {
         synthetic::{Dataset, SyntheticData},
     };
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_snapshot_one_file_system_on_same_device() -> Result<()> {
         let mut ctx = TestContext::new().await?;

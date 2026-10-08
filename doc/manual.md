@@ -736,7 +736,7 @@ shared content across all of them.
 | `--description <TEXT>` | Snapshot description |
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
 | `--no-scan` | Skip the initial file system scan |
-| `--one-file-system` | Do not descend into entries on another filesystem (Unix; errors if device IDs are unavailable) |
+| `--one-file-system` | Do not descend into entries on another filesystem (errors if device IDs cannot be determined) |
 | `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
@@ -748,7 +748,9 @@ shared content across all of them.
 
 With `--one-file-system`, each explicitly supplied source path starts its own
 filesystem boundary. Entries on another device are not traversed. The option
-requires filesystem device IDs and is currently supported on Unix.
+requires filesystem device IDs: the device ID from `lstat` on Unix, the volume
+serial number on Windows. Snapshot creation fails if they cannot be determined
+for a source path.
 
 ### Exclusions
 
@@ -1722,7 +1724,7 @@ mapache snapshot [PATHS...] -r <URL>
   --description <TEXT>    Snapshot description
   --no-parent             Force complete analysis (no parent diff)
   --no-scan               Skip the initial file system scan
-  --one-file-system       Do not descend into a different filesystem (Unix)
+  --one-file-system       Do not descend into a different filesystem
   --fail-on-skipped       Fail if any source item is skipped
   --skip-if-unchanged     Skip saving if no changes detected
   --parent <ID|latest>    Use specific parent snapshot

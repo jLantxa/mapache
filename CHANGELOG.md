@@ -5,7 +5,8 @@
 ### Added
 
 - `snapshot --one-file-system` prevents traversal into child entries on a
-  different filesystem. Currently supported on Unix.
+  different filesystem. Supported on Unix (device IDs) and Windows (volume
+  serial numbers).
 - `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
   unreadable source items are omitted. The default behavior is unchanged.
 

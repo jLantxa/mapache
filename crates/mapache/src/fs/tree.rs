@@ -20,8 +20,8 @@ use crate::{
     common::error::{MapacheError, Result},
     common::{BlobType, ID, SaveID, traits::BlobSaver},
     fs::{
-        calculate_lcp, filter::PathFilter, get_absolute_normalized_path, get_intermediate_paths,
-        node::Node,
+        calculate_lcp, filesystem::fill_device_id, filter::PathFilter,
+        get_absolute_normalized_path, get_intermediate_paths, node::Node,
     },
     repository::repo::Repository,
 };
@@ -150,7 +150,10 @@ impl FSNodeStream {
                         if !filter.allow(&path) {
                             return Ok(None);
                         }
-                        let node = Node::from_path_sync(&path, with_atime)?;
+                        let mut node = Node::from_path_sync(&path, with_atime)?;
+                        if one_file_system {
+                            fill_device_id(&mut node.metadata.dev, &path);
+                        }
                         Ok(Some((path, node)))
                     })
                     .collect::<Result<Vec<_>>>()
@@ -241,7 +244,12 @@ impl FSNodeStream {
                         };
 
                         match node_res {
-                            Ok(node) => yield (path, Ok(StreamNode { node, num_children })),
+                            Ok(mut node) => {
+                                if state.one_file_system {
+                                    fill_device_id(&mut node.metadata.dev, &path);
+                                }
+                                yield (path, Ok(StreamNode { node, num_children }))
+                            }
                             Err(e) => yield (path, Err(e)),
                         }
                     }
@@ -311,7 +319,17 @@ impl FSNodeStream {
                                 filter.allow(&child_path).then_some((name, child_path))
                             })
                             .map(|(name, child_path)| {
-                                let child_res = Node::from_path_sync(&child_path, with_atime);
+                                let mut child_res = Node::from_path_sync(&child_path, with_atime);
+                                // Only directories need a device ID: files and
+                                // symlinks always live on their parent's
+                                // volume, so `crosses_filesystem_boundary`
+                                // treats their missing ID as staying put.
+                                if one_file_system
+                                    && let Ok(child) = &mut child_res
+                                    && child.is_dir()
+                                {
+                                    fill_device_id(&mut child.metadata.dev, &child_path);
+                                }
                                 (name, child_res)
                             })
                             .collect();

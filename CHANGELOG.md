@@ -5,16 +5,46 @@
 ### Added
 
 - `snapshot --one-file-system` prevents traversal into child entries on a
-  different filesystem. Supported on Unix (device IDs) and Windows (volume
-  serial numbers).
+  different filesystem (Unix device IDs and Windows volume serial numbers).
 - `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
   unreadable source items are omitted. The default behavior is unchanged.
+- Terminal UI:
+  - New **Stats** (`6`), **Clean** (`7`) and **Verify** (`8`) screens wrap the
+    corresponding CLI commands, exposing their options, live progress and a
+    summary.
+  - A help overlay (`?`/`F1`) lists the global and per-screen keys, `Ctrl+C`
+    quits from any screen, the mouse wheel scrolls, and errors and warnings
+    that previously only reached the debug log now show on-screen
+    notifications.
+  - Snapshot, Restore, Forget, Clean and Verify forms expose their full set of
+    options, grouped under **Basic** and **Advanced** sections, scroll to keep
+    the focused field visible and show per-field help.
+  - List inputs (source paths, restore selections, tags, host filters,
+    include/exclude patterns) use chips with keyboard editing.
+  - Forms validate input and ask for confirmation before discarding changed
+    values. Forget applies host/tag filters and supports keep-min and force.
+  - The dashboard header shows the session lock status.
 
 ### Changed
 
 - Snapshot progress scanning now reads only node type, size, and filesystem
   device metadata, avoiding extended attribute, file flag, and symlink target
   queries. Snapshots continue to capture full metadata.
+
+### Fixed
+
+- Restore wildcard includes now expand against the snapshot's tree ID, fixing
+  filtered restores from both the CLI and TUI.
+- Terminal UI:
+  - Screen close and quit now manage the session lock and operation lifecycle
+    correctly: Clean takes exclusive access and restores the prior mode,
+    quitting stops running operations cooperatively, and background failures
+    are reported.
+  - Superseded stats tasks are canceled and awaited, retention discards
+    restore the last applied values, numeric fields accept typed digits and
+    clamp to their range, and progress views list log entries chronologically.
+  - Improved contrast, empty dashboard states and layout on narrow and wide
+    terminals (wrapping, no table or popup overflow).
 
 ## v0.7.1 (2026-10-05)
 

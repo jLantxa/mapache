@@ -20,6 +20,7 @@ use crate::{
         app::{Screen, Transition},
         screens::{file_explorer::FileExplorerScreen, restore::RestoreScreen},
         theme,
+        widgets::{ScrollState, ToastSink, impl_attach_toasts, wrap_line},
     },
     utils,
 };
@@ -30,10 +31,9 @@ pub struct SnapshotDetailScreen {
     repo: Arc<Repository>,
     snapshots: Arc<SnapshotEntryList>,
     current_index: usize,
-    scroll: usize,
-    max_scroll: usize,
-    page_size: usize,
+    scroll: ScrollState,
     cached_lines: Vec<Line<'static>>,
+    toasts: ToastSink,
 }
 
 impl SnapshotDetailScreen {
@@ -46,10 +46,12 @@ impl SnapshotDetailScreen {
             repo,
             snapshots,
             current_index,
-            scroll: 0,
-            max_scroll: 0,
-            page_size: DEFAULT_PAGE_SIZE,
+            scroll: ScrollState {
+                page_size: DEFAULT_PAGE_SIZE,
+                ..ScrollState::default()
+            },
             cached_lines: Vec::new(),
+            toasts: ToastSink::default(),
         }
     }
 
@@ -74,7 +76,7 @@ impl SnapshotDetailScreen {
             self.current_index + 1
         };
         self.current_index = new_index;
-        self.scroll = 0;
+        self.scroll.reset();
     }
 
     fn build_content_lines(&self) -> Vec<Line<'static>> {
@@ -83,73 +85,74 @@ impl SnapshotDetailScreen {
         let mut lines = Vec::with_capacity(20);
         let lw = 16;
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "ID", lw = lw), theme::THEME.menu_key),
-            Span::styled(entry.id.to_hex(), theme::THEME.snap_id),
-        ]));
+        lines.push(theme::field_spans(
+            "ID",
+            lw,
+            vec![Span::styled(entry.id.to_hex(), theme::THEME.snap_id)],
+        ));
 
         let ts = utils::pretty_print_timestamp(&s.timestamp, None);
         let elapsed = Local::now() - s.timestamp;
         let ago = utils::pretty_print_duration_chrono(elapsed, 1);
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "Date", lw = lw), theme::THEME.menu_key),
-            Span::raw(ts.to_string()),
-            Span::raw("  ("),
-            Span::styled(format!("{} ago", ago), theme::THEME.snap_date),
-            Span::raw(")"),
-        ]));
+        lines.push(theme::field_spans(
+            "Date",
+            lw,
+            vec![
+                Span::raw(ts),
+                Span::raw("  ("),
+                Span::styled(format!("{} ago", ago), theme::THEME.snap_date),
+                Span::raw(")"),
+            ],
+        ));
 
         if let Some(ref parent) = s.parent {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:lw$}", "Parent", lw = lw), theme::THEME.menu_key),
-                Span::styled(parent.to_short_hex(12), theme::THEME.snap_id),
-            ]));
+            lines.push(theme::field_spans(
+                "Parent",
+                lw,
+                vec![Span::styled(parent.to_short_hex(12), theme::THEME.snap_id)],
+            ));
         }
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "Host", lw = lw), theme::THEME.menu_key),
-            Span::raw(s.hostname.as_deref().unwrap_or("(unknown)").to_string()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "User", lw = lw), theme::THEME.menu_key),
-            Span::raw(s.username.as_deref().unwrap_or("(unknown)").to_string()),
-        ]));
+        lines.push(theme::field(
+            "Host",
+            lw,
+            s.hostname.as_deref().unwrap_or("(unknown)"),
+        ));
+        lines.push(theme::field(
+            "User",
+            lw,
+            s.username.as_deref().unwrap_or("(unknown)"),
+        ));
 
         if let Some(ref version) = s.version {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:lw$}", "Version", lw = lw), theme::THEME.menu_key),
-                Span::raw(version.to_string()),
-            ]));
+            lines.push(theme::field("Version", lw, version.to_string()));
         }
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "Root", lw = lw), theme::THEME.menu_key),
-            Span::raw(s.root.to_string_lossy().into_owned()),
-        ]));
+        lines.push(theme::field(
+            "Root",
+            lw,
+            s.root.to_string_lossy().into_owned(),
+        ));
 
         if let Some(ref desc) = s.description {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{:lw$}", "Description", lw = lw),
-                    theme::THEME.menu_key,
-                ),
-                Span::raw(desc.to_string()),
-            ]));
+            lines.push(theme::field("Description", lw, desc.to_string()));
         }
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "Tags", lw = lw), theme::THEME.menu_key),
-            Span::raw(if s.tags.is_empty() {
+        lines.push(theme::field(
+            "Tags",
+            lw,
+            if s.tags.is_empty() {
                 "(none)".to_string()
             } else {
                 theme::format_tags(&s.tags)
-            }),
-        ]));
+            },
+        ));
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:lw$}", "Active", lw = lw), theme::THEME.menu_key),
-            Span::raw(if entry.active { "yes" } else { "no" }),
-        ]));
+        lines.push(theme::field(
+            "Active",
+            lw,
+            if entry.active { "yes" } else { "no" },
+        ));
 
         let mut paths_iter = s.paths.iter().map(|p| {
             p.strip_prefix(&s.root)
@@ -159,10 +162,7 @@ impl SnapshotDetailScreen {
         });
 
         if let Some(first) = paths_iter.next() {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:lw$}", "Paths", lw = lw), theme::THEME.menu_key),
-                Span::raw(first),
-            ]));
+            lines.push(theme::field("Paths", lw, first));
         }
         for relative in paths_iter {
             lines.push(Line::from(vec![
@@ -190,42 +190,35 @@ impl SnapshotDetailScreen {
         lines
     }
 
-    fn render_title(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let has_prev = self.current_index > 0;
-        let has_next = self.current_index < self.snapshots.len().saturating_sub(1);
-
-        let mut hints = vec![("Esc", "back"), ("Enter", "explore"), ("r", "restore")];
-
-        if has_prev {
-            hints.push(("<", "prev"));
-        }
-        if has_next {
-            hints.push((">", "next"));
-        }
-        hints.push(("\u{2191}\u{2193}", "scroll"));
-        hints.push(("q", "quit"));
-
-        let footer = theme::key_hint_footer(&hints);
-        frame.render_widget(ratatui::widgets::Paragraph::new(footer), area);
-    }
-
     fn render_content(&mut self, frame: &mut Frame, content_area: ratatui::layout::Rect) {
-        let content_height = content_area.height.saturating_sub(2) as usize;
-        let line_count = self.cached_lines.len();
+        let block = theme::block("Snapshot");
+        let inner = block.inner(content_area);
+        // Leave one column for the scrollbar on the right.
+        let wrap_width = inner.width.saturating_sub(1).max(1) as usize;
 
-        self.max_scroll = line_count.saturating_sub(content_height);
-        self.page_size = content_height;
+        // Wrap long values (paths, descriptions) so they are readable instead
+        // of being clipped at the right edge.
+        let mut wrapped: Vec<Line<'static>> = Vec::new();
+        for line in &self.cached_lines {
+            wrap_line(line, wrap_width, &mut wrapped);
+        }
 
-        let paragraph = ratatui::widgets::Paragraph::new(Text::from(self.cached_lines.clone()))
+        let content_height = inner.height as usize;
+        let line_count = wrapped.len();
+        self.scroll.max_offset = line_count.saturating_sub(content_height);
+        self.scroll.page_size = content_height;
+        self.scroll.offset = self.scroll.offset.min(self.scroll.max_offset);
+
+        let paragraph = ratatui::widgets::Paragraph::new(Text::from(wrapped))
             .alignment(Alignment::Left)
-            .block(theme::block("Snapshot"))
-            .scroll((self.scroll as u16, 0));
+            .block(block)
+            .scroll((self.scroll.offset as u16, 0));
 
         frame.render_widget(paragraph, content_area);
 
-        if self.max_scroll > 0 {
-            let mut scrollbar_state = ScrollbarState::new(self.max_scroll + content_height)
-                .position(self.scroll)
+        if self.scroll.max_offset > 0 {
+            let mut scrollbar_state = ScrollbarState::new(self.scroll.max_offset + content_height)
+                .position(self.scroll.offset)
                 .viewport_content_length(content_height);
 
             frame.render_stateful_widget(
@@ -241,24 +234,31 @@ impl SnapshotDetailScreen {
 impl Screen for SnapshotDetailScreen {
     async fn on_become_active(&mut self) -> Result<()> {
         self.cached_lines = self.build_content_lines();
-        self.scroll = 0;
+        self.scroll.reset();
         Ok(())
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        let area = frame.area();
-        let inner = area.inner(theme::CONTENT_MARGIN);
+        let inner = frame.area().inner(theme::CONTENT_MARGIN);
 
+        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(3)])
+            .constraints([Constraint::Length(footer.len() as u16), Constraint::Min(3)])
             .split(inner);
 
-        self.render_title(frame, chunks[0]);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(ratatui::text::Text::from(footer)),
+            chunks[0],
+        );
         self.render_content(frame, chunks[1]);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        if self.scroll.handle_key(key.code) {
+            return None;
+        }
+
         match key.code {
             KeyCode::Esc => Some(Transition::Pop),
             KeyCode::Char('q') => Some(Transition::Quit),
@@ -269,6 +269,8 @@ impl Screen for SnapshotDetailScreen {
                     Ok(explorer) => Some(Transition::Push(Box::new(explorer))),
                     Err(e) => {
                         tracing::error!("Failed to load file explorer: {:?}", e);
+                        self.toasts
+                            .error(format!("Failed to load file explorer: {e}"));
                         None
                     }
                 }
@@ -291,31 +293,22 @@ impl Screen for SnapshotDetailScreen {
                 self.cached_lines = self.build_content_lines();
                 None
             }
-            KeyCode::Down => {
-                self.scroll = (self.scroll + 1).min(self.max_scroll);
-                None
-            }
-            KeyCode::Up => {
-                self.scroll = self.scroll.saturating_sub(1);
-                None
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.scroll = (self.scroll + self.page_size).min(self.max_scroll);
-                None
-            }
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_sub(self.page_size);
-                None
-            }
-            KeyCode::Home => {
-                self.scroll = 0;
-                None
-            }
-            KeyCode::End => {
-                self.scroll = self.max_scroll;
-                None
-            }
             _ => None,
         }
     }
+
+    fn help_hints(&self) -> Vec<(&'static str, &'static str)> {
+        let mut hints = vec![("Esc", "back"), ("Enter", "explore"), ("r", "restore")];
+        if self.current_index > 0 {
+            hints.push(("<", "prev"));
+        }
+        if self.current_index < self.snapshots.len().saturating_sub(1) {
+            hints.push((">", "next"));
+        }
+        hints.push(("\u{2191}\u{2193}", "scroll"));
+        hints.push(("q", "back"));
+        hints
+    }
+
+    impl_attach_toasts!(toasts);
 }

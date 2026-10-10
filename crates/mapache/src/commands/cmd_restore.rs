@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -72,7 +72,6 @@ impl ToExitCode for RestoreError {
 }
 
 pub(crate) struct RestoreCounters {
-    pub(crate) event_sender: EventSender,
     pub(crate) error_count: Arc<AtomicU64>,
     pub(crate) warning_count: Arc<AtomicU64>,
     pub(crate) total_items: Arc<AtomicU64>,
@@ -315,7 +314,6 @@ pub async fn run(
                 };
 
                 let counters = RestoreCounters {
-                    event_sender,
                     error_count,
                     warning_count,
                     total_items,
@@ -334,17 +332,9 @@ pub async fn run(
                 )
                 .await?;
 
-                run_with_repo(
-                    repo,
-                    lock_handle,
-                    args,
-                    counters,
-                    snapshot_pair,
-                    start,
-                    json_output,
-                )
-                .await?;
+                run_with_repo(repo, lock_handle, args, event_sender, snapshot_pair, None).await?;
 
+                report_completion(&counters, start, dry_run, json_output);
                 Ok(())
             },
         )
@@ -363,100 +353,111 @@ pub async fn run(
     repo_result
 }
 
-pub(crate) async fn run_with_repo(
+pub(crate) async fn prepare_restore(
     repo: Arc<Repository>,
-    lock_handle: Option<LockHandle>,
     args: &CmdArgs,
-    counters: RestoreCounters,
-    snapshot_pair: SnapshotPair,
-    start: Instant,
-    json_output: bool,
-) -> Result<(), RestoreError> {
-    let target = args.target.as_ref().ok_or_else(|| {
-        RestoreError::TargetError(
-            "target path is required. use --target or set it in config file.".to_string(),
-        )
-    })?;
-
-    let strategy = args.strategy.clone().unwrap_or(Strategy::Fail);
-    let dry_run = args.dry_run;
-    let delete = args.delete.unwrap_or(false);
-    let no_preserve_root = args.no_preserve_root.unwrap_or(false);
-    let quit_on_error = args.quit_on_error.unwrap_or(false);
-    let sparse = args.sparse.unwrap_or(false);
-    let verify = args.verify.unwrap_or(false);
-    let batch_size = args.batch_size;
-    let strip_prefix = args.strip_prefix.unwrap_or(false);
-
-    // Read include and exclude paths from files if provided.
-    let excludes_from_file = match &args.exclude_file {
-        Some(path) => Some(read_filtered_paths_from_file(path)?),
-        None => None,
-    };
+    snapshot_pair: &SnapshotPair,
+) -> Result<(PathBuf, RestoreOptions), RestoreError> {
+    let target = args
+        .target
+        .as_ref()
+        .ok_or_else(|| RestoreError::TargetError("target path is required".to_string()))?;
+    let excludes_from_file = args
+        .exclude_file
+        .as_ref()
+        .map(|path| read_filtered_paths_from_file(path))
+        .transpose()?;
     let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
-    let includes_from_file = match &args.include_file {
-        Some(path) => Some(read_filtered_paths_from_file(path)?),
-        None => None,
-    };
+    let includes_from_file = args
+        .include_file
+        .as_ref()
+        .map(|path| read_filtered_paths_from_file(path))
+        .transpose()?;
     let all_includes = merge_filtered_paths(args.include.as_ref(), includes_from_file.as_ref());
-
     let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
     let parsed_includes = expand_include_paths(
-        repo.clone(),
-        &snapshot_pair.id,
+        repo,
+        &snapshot_pair.snapshot.tree,
         all_includes.as_deref(),
         parsed_excludes.clone(),
     )
     .await?;
-
-    let common_prefix: Option<PathBuf> = if strip_prefix {
+    let strip_prefix = if args.strip_prefix.unwrap_or(false) {
         parsed_includes
             .as_ref()
             .map(|includes| calculate_lcp(includes, false))
     } else {
         None
     };
+    let target = get_absolute_normalized_path(target).map_err(|error| {
+        RestoreError::TargetError(format!("invalid target path: {}", error.inner()))
+    })?;
+    Ok((
+        target,
+        RestoreOptions {
+            dry_run: args.dry_run,
+            strategy: args.strategy.clone().unwrap_or(Strategy::Fail),
+            quit_on_error: args.quit_on_error.unwrap_or(false),
+            strip_prefix,
+            preallocate: !args.sparse.unwrap_or(false),
+            verify: args.verify.unwrap_or(false),
+            include: parsed_includes,
+            exclude: parsed_excludes,
+            batch_size: args.batch_size,
+        },
+    ))
+}
 
-    let abs_normalized_target = get_absolute_normalized_path(target)
-        .map_err(|e| RestoreError::TargetError(format!("invalid target path: {}", e.inner())))?;
+/// Performs a restore and, when `delete` is set, the post-restore cleanup.
+///
+/// Shared by the CLI `run` and the TUI restore screen. The caller supplies the
+/// `event_sender` that receives progress events and an optional `interrupt`
+/// flag; when given, the flag is shared with the cleanup handler so the
+/// operation can be cancelled (the TUI passes its shutdown signal).
+pub(crate) async fn run_with_repo(
+    repo: Arc<Repository>,
+    lock_handle: Option<LockHandle>,
+    args: &CmdArgs,
+    event_sender: EventSender,
+    snapshot_pair: SnapshotPair,
+    interrupt: Option<Arc<AtomicBool>>,
+) -> Result<(), RestoreError> {
+    let callback = {
+        let sender = event_sender.clone();
+        move || {
+            emit_event(&sender, Event::Restore(RestoreEvent::Finished));
+        }
+    };
+    let cleanup_handler = match interrupt {
+        Some(flag) => CleanupHandler::new_with_interrupt_and_callback(flag, callback),
+        None => CleanupHandler::new_with_callback(callback),
+    };
+    cleanup_handler.add_lock(lock_handle);
+
+    let dry_run = args.dry_run;
+    let delete = args.delete.unwrap_or(false);
+    let no_preserve_root = args.no_preserve_root.unwrap_or(false);
+    let (abs_normalized_target, options) =
+        prepare_restore(repo.clone(), args, &snapshot_pair).await?;
+    let parsed_includes = options.include.clone();
+    let parsed_excludes = options.exclude.clone();
+    let common_prefix = options.strip_prefix.clone();
 
     tracing::info!(target: "restore", "Restoring snapshot {} (root={:?}) to {:?}", snapshot_pair.id, snapshot_pair.snapshot.root, abs_normalized_target);
-
-    let event_sender_for_cleanup = counters.event_sender.clone();
-    let cleanup_handler = CleanupHandler::new_with_callback(move || {
-        emit_event(
-            &event_sender_for_cleanup,
-            Event::Restore(RestoreEvent::Finished),
-        );
-    });
-    cleanup_handler.add_lock(lock_handle);
 
     let restore_result = restorer::restore(
         repo.clone(),
         &snapshot_pair.snapshot,
         &abs_normalized_target,
-        RestoreOptions {
-            dry_run,
-            strategy,
-            quit_on_error,
-            strip_prefix: common_prefix.clone(),
-            preallocate: !sparse,
-            verify,
-            include: parsed_includes.clone(),
-            exclude: parsed_excludes.clone(),
-            batch_size,
-        },
-        counters.event_sender.clone(),
+        options,
+        event_sender.clone(),
         cleanup_handler.interrupted.clone(),
     )
     .await;
 
     if restore_result.is_err() && cleanup_handler.is_interrupted() {
         tracing::info!(target: "restore", "Restore interrupted by user");
-        emit_event(
-            &counters.event_sender,
-            Event::Restore(RestoreEvent::Finished),
-        );
+        emit_event(&event_sender, Event::Restore(RestoreEvent::Finished));
         return Err(RestoreError::Interrupted);
     }
     restore_result.map_err(|e| RestoreError::RestoreFailed(e.inner()))?;
@@ -474,7 +475,7 @@ pub(crate) async fn run_with_repo(
                 dry_run,
                 no_preserve_root,
                 shutdown_signal: cleanup_handler.interrupted.clone(),
-                event_sender: counters.event_sender.clone(),
+                event_sender: event_sender.clone(),
             },
         )
         .await;
@@ -487,12 +488,13 @@ pub(crate) async fn run_with_repo(
             .map_err(|e| RestoreError::RestoreFailed(format!("delete failed: {}", e.inner())))?;
     }
 
-    emit_event(
-        &counters.event_sender,
-        Event::Restore(RestoreEvent::Finished),
-    );
-
+    emit_event(&event_sender, Event::Restore(RestoreEvent::Finished));
     tracing::info!(target: "restore", "Restore command completed");
+    Ok(())
+}
+
+/// Prints the human-readable or JSON completion summary for a restore.
+fn report_completion(counters: &RestoreCounters, start: Instant, dry_run: bool, json_output: bool) {
     let errs = counters.error_count.load(Ordering::Relaxed);
     let warns = counters.warning_count.load(Ordering::Relaxed);
     let items = counters.total_items.load(Ordering::Relaxed);
@@ -547,5 +549,4 @@ pub(crate) async fn run_with_repo(
             );
         }
     }
-    Ok(())
 }

@@ -39,7 +39,6 @@ pub enum SummaryResult {
 pub struct ProgressState {
     pub core: TaskProgressState,
     recent_nodes: VecDeque<(String, NodeDiff)>,
-    pub spinner_index: usize,
 }
 
 impl ProgressState {
@@ -47,7 +46,6 @@ impl ProgressState {
         Self {
             core: TaskProgressState::new(),
             recent_nodes: VecDeque::new(),
-            spinner_index: 0,
         }
     }
 
@@ -120,9 +118,8 @@ pub enum ProgressAction {
     Cancel,
 }
 
-pub fn render_progress(frame: &mut Frame, state: &ProgressState) {
-    let area = frame.area();
-    let inner = area.inner(theme::CONTENT_MARGIN);
+pub fn render_progress(frame: &mut Frame, state: &ProgressState, dry_run: bool) {
+    let inner = frame.area().inner(theme::CONTENT_MARGIN);
 
     let has_errors = state.has_errors();
     let error_height = if has_errors { 5 } else { 0 };
@@ -147,9 +144,9 @@ pub fn render_progress(frame: &mut Frame, state: &ProgressState) {
         render_recent_nodes(frame, chunks[1], state);
     }
     if has_errors {
-        render_errors(frame, chunks[chunks.len() - 2], state);
+        render_errors(frame, chunks[2], state);
     }
-    render_progress_footer(frame, chunks[chunks.len() - 1]);
+    render_progress_footer(frame, chunks[3], dry_run);
 }
 
 fn render_progress_bar(frame: &mut Frame, area: Rect, state: &ProgressState) {
@@ -185,21 +182,15 @@ fn render_recent_nodes(frame: &mut Frame, area: Rect, state: &ProgressState) {
         .recent_nodes()
         .iter()
         .map(|(path, diff)| {
-            let diff_style = match diff {
-                NodeDiff::New => Style::default().fg(theme::THEME.green),
-                NodeDiff::Changed => Style::default().fg(theme::THEME.yellow),
-                NodeDiff::Deleted => Style::default().fg(theme::THEME.red),
-                NodeDiff::Unchanged => Style::default().fg(theme::THEME.subtext_dim),
-            };
-            let diff_label = match diff {
-                NodeDiff::New => "+",
-                NodeDiff::Changed => "~",
-                NodeDiff::Deleted => "-",
-                NodeDiff::Unchanged => " ",
+            let (label, color) = match diff {
+                NodeDiff::New => ("+", theme::THEME.green),
+                NodeDiff::Changed => ("~", theme::THEME.yellow),
+                NodeDiff::Deleted => ("-", theme::THEME.red),
+                NodeDiff::Unchanged => (" ", theme::THEME.subtext_dim),
             };
             let short_path = abbreviate_path(std::path::Path::new(path), max_path_len);
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", diff_label), diff_style),
+                Span::styled(format!("{} ", label), Style::default().fg(color)),
                 Span::raw(short_path),
             ]))
         })
@@ -220,8 +211,13 @@ fn render_errors(frame: &mut Frame, area: Rect, state: &ProgressState) {
     frame.render_widget(list, area);
 }
 
-fn render_progress_footer(frame: &mut Frame, area: Rect) {
-    let footer = theme::key_hint_footer(&[("Esc", "cancel"), ("q", "quit")]);
+fn render_progress_footer(frame: &mut Frame, area: Rect, dry_run: bool) {
+    let mut footer = theme::key_hint_footer(&[("Esc", "cancel"), ("q", "back")]);
+    if dry_run {
+        footer
+            .spans
+            .insert(0, Span::styled("[DRY RUN] ", theme::THEME.warning));
+    }
     frame.render_widget(Paragraph::new(footer), area);
 }
 

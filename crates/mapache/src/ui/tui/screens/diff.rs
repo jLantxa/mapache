@@ -1,13 +1,13 @@
 use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent};
 use futures::StreamExt;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{List, ListItem, ListState, Paragraph},
 };
 use tokio::sync::mpsc;
@@ -22,7 +22,10 @@ use crate::{
     ui::tui::{
         app::{Screen, Transition},
         theme,
-        widgets::{FilterAction, FilterState, StateNavigation},
+        widgets::{
+            FilterAction, FilterState, Spinner, StateNavigation, ToastSink, click_to_index,
+            impl_attach_toasts,
+        },
     },
     utils,
 };
@@ -61,8 +64,10 @@ pub struct DiffScreen {
     error: Option<String>,
     show_all: bool,
     last_height: usize,
-    spinner_tick: u8,
+    last_tree_area: Rect,
+    spinner: Spinner,
     filter: FilterState,
+    toasts: ToastSink,
     rx: mpsc::UnboundedReceiver<Result<DiffLoadResult>>,
 }
 
@@ -87,8 +92,10 @@ impl DiffScreen {
             error: None,
             show_all: false,
             last_height: 0,
-            spinner_tick: 0,
+            last_tree_area: Rect::default(),
+            spinner: Spinner::default(),
             filter: FilterState::new(),
+            toasts: ToastSink::default(),
             rx,
         }
     }
@@ -106,6 +113,7 @@ impl DiffScreen {
         snapshots: Arc<SnapshotEntryList>,
         source_idx: usize,
         target_idx: usize,
+        toasts: ToastSink,
     ) -> Result<DiffLoadResult> {
         let src_snap = &snapshots[source_idx].snapshot;
         let tgt_snap = &snapshots[target_idx].snapshot;
@@ -155,6 +163,7 @@ impl DiffScreen {
                 }
                 Err(e) => {
                     tracing::warn!("Diff stream error: {}", e);
+                    toasts.warning(format!("Diff stream error: {e}"));
                 }
             }
         }
@@ -360,7 +369,7 @@ impl DiffScreen {
         self.visible.clear();
         self.list_state.select(None);
         self.error = None;
-        self.spinner_tick = 0;
+        self.spinner.reset();
 
         let (tx, rx) = mpsc::unbounded_channel();
         self.rx = rx;
@@ -369,9 +378,10 @@ impl DiffScreen {
         let snapshots = self.snapshots.clone();
         let source_idx = self.source_idx;
         let target_idx = self.target_idx;
+        let toasts = self.toasts.clone();
 
         tokio::spawn(async move {
-            let result = Self::diff_entries(repo, snapshots, source_idx, target_idx).await;
+            let result = Self::diff_entries(repo, snapshots, source_idx, target_idx, toasts).await;
             let _ = tx.send(result);
         });
     }
@@ -489,15 +499,15 @@ impl DiffScreen {
     }
 
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
-        if self.entries.is_empty() {
-            let msg = if self.show_all {
+        if self.visible.is_empty() {
+            let msg = if self.filter.has_query() {
+                "No paths match the filter."
+            } else if self.show_all || self.entries.is_empty() {
                 "No differences found between snapshots."
             } else {
                 "No changes found. Press 'u' to show all entries."
             };
-            let widget = Paragraph::new(Line::from(Span::styled(msg, theme::THEME.subtext)))
-                .block(theme::block("Changes"));
-            frame.render_widget(widget, area);
+            theme::empty_state(frame, area, "Changes", msg);
             return;
         }
 
@@ -564,7 +574,7 @@ impl DiffScreen {
             })
             .collect();
 
-        let title = format!(" Changes ({}) ", display_len);
+        let title = format!("Changes ({})", display_len);
 
         let list = List::new(items)
             .block(theme::block(&title))
@@ -584,8 +594,7 @@ impl DiffScreen {
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect) {
-        let spinner =
-            theme::SPINNER_CHARS[(self.spinner_tick as usize) % theme::SPINNER_CHARS.len()];
+        let spinner = self.spinner.glyph();
         let msg = Paragraph::new(Line::from(Span::styled(
             format!(" {} Computing differences... ", spinner),
             theme::THEME.info,
@@ -602,36 +611,6 @@ impl DiffScreen {
         let msg = Paragraph::new(Line::from(Span::styled(err_text, theme::THEME.error)))
             .block(theme::block("Error"));
         frame.render_widget(msg, area);
-    }
-
-    fn render_hints(&self, frame: &mut Frame, area: Rect) {
-        let hints = if self.loading {
-            theme::key_hint_footer(&[("Esc", "back"), ("q", "quit")])
-        } else {
-            let mut hints = vec![
-                ("Esc", "back"),
-                ("\u{2191}\u{2193}", "navigate"),
-                ("Enter", "toggle dir"),
-                (
-                    "u",
-                    if self.show_all {
-                        "hide unchanged"
-                    } else {
-                        "show all"
-                    },
-                ),
-                ("/", "filter"),
-            ];
-            if self.source_idx > 0 {
-                hints.push(("<", "prev"));
-            }
-            if self.source_idx < self.snapshots.len().saturating_sub(1) {
-                hints.push((">", "next"));
-            }
-            hints.push(("q", "quit"));
-            theme::key_hint_footer(&hints)
-        };
-        frame.render_widget(Paragraph::new(hints), area);
     }
 
     fn handle_filter_key(&mut self, key: KeyCode) {
@@ -666,9 +645,10 @@ impl Screen for DiffScreen {
         let snapshots = self.snapshots.clone();
         let source_idx = self.source_idx;
         let target_idx = self.target_idx;
+        let toasts = self.toasts.clone();
 
         tokio::spawn(async move {
-            let result = Self::diff_entries(repo, snapshots, source_idx, target_idx).await;
+            let result = Self::diff_entries(repo, snapshots, source_idx, target_idx, toasts).await;
             let _ = tx.send(result);
         });
 
@@ -676,7 +656,7 @@ impl Screen for DiffScreen {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        self.spinner.tick();
 
         while let Ok(result) = self.rx.try_recv() {
             match result {
@@ -696,8 +676,7 @@ impl Screen for DiffScreen {
             }
         }
 
-        let area = frame.area();
-        let inner = area.inner(theme::CONTENT_MARGIN);
+        let inner = frame.area().inner(theme::CONTENT_MARGIN);
 
         let detail_h = if self.loading || self.error.is_some() {
             0
@@ -705,6 +684,7 @@ impl Screen for DiffScreen {
             1
         };
         let filter_h = if self.filter.is_active() { 3 } else { 0 };
+        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -714,11 +694,12 @@ impl Screen for DiffScreen {
                 Constraint::Length(detail_h),
                 Constraint::Min(3),
                 Constraint::Length(filter_h),
-                Constraint::Length(1),
+                Constraint::Length(footer.len() as u16),
             ])
             .split(inner);
 
         self.last_height = chunks[3].height.saturating_sub(2) as usize;
+        self.last_tree_area = chunks[3];
 
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled("Diff", theme::THEME.menu_key)))
@@ -740,12 +721,18 @@ impl Screen for DiffScreen {
         if self.filter.is_active() {
             self.render_filter(frame, chunks[4]);
         }
-        self.render_hints(frame, chunks[5]);
+        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[5]);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
         if self.loading {
-            return None;
+            // Let the user back out of a long diff load; the background task
+            // finishes harmlessly once its receiver is dropped.
+            return match key.code {
+                KeyCode::Esc => Some(Transition::Pop),
+                KeyCode::Char('q') => Some(Transition::Quit),
+                _ => None,
+            };
         }
 
         if self.filter.is_active() {
@@ -804,4 +791,60 @@ impl Screen for DiffScreen {
             _ => None,
         }
     }
+
+    async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if self.loading
+            || self.error.is_some()
+            || self.filter.is_active()
+            || !matches!(
+                mouse.kind,
+                crossterm::event::MouseEventKind::Down(MouseButton::Left)
+            )
+        {
+            return false;
+        }
+        let Some(idx) = click_to_index(mouse.row, self.list_state.offset(), self.last_tree_area, 0)
+        else {
+            return false;
+        };
+        if idx < self.visible.len() {
+            self.list_state.select(Some(idx));
+            return true;
+        }
+        false
+    }
+
+    fn help_hints(&self) -> Vec<(&'static str, &'static str)> {
+        if self.loading {
+            return vec![("Esc", "back"), ("q", "back")];
+        }
+        let mut hints = vec![
+            ("Esc", "back"),
+            ("\u{2191}\u{2193} j/k", "navigate"),
+            ("Enter", "toggle dir"),
+            (
+                "u",
+                if self.show_all {
+                    "hide unchanged"
+                } else {
+                    "show all"
+                },
+            ),
+            ("/", "filter"),
+        ];
+        if self.source_idx > 0 {
+            hints.push(("<", "prev"));
+        }
+        if self.source_idx < self.snapshots.len().saturating_sub(1) {
+            hints.push((">", "next"));
+        }
+        hints.push(("q", "back"));
+        hints
+    }
+
+    fn text_input_active(&self) -> bool {
+        self.filter.is_active()
+    }
+
+    impl_attach_toasts!(toasts);
 }

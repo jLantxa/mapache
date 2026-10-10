@@ -16,10 +16,7 @@ use crate::{
     },
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
-        retention::{
-            KeepReason, RetentionRule, apply_retention_rules_with_reasons,
-            filter_snapshots_by_hosts,
-        },
+        retention::{ForgetFilter, KeepReason, RetentionOptions, RetentionRule, build_forget_plan},
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{
@@ -358,20 +355,49 @@ async fn forget_phase(
         .collect_entries(true)
         .await?;
 
-    if let Some(tags) = &args.tags_str {
-        let tags = parse_tags(Some(tags));
-        snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
+    // Retention rules from the CLI arguments, built by the same helper the TUI
+    // retention form uses.
+    let retention_rules = RetentionOptions {
+        keep_last: args.keep_last,
+        keep_within: args.keep_within,
+        keep_yearly: args.keep_yearly,
+        keep_monthly: args.keep_monthly,
+        keep_weekly: args.keep_weekly,
+        keep_daily: args.keep_daily,
+        keep_hourly: args.keep_hourly,
+        keep_tags: args.keep_tags.as_deref().map(|s| parse_tags(Some(s))),
     }
+    .to_rules();
 
-    if !args.hosts.is_empty() {
-        let filtered = filter_snapshots_by_hosts(snapshots_sorted.iter(), &args.hosts);
-        let filtered_ids: IdSet<ID> = filtered.iter().map(|e| e.id).collect();
-        snapshots_sorted.retain(|e| filtered_ids.contains(&e.id));
+    if retention_rules.is_empty() && args.forget.is_empty() {
+        return Err(ForgetError::InvalidRule(
+            "at least one retention rule or explicit snapshot ID must be specified.".to_string(),
+        ));
     }
 
     snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
-    let mut ids_to_keep: IdSet<ID> = IdSet::default();
+    // Host/tag pre-filters. These are not retention rules: they remove
+    // snapshots from consideration entirely.
+    let filter = ForgetFilter {
+        hosts: args.hosts.clone(),
+        tags: args
+            .tags_str
+            .as_deref()
+            .map(|s| parse_tags(Some(s)))
+            .unwrap_or_default(),
+    };
+
+    tracing::info!(target: "forget", "Applying retention rules");
+    // The single shared decision, also used by the TUI retention form.
+    let plan = build_forget_plan(
+        &snapshots_sorted.iter().collect::<Vec<_>>(),
+        &filter,
+        &retention_rules,
+        args.keep_min,
+        Local::now(),
+    );
+
     // Human readable explanation of the keep/remove decision, per snapshot.
     let mut reasons: IdMap<ID, String> = IdMap::default();
     let mut policy: Vec<String> = Vec::new();
@@ -392,9 +418,8 @@ async fn forget_phase(
         }
         // An explicitly named snapshot must survive the --host/--tags filters,
         // otherwise the command would silently no-op. Refuse to continue.
-        let filtered_ids: IdSet<ID> = snapshots_sorted.iter().map(|e| e.id).collect();
         for (prefix, id) in &resolved_forgets {
-            if !filtered_ids.contains(id) {
+            if !plan.in_scope.contains(id) {
                 return Err(ForgetError::ForgetFailed(format!(
                     "snapshot {prefix} is excluded by the given --host/--tags filters; nothing would be forgotten"
                 )));
@@ -406,61 +431,15 @@ async fn forget_phase(
         ));
     }
 
-    tracing::info!(target: "forget", "Applying retention rules");
-    let mut retention_rules = Vec::new();
-    if let Some(n) = args.keep_last {
-        retention_rules.push(RetentionRule::KeepLast(n));
-    }
-    if let Some(d) = args.keep_within {
-        retention_rules.push(RetentionRule::KeepWithin(d));
-    }
-    if let Some(n) = args.keep_yearly {
-        retention_rules.push(RetentionRule::KeepYearly(n));
-    }
-    if let Some(n) = args.keep_monthly {
-        retention_rules.push(RetentionRule::KeepMonthly(n));
-    }
-    if let Some(n) = args.keep_weekly {
-        retention_rules.push(RetentionRule::KeepWeekly(n));
-    }
-    if let Some(n) = args.keep_daily {
-        retention_rules.push(RetentionRule::KeepDaily(n));
-    }
-    if let Some(n) = args.keep_hourly {
-        retention_rules.push(RetentionRule::KeepHourly(n));
-    }
-    if let Some(tags_str) = &args.keep_tags {
-        let keep_tags = parse_tags(Some(tags_str));
-        retention_rules.push(RetentionRule::KeepTags(keep_tags));
-    }
-
-    if retention_rules.is_empty() && forget_ids.is_empty() {
-        return Err(ForgetError::InvalidRule(
-            "at least one retention rule or explicit snapshot ID must be specified.".to_string(),
-        ));
-    }
-
     policy.extend(retention_rules.iter().map(RetentionRule::label));
     if let Some(min) = args.keep_min {
         policy.push(format!("min({min})"));
     }
 
-    // Without retention rules only the explicitly named snapshots are removed.
-    let keep_reasons = if retention_rules.is_empty() {
-        IdMap::default()
-    } else {
-        apply_retention_rules_with_reasons(
-            &snapshots_sorted.iter().collect::<Vec<_>>(),
-            &retention_rules,
-            args.keep_min,
-            Local::now(),
-        )
-    };
-
     for entry in &snapshots_sorted {
         // Keep rules win over an explicit removal request.
-        if let Some(rules) = keep_reasons.get(&entry.id) {
-            let label = rules
+        if let Some(rule_reasons) = plan.keep.get(&entry.id) {
+            let label = rule_reasons
                 .iter()
                 .map(|&r| match r {
                     KeepReason::Rule(i) => retention_rules[i].name(),
@@ -468,15 +447,15 @@ async fn forget_phase(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            ids_to_keep.insert(entry.id);
             if forget_ids.contains(&entry.id) {
                 retained_by_policy.push((entry.id, label.clone()));
             }
             reasons.insert(entry.id, label);
         } else if forget_ids.contains(&entry.id) {
             reasons.insert(entry.id, "selected".to_string());
+        } else if !plan.in_scope.contains(&entry.id) {
+            // Excluded by the host/tag pre-filters: left untouched.
         } else if retention_rules.is_empty() {
-            ids_to_keep.insert(entry.id);
             reasons.insert(entry.id, "not selected".to_string());
         } else {
             reasons.insert(entry.id, "no rule matched".to_string());
@@ -486,11 +465,19 @@ async fn forget_phase(
     let mut kept_snapshots = Vec::new();
     let mut removed_snapshots = Vec::new();
     for entry in snapshots_sorted.into_iter() {
-        if !ids_to_keep.contains(&entry.id) {
-            removed_snapshots.push(entry);
-        } else {
+        if !plan.in_scope.contains(&entry.id) {
+            // Filtered out: never reported as kept or removed.
+            continue;
+        }
+        // With no retention rules every in-scope snapshot is kept unless it was
+        // named explicitly for removal.
+        let kept = plan.keep.contains_key(&entry.id)
+            || (retention_rules.is_empty() && !forget_ids.contains(&entry.id));
+        if kept {
             kept_snapshots.push(entry);
-        };
+        } else {
+            removed_snapshots.push(entry);
+        }
     }
 
     tracing::info!(target: "forget", "Kept {} snapshots, removed {} snapshots", kept_snapshots.len(), removed_snapshots.len());

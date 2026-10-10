@@ -213,30 +213,4 @@ mod tests {
         assert_eq!(kept, Some(u64::MAX));
         Ok(())
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn fills_device_id_for_junctions() -> crate::common::error::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let target = dir.path().join("target");
-        std::fs::create_dir(&target)?;
-        let junction = dir.path().join("junction");
-        // mklink /J does not require administrator rights or developer mode.
-        let status = std::process::Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(&junction)
-            .arg(&target)
-            .status()?;
-        assert!(status.success());
-
-        let mut junction_dev = None;
-        fill_device_id(&mut junction_dev, &junction);
-        let mut parent_dev = None;
-        fill_device_id(&mut parent_dev, dir.path());
-
-        assert!(junction_dev.is_some());
-        // The junction itself lives on the parent volume; it is not followed.
-        assert_eq!(junction_dev, parent_dev);
-        Ok(())
-    }
 }

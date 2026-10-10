@@ -1,6 +1,7 @@
 use std::{io, sync::Arc};
 
 use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -13,7 +14,11 @@ use crate::{
 };
 
 mod app;
+mod background;
+mod help;
 mod screens;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod widgets;
 
@@ -23,7 +28,7 @@ impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         Ok(TerminalGuard)
     }
 }
@@ -31,7 +36,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
     }
 }
 

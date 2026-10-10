@@ -15,7 +15,7 @@ pub fn render_summary(
     frame: &mut Frame,
     area: Rect,
     state: &TaskProgressState,
-    result: &Option<Option<String>>,
+    result: &Option<Result<(), String>>,
 ) {
     let inner = area.inner(theme::CONTENT_MARGIN);
     let chunks = Layout::default()
@@ -28,13 +28,13 @@ pub fn render_summary(
 
     if let Some(res) = result {
         match res {
-            None => {
+            Ok(()) => {
                 lines.push(Line::from(Span::styled(
                     "RESTORE SUCCESSFUL",
                     theme::THEME.success,
                 )));
             }
-            Some(e) => {
+            Err(e) => {
                 lines.push(Line::from(Span::styled(
                     "RESTORE FAILED",
                     theme::THEME.error,
@@ -52,7 +52,7 @@ pub fn render_summary(
     )));
     lines.push(Line::from(format!(
         "  Bytes restored: {}",
-        utils::format_size_binary(state.processed_bytes, 2)
+        utils::format_size_binary(state.processed_bytes, 3)
     )));
 
     if let Some(finish) = state.finish_time {
@@ -67,7 +67,7 @@ pub fn render_summary(
         };
         lines.push(Line::from(format!(
             "  Average rate:   {}/s",
-            utils::format_size_binary(rate as u64, 2)
+            utils::format_size_binary(rate as u64, 3)
         )));
     }
 

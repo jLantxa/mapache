@@ -35,9 +35,7 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
         RestoreEvent::Warning(warn) => {
             state.add_warning(warn);
         }
-        RestoreEvent::Log(msg) => {
-            state.add_log(msg);
-        }
+        RestoreEvent::Log(_) => {}
         RestoreEvent::Finished => {
             state.finish();
         }

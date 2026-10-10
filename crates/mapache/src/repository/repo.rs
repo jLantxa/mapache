@@ -13,7 +13,9 @@ use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
 use crate::{
-    backend::{Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend},
+    backend::{
+        Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend, dry::DryBackend,
+    },
     commands::Compression,
     common::{
         self, BlobType, ContentIdType, ID, SaveID,
@@ -552,6 +554,20 @@ impl Repository {
     /// Get the repository backend
     pub fn backend(&self) -> Arc<dyn StorageBackend> {
         self.backend.clone()
+    }
+
+    pub(crate) async fn for_dry_run(&self) -> Result<Arc<Self>> {
+        Self::open(
+            Arc::new(DryBackend::new(self.backend())),
+            self.secure_storage(),
+            RepoConfig {
+                pack_size: self.max_packer_size,
+                use_cache: false,
+                compression: self.compression,
+                index_mode: self.master_index.index_mode(),
+            },
+        )
+        .await
     }
 
     /// Get the secure storage
@@ -1723,6 +1739,146 @@ mod tests {
             username: "mapachito".to_string(),
             password: Zeroizing::new("password".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn test_session_lock_clones_and_exclusive_upgrade() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _, handle) = Repository::try_open_with_lock(
+            &auth,
+            None,
+            backend.clone(),
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )
+        .await?;
+        drop(handle.clone());
+        tokio::task::yield_now().await;
+        assert_eq!(repo.get_locks().await?.len(), 1);
+        let (_, _, other) = Repository::try_open_with_lock(
+            &auth,
+            None,
+            backend.clone(),
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )
+        .await?;
+        assert!(matches!(
+            handle.set_exclusive(true).await,
+            Err(MapacheError::Locked(_))
+        ));
+        assert!(
+            !repo
+                .get_locks()
+                .await?
+                .iter()
+                .any(|lock| lock.is_exclusive())
+        );
+        other.unlock().await;
+        handle.set_exclusive(true).await?;
+        assert!(repo.get_locks().await?[0].is_exclusive());
+        assert!(matches!(
+            Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
+                .await,
+            Err(MapacheError::Locked(_))
+        ));
+        handle.set_exclusive(false).await?;
+        assert!(!repo.get_locks().await?[0].is_exclusive());
+        let last = handle.clone();
+        drop(handle);
+        tokio::task::yield_now().await;
+        assert_eq!(repo.get_locks().await?.len(), 1);
+        drop(last);
+        tokio::task::yield_now().await;
+        assert!(repo.get_locks().await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_repository_is_isolated() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        let dry_repo = repo.for_dry_run().await?;
+        assert!(dry_repo.backend().is_dry_run());
+        assert!(!repo.backend().is_dry_run());
+        assert!(!Arc::ptr_eq(&repo.index(), &dry_repo.index()));
+        let path = Path::new("dry-run-test");
+        dry_repo
+            .backend()
+            .write(&Handle::new(path), WriteContents::Owned(vec![1]))
+            .await?;
+        assert!(!backend.path_exists(path).await);
+        dry_repo.backend().remove(Path::new(MANIFEST_PATH)).await?;
+        assert!(backend.path_exists(Path::new(MANIFEST_PATH)).await);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_snapshot_leaves_no_repository_files() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+        let source = tempdir()?;
+        std::fs::write(source.path().join("file.txt"), "snapshot dry-run data")?;
+        let args = crate::commands::cmd_snapshot::CmdArgs {
+            paths: vec![source.path().to_path_buf()],
+            as_root: Some(true),
+            no_scan: Some(true),
+            num_readers: Some(1),
+            num_packers: Some(1),
+            ..Default::default()
+        };
+        let outcome = crate::commands::cmd_snapshot::run_with_repo(
+            repo.for_dry_run().await?,
+            None,
+            crate::commands::cmd_snapshot::SnapshotRunOptions::from(&args),
+            Arc::new(|_| {}),
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| MapacheError::Internal(error.to_string()))?;
+        assert!(matches!(
+            outcome,
+            crate::commands::cmd_snapshot::SnapshotOutcome::Saved(_)
+        ));
+        assert!(repo.list_snapshot_ids().await?.is_empty());
+        assert!(repo.list_packs().await?.is_empty());
+        assert!(repo.list_index_ids().await?.is_empty());
+        Ok(())
     }
 
     /// Test init a repo with password and open it

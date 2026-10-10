@@ -76,6 +76,76 @@ pub struct CmdArgs {
     pub full: bool,
 }
 
+/// Aggregated physical statistics parsed from every pack footer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FooterReport {
+    pub blobs: usize,
+    pub encoded_bytes: u64,
+    pub raw_bytes: u64,
+    pub dangling: usize,
+    pub duplicate_blobs: usize,
+}
+
+/// Everything gathered by [`collect_stats`], independent of how it is
+/// presented. Built once and shared by the CLI renderer and the TUI screen.
+#[derive(Debug, Clone, Default)]
+pub struct StatsReport {
+    // Packs (objects directory).
+    pub packs_count: usize,
+    pub packs_bytes: u64,
+    pub packs_ecc_count: usize,
+    pub packs_ecc_bytes: u64,
+    pub leftover_count: usize,
+    pub leftover_bytes: u64,
+    /// Present only when collected with `full = true`.
+    pub footers: Option<FooterReport>,
+
+    // Index directory and index contents.
+    pub index_count: usize,
+    pub index_bytes: u64,
+    pub index_ecc_count: usize,
+    pub index_ecc_bytes: u64,
+    pub indexed_blobs: u64,
+    pub indexed_raw_bytes: u64,
+    pub indexed_encoded_bytes: u64,
+
+    // Snapshots directory and referenced contents.
+    pub snapshots_count: usize,
+    pub snapshots_bytes: u64,
+    pub snapshots_ecc_count: usize,
+    pub snapshots_ecc_bytes: u64,
+    pub referenced_blobs: u64,
+    pub referenced_data_blobs: u64,
+    pub referenced_tree_blobs: u64,
+    pub referenced_raw_bytes: u64,
+    pub referenced_encoded_bytes: u64,
+    pub referenced_raw_bytes_data: u64,
+    pub referenced_encoded_bytes_data: u64,
+    pub referenced_raw_bytes_tree: u64,
+    pub referenced_encoded_bytes_tree: u64,
+    pub unreferenced_blobs: u64,
+    pub unreferenced_encoded_bytes: u64,
+    pub total_restorable_bytes: u64,
+
+    // Compression ratios (raw / encoded).
+    pub ratio_total: f32,
+    pub ratio_data: f32,
+    pub ratio_tree: f32,
+
+    // Keys and manifest.
+    pub keys_count: usize,
+    pub keys_bytes: u64,
+    pub manifest_bytes: u64,
+    pub total_repo_bytes: u64,
+
+    /// Whether pack footers were parsed.
+    pub full: bool,
+
+    /// Physical pack IDs from the objects listing. Kept so the TUI can add
+    /// footer data to an existing report without re-listing the directory.
+    pub pack_ids: Vec<ID>,
+}
+
 #[derive(Serialize)]
 struct PacksOutput {
     count: usize,
@@ -279,12 +349,9 @@ async fn scan_dir(backend: &dyn StorageBackend, dir: &Path) -> Result<DirScan, S
 }
 
 /// Recursively lists the objects directory once and classifies every entry as a
-/// pack, an ECC sidecar, or a leftover file.
-async fn scan_objects(
-    backend: &dyn StorageBackend,
-    dir: &Path,
-    collect_pack_ids: bool,
-) -> Result<ObjectScan, StatsError> {
+/// pack, an ECC sidecar, or a leftover file. Pack IDs are collected so callers
+/// can parse pack footers later without listing the directory again.
+async fn scan_objects(backend: &dyn StorageBackend, dir: &Path) -> Result<ObjectScan, StatsError> {
     let mut scan = ObjectScan::default();
 
     for node in backend.list_dir_recursive(dir).await? {
@@ -298,9 +365,7 @@ async fn scan_objects(
             .unwrap_or_default();
         if let Ok(id) = ID::from_hex(name) {
             scan.packs.push(size);
-            if collect_pack_ids {
-                scan.pack_ids.push(id);
-            }
+            scan.pack_ids.push(id);
             continue;
         }
 
@@ -320,12 +385,12 @@ async fn scan_pack_footers(
     backend: Arc<dyn StorageBackend>,
     secure_storage: Arc<SecureStorage>,
     pack_ids: &[ID],
-    spinner: &ProgressBar,
     shutdown_signal: Arc<AtomicBool>,
+    on_progress: ProgressCallback<'_>,
 ) -> Result<FooterScan, StatsError> {
     let total = pack_ids.len();
     let done = AtomicUsize::new(0);
-    spinner.set_message(format!("parsing pack footers 0/{total}"));
+    on_progress(format!("parsing pack footers 0/{total}"));
 
     let partials: Vec<FooterScan> = futures::stream::iter(pack_ids.iter().copied())
         .map(|pack_id| {
@@ -385,7 +450,7 @@ async fn scan_pack_footers(
                 }
 
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                spinner.set_message(format!("parsing pack footers {n}/{total}"));
+                on_progress(format!("parsing pack footers {n}/{total}"));
                 Ok::<_, StatsError>(scan)
             }
         })
@@ -405,30 +470,29 @@ async fn scan_pack_footers(
         }))
 }
 
-async fn stats_repository(
+/// Type-erased progress callback used by [`collect_stats`]. Callers can route the
+/// messages to a CLI spinner, a TUI toast, or nowhere at all.
+pub type ProgressCallback<'a> = &'a (dyn Fn(String) + Sync);
+
+/// Collects every statistic reported by `mapache stats` without printing
+/// anything, so both the CLI renderer and the TUI screen can share it.
+pub async fn collect_stats(
     repo: Arc<Repository>,
     secure_storage: Arc<SecureStorage>,
     backend: Arc<dyn StorageBackend>,
-    args: &CmdArgs,
-    json_out: bool,
+    full: bool,
     shutdown_signal: Arc<AtomicBool>,
-) -> Result<(), StatsError> {
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Collecting stats... ({msg})")
-            .expect("invalid progress bar template for stats spinner")
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-    spinner.set_message("listing repository files");
+    on_progress: ProgressCallback<'_>,
+) -> Result<StatsReport, StatsError> {
+    on_progress("listing repository files".to_string());
 
     // Every directory is listed once, concurrently, and sizes come straight from
     // the listing rather than a per-file lstat.
     let backend_ref = backend.as_ref();
     let (objects, index_scan, snapshot_scan, keys, manifest_size) = tokio::try_join!(
-        scan_objects(backend_ref, repo.objects_path(), args.full),
+        // The pack IDs are always collected: the TUI reuses them to add footer
+        // data to this report without listing the objects directory again.
+        scan_objects(backend_ref, repo.objects_path()),
         scan_dir(backend_ref, repo.index_path()),
         scan_dir(backend_ref, repo.snapshot_path()),
         scan_dir(backend_ref, repo.keys_path()),
@@ -454,7 +518,7 @@ async fn stats_repository(
         .saturating_add(manifest_size);
 
     // Index-level summary (walks every index, hot and cold).
-    spinner.set_message("scanning index");
+    on_progress("scanning index".to_string());
     let mut indexed_blobs = 0u64;
     let mut indexed_encoded = 0u64;
     let mut indexed_raw = 0u64;
@@ -467,28 +531,23 @@ async fn stats_repository(
         .await;
 
     // Snapshot-derived summary (index-only).
-    let snap_stats = analyze_snapshots(repo.clone(), &spinner, shutdown_signal.clone())
-        .await
-        .inspect_err(|e| finish_spinner_on_error(&spinner, e))?;
+    let snap_stats = analyze_snapshots(repo.clone(), shutdown_signal.clone(), on_progress).await?;
 
-    let footers = if args.full {
+    let footers = if full {
         Some(
             scan_pack_footers(
                 repo.clone(),
                 backend.clone(),
                 secure_storage.clone(),
                 &objects.pack_ids,
-                &spinner,
                 shutdown_signal.clone(),
+                on_progress,
             )
-            .await
-            .inspect_err(|e| finish_spinner_on_error(&spinner, e))?,
+            .await?,
         )
     } else {
         None
     };
-
-    spinner.finish_and_clear();
 
     // Blobs tracked in the index but not referenced by any snapshot. With the
     // index now covering hot and cold files, this converges to zero after a
@@ -507,81 +566,214 @@ async fn stats_repository(
         snap_stats.total_encoded_data_size_tree,
     );
 
-    if json_out {
-        let out = StatsOutput {
-            packs: PacksOutput {
-                count: objects.packs.count,
-                total_bytes: objects.packs.bytes,
-                ecc_count: objects.ecc.count,
-                ecc_bytes: objects.ecc.bytes,
-                other_count: objects.other.count,
-                other_bytes: objects.other.bytes,
-                parsed_footer: args.full,
-                footer_blob_count: footers.as_ref().map(|f| f.blobs),
-                footer_encoded_bytes: footers.as_ref().map(|f| f.encoded_bytes),
-                footer_raw_bytes: footers.as_ref().map(|f| f.raw_bytes),
-                footer_dangling_blobs: footers.as_ref().map(|f| f.dangling),
-            },
-            indices: IndicesOutput {
-                count: index_scan.files.count,
-                total_bytes: index_scan.files.bytes,
-                ecc_count: index_scan.ecc.count,
-                ecc_bytes: index_scan.ecc.bytes,
-                indexed_blobs,
-                indexed_raw_bytes: indexed_raw,
-                indexed_encoded_bytes: indexed_encoded,
-            },
-            snapshots: SnapshotsOutput {
-                count: snapshot_scan.files.count,
-                total_snapshot_bytes: snapshot_scan.files.bytes,
-                ecc_count: snapshot_scan.ecc.count,
-                ecc_bytes: snapshot_scan.ecc.bytes,
-                referenced_blobs: snap_stats.num_referenced_blobs,
-                referenced_data_blobs: snap_stats.num_referenced_data_blobs,
-                referenced_tree_blobs: snap_stats.num_referenced_tree_blobs,
-                referenced_raw_bytes: snap_stats.total_raw_data_size,
-                referenced_encoded_bytes: snap_stats.total_encoded_data_size,
-                referenced_raw_bytes_data: snap_stats.total_raw_data_size_data,
-                referenced_encoded_bytes_data: snap_stats.total_encoded_data_size_data,
-                referenced_raw_bytes_tree: snap_stats.total_raw_data_size_tree,
-                referenced_encoded_bytes_tree: snap_stats.total_encoded_data_size_tree,
-                unreferenced_blobs,
-                unreferenced_encoded_bytes,
-                compression_ratio_total: ratio_total,
-                compression_ratio_data: ratio_data,
-                compression_ratio_tree: ratio_tree,
-                total_restorable_bytes: snap_stats.total_restorable_bytes,
-            },
-            keys: KeysOutput {
-                count: keys.files.count,
-                total_bytes: keys.files.bytes,
-            },
-            manifest_bytes: manifest_size,
-            total_repo_bytes: total_size,
-        };
+    Ok(StatsReport {
+        packs_count: objects.packs.count,
+        packs_bytes: objects.packs.bytes,
+        packs_ecc_count: objects.ecc.count,
+        packs_ecc_bytes: objects.ecc.bytes,
+        leftover_count: objects.other.count,
+        leftover_bytes: objects.other.bytes,
+        footers: footers.map(|f| FooterReport {
+            blobs: f.blobs,
+            encoded_bytes: f.encoded_bytes,
+            raw_bytes: f.raw_bytes,
+            dangling: f.dangling,
+            duplicate_blobs: f.duplicate_blobs,
+        }),
+        index_count: index_scan.files.count,
+        index_bytes: index_scan.files.bytes,
+        index_ecc_count: index_scan.ecc.count,
+        index_ecc_bytes: index_scan.ecc.bytes,
+        indexed_blobs,
+        indexed_raw_bytes: indexed_raw,
+        indexed_encoded_bytes: indexed_encoded,
+        snapshots_count: snapshot_scan.files.count,
+        snapshots_bytes: snapshot_scan.files.bytes,
+        snapshots_ecc_count: snapshot_scan.ecc.count,
+        snapshots_ecc_bytes: snapshot_scan.ecc.bytes,
+        referenced_blobs: snap_stats.num_referenced_blobs,
+        referenced_data_blobs: snap_stats.num_referenced_data_blobs,
+        referenced_tree_blobs: snap_stats.num_referenced_tree_blobs,
+        referenced_raw_bytes: snap_stats.total_raw_data_size,
+        referenced_encoded_bytes: snap_stats.total_encoded_data_size,
+        referenced_raw_bytes_data: snap_stats.total_raw_data_size_data,
+        referenced_encoded_bytes_data: snap_stats.total_encoded_data_size_data,
+        referenced_raw_bytes_tree: snap_stats.total_raw_data_size_tree,
+        referenced_encoded_bytes_tree: snap_stats.total_encoded_data_size_tree,
+        unreferenced_blobs,
+        unreferenced_encoded_bytes,
+        total_restorable_bytes: snap_stats.total_restorable_bytes,
+        ratio_total,
+        ratio_data,
+        ratio_tree,
+        keys_count: keys.files.count,
+        keys_bytes: keys.files.bytes,
+        manifest_bytes: manifest_size,
+        total_repo_bytes: total_size,
+        full,
+        pack_ids: objects.pack_ids,
+    })
+}
 
-        ui::json::emit_static("stats", &out);
+/// Parses every pack footer and returns the aggregated physical statistics,
+/// without re-scanning the index or the snapshots. Used to add footer data to
+/// an already-collected [`StatsReport`] (the TUI's `f` toggle), reusing the
+/// pack IDs already gathered by [`collect_stats`].
+pub async fn collect_footers(
+    repo: Arc<Repository>,
+    secure_storage: Arc<SecureStorage>,
+    backend: Arc<dyn StorageBackend>,
+    pack_ids: &[ID],
+    shutdown_signal: Arc<AtomicBool>,
+    on_progress: ProgressCallback<'_>,
+) -> Result<FooterReport, StatsError> {
+    on_progress("parsing pack footers".to_string());
+    let footers = scan_pack_footers(
+        repo,
+        backend,
+        secure_storage,
+        pack_ids,
+        shutdown_signal,
+        on_progress,
+    )
+    .await?;
+
+    Ok(FooterReport {
+        blobs: footers.blobs,
+        encoded_bytes: footers.encoded_bytes,
+        raw_bytes: footers.raw_bytes,
+        dangling: footers.dangling,
+        duplicate_blobs: footers.duplicate_blobs,
+    })
+}
+
+async fn stats_repository(
+    repo: Arc<Repository>,
+    secure_storage: Arc<SecureStorage>,
+    backend: Arc<dyn StorageBackend>,
+    args: &CmdArgs,
+    json_out: bool,
+    shutdown_signal: Arc<AtomicBool>,
+) -> Result<(), StatsError> {
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_draw_target(default_bar_draw_target());
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} Collecting stats... ({msg})")
+            .expect("invalid progress bar template for stats spinner")
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+
+    let report = collect_stats(
+        repo,
+        secure_storage,
+        backend,
+        args.full,
+        shutdown_signal,
+        &|msg| spinner.set_message(msg),
+    )
+    .await
+    .inspect_err(|e| finish_spinner_on_error(&spinner, e))?;
+
+    spinner.finish_and_clear();
+
+    if json_out {
+        ui::json::emit_static("stats", &report.to_output());
         return Ok(());
     }
 
+    render_stats(&report);
+    Ok(())
+}
+
+impl StatsReport {
+    /// Builds the JSON representation emitted by `--json`.
+    fn to_output(&self) -> StatsOutput {
+        StatsOutput {
+            packs: PacksOutput {
+                count: self.packs_count,
+                total_bytes: self.packs_bytes,
+                ecc_count: self.packs_ecc_count,
+                ecc_bytes: self.packs_ecc_bytes,
+                other_count: self.leftover_count,
+                other_bytes: self.leftover_bytes,
+                parsed_footer: self.footers.is_some(),
+                footer_blob_count: self.footers.as_ref().map(|f| f.blobs),
+                footer_encoded_bytes: self.footers.as_ref().map(|f| f.encoded_bytes),
+                footer_raw_bytes: self.footers.as_ref().map(|f| f.raw_bytes),
+                footer_dangling_blobs: self.footers.as_ref().map(|f| f.dangling),
+            },
+            indices: IndicesOutput {
+                count: self.index_count,
+                total_bytes: self.index_bytes,
+                ecc_count: self.index_ecc_count,
+                ecc_bytes: self.index_ecc_bytes,
+                indexed_blobs: self.indexed_blobs,
+                indexed_raw_bytes: self.indexed_raw_bytes,
+                indexed_encoded_bytes: self.indexed_encoded_bytes,
+            },
+            snapshots: SnapshotsOutput {
+                count: self.snapshots_count,
+                total_snapshot_bytes: self.snapshots_bytes,
+                ecc_count: self.snapshots_ecc_count,
+                ecc_bytes: self.snapshots_ecc_bytes,
+                referenced_blobs: self.referenced_blobs,
+                referenced_data_blobs: self.referenced_data_blobs,
+                referenced_tree_blobs: self.referenced_tree_blobs,
+                referenced_raw_bytes: self.referenced_raw_bytes,
+                referenced_encoded_bytes: self.referenced_encoded_bytes,
+                referenced_raw_bytes_data: self.referenced_raw_bytes_data,
+                referenced_encoded_bytes_data: self.referenced_encoded_bytes_data,
+                referenced_raw_bytes_tree: self.referenced_raw_bytes_tree,
+                referenced_encoded_bytes_tree: self.referenced_encoded_bytes_tree,
+                unreferenced_blobs: self.unreferenced_blobs,
+                unreferenced_encoded_bytes: self.unreferenced_encoded_bytes,
+                compression_ratio_total: self.ratio_total,
+                compression_ratio_data: self.ratio_data,
+                compression_ratio_tree: self.ratio_tree,
+                total_restorable_bytes: self.total_restorable_bytes,
+            },
+            keys: KeysOutput {
+                count: self.keys_count,
+                total_bytes: self.keys_bytes,
+            },
+            manifest_bytes: self.manifest_bytes,
+            total_repo_bytes: self.total_repo_bytes,
+        }
+    }
+}
+
+/// Prints the human-readable statistics report.
+fn render_stats(report: &StatsReport) {
     section("Packs");
     row(
         "Pack files",
-        count_and_size(objects.packs.count, "pack", "packs", objects.packs.bytes),
+        count_and_size(report.packs_count, "pack", "packs", report.packs_bytes),
     );
-    if objects.ecc.count > 0 {
+    if report.packs_ecc_count > 0 {
         row(
             "ECC sidecars",
-            count_and_size(objects.ecc.count, "file", "files", objects.ecc.bytes),
+            count_and_size(
+                report.packs_ecc_count,
+                "file",
+                "files",
+                report.packs_ecc_bytes,
+            ),
         );
     }
-    if objects.other.count > 0 {
+    if report.leftover_count > 0 {
         row(
             "Leftover files",
-            count_and_size(objects.other.count, "file", "files", objects.other.bytes),
+            count_and_size(
+                report.leftover_count,
+                "file",
+                "files",
+                report.leftover_bytes,
+            ),
         );
     }
-    if let Some(footers) = &footers {
+    if let Some(footers) = &report.footers {
         row(
             "Footer blobs",
             utils::format_count(footers.blobs, "blob", "blobs"),
@@ -613,26 +805,26 @@ async fn stats_repository(
     section("Index");
     row(
         "Index files",
-        count_and_size(
-            index_scan.files.count,
-            "file",
-            "files",
-            index_scan.files.bytes,
-        ),
+        count_and_size(report.index_count, "file", "files", report.index_bytes),
     );
-    if index_scan.ecc.count > 0 {
+    if report.index_ecc_count > 0 {
         row(
             "ECC sidecars",
-            count_and_size(index_scan.ecc.count, "file", "files", index_scan.ecc.bytes),
+            count_and_size(
+                report.index_ecc_count,
+                "file",
+                "files",
+                report.index_ecc_bytes,
+            ),
         );
     }
     row(
         "Indexed blobs",
-        utils::format_count(indexed_blobs, "blob", "blobs"),
+        utils::format_count(report.indexed_blobs, "blob", "blobs"),
     );
     row(
         "Raw / encoded",
-        raw_over_encoded(indexed_raw, indexed_encoded),
+        raw_over_encoded(report.indexed_raw_bytes, report.indexed_encoded_bytes),
     );
 
     ui::cli::log!();
@@ -640,20 +832,20 @@ async fn stats_repository(
     row(
         "Snapshots",
         count_and_size(
-            snapshot_scan.files.count,
+            report.snapshots_count,
             "snapshot",
             "snapshots",
-            snapshot_scan.files.bytes,
+            report.snapshots_bytes,
         ),
     );
-    if snapshot_scan.ecc.count > 0 {
+    if report.snapshots_ecc_count > 0 {
         row(
             "ECC sidecars",
             count_and_size(
-                snapshot_scan.ecc.count,
+                report.snapshots_ecc_count,
                 "file",
                 "files",
-                snapshot_scan.ecc.bytes,
+                report.snapshots_ecc_bytes,
             ),
         );
     }
@@ -661,47 +853,45 @@ async fn stats_repository(
         "Referenced blobs",
         format!(
             "{} (data: {}, tree: {})",
-            snap_stats.num_referenced_blobs,
-            snap_stats.num_referenced_data_blobs,
-            snap_stats.num_referenced_tree_blobs
+            report.referenced_blobs, report.referenced_data_blobs, report.referenced_tree_blobs
         ),
     );
     row(
         "Raw / encoded",
-        raw_over_encoded(
-            snap_stats.total_raw_data_size,
-            snap_stats.total_encoded_data_size,
-        ),
+        raw_over_encoded(report.referenced_raw_bytes, report.referenced_encoded_bytes),
     );
     row(
         "Data (raw / encoded)",
         raw_over_encoded(
-            snap_stats.total_raw_data_size_data,
-            snap_stats.total_encoded_data_size_data,
+            report.referenced_raw_bytes_data,
+            report.referenced_encoded_bytes_data,
         ),
     );
     row(
         "Tree (raw / encoded)",
         raw_over_encoded(
-            snap_stats.total_raw_data_size_tree,
-            snap_stats.total_encoded_data_size_tree,
+            report.referenced_raw_bytes_tree,
+            report.referenced_encoded_bytes_tree,
         ),
     );
     row(
         "Compression ratio",
-        format!("{ratio_total:.2}x (data: {ratio_data:.2}x, tree: {ratio_tree:.2}x)"),
+        format!(
+            "{:.2}x (data: {:.2}x, tree: {:.2}x)",
+            report.ratio_total, report.ratio_data, report.ratio_tree
+        ),
     );
     row(
         "Restorable size",
-        utils::format_size_binary(snap_stats.total_restorable_bytes, 3),
+        utils::format_size_binary(report.total_restorable_bytes, 3),
     );
-    if unreferenced_blobs > 0 {
+    if report.unreferenced_blobs > 0 {
         row(
             "Unreferenced blobs",
             format!(
                 "{} ({} reclaimable)",
-                utils::format_count(unreferenced_blobs, "blob", "blobs"),
-                utils::format_size_binary(unreferenced_encoded_bytes, 3)
+                utils::format_count(report.unreferenced_blobs, "blob", "blobs"),
+                utils::format_size_binary(report.unreferenced_encoded_bytes, 3)
             ),
         );
     }
@@ -710,18 +900,21 @@ async fn stats_repository(
     section("Keys");
     row(
         "Key files",
-        count_and_size(keys.files.count, "key", "keys", keys.files.bytes),
+        count_and_size(report.keys_count, "key", "keys", report.keys_bytes),
     );
 
     ui::cli::log!();
     section("Repository");
-    row("Manifest", utils::format_size_binary(manifest_size, 3));
+    row(
+        "Manifest",
+        utils::format_size_binary(report.manifest_bytes, 3),
+    );
     row(
         "Total size",
-        utils::format_size_binary(total_size, 3).bold().to_string(),
+        utils::format_size_binary(report.total_repo_bytes, 3)
+            .bold()
+            .to_string(),
     );
-
-    Ok(())
 }
 
 /// Prints a section title.
@@ -824,8 +1017,8 @@ impl SnapshotAnalysis {
 
 async fn analyze_snapshots(
     repo: Arc<Repository>,
-    spinner: &ProgressBar,
     shutdown_signal: Arc<AtomicBool>,
+    on_progress: ProgressCallback<'_>,
 ) -> Result<SnapshotAnalysis, StatsError> {
     let snapshot_ids = repo.list_snapshot_ids().await?;
     let total = snapshot_ids.len();
@@ -836,7 +1029,7 @@ async fn analyze_snapshots(
     // Shared so a blob referenced by several snapshots is only counted once.
     let visited = Arc::new(ShardedIdSet::new());
     let done = AtomicUsize::new(0);
-    spinner.set_message(format!("analyzing snapshots 0/{total}"));
+    on_progress(format!("analyzing snapshots 0/{total}"));
 
     let partials: Vec<SnapshotAnalysis> = futures::stream::iter(snapshot_ids)
         .map(|id| {
@@ -850,7 +1043,7 @@ async fn analyze_snapshots(
                 let analysis =
                     analyze_snapshot(repo, snapshot, visited.as_ref(), &shutdown_signal).await?;
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                spinner.set_message(format!("analyzing snapshots {n}/{total}"));
+                on_progress(format!("analyzing snapshots {n}/{total}"));
                 Ok::<_, StatsError>(analysis)
             }
         })

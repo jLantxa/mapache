@@ -12,6 +12,7 @@ pub mod cli;
 pub(crate) mod debug;
 pub mod events;
 pub mod json;
+pub mod reporter;
 pub mod tui;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";

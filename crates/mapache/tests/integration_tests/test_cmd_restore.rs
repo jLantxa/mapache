@@ -19,6 +19,35 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn test_restore_with_include_glob() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let synthetic = SyntheticData::new(Dataset::new().with_structure(INTEGRATION_TEST_DATA));
+        let source = ctx.setup_backup_data(&synthetic)?;
+        ctx.init_repo().await?;
+        ctx.snapshot_builder(vec![
+            source.join("0"),
+            source.join("1"),
+            source.join("2"),
+            source.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
+        let target = ctx._tmp_dir.path().join("glob-restore");
+        ctx.restore_builder(target.clone())
+            .include(vec!["0/*.txt".to_string()])
+            .run(&ctx.global)
+            .await?;
+        assert_eq!(
+            std::fs::read(target.join("0/file0.txt"))?,
+            std::fs::read(source.join("0/file0.txt"))?
+        );
+        assert!(!target.join("1").exists());
+        assert!(!target.join("file.txt").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_restore_with_filter() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);

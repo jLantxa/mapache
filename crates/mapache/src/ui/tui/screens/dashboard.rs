@@ -222,18 +222,23 @@ pub struct DashboardScreen {
     repo_id: String,
     snapshot_config: Option<SnapshotCmdArgs>,
     forget_config: Option<ForgetCmdArgs>,
+
     snapshots: Arc<SnapshotEntryList>,
     filtered_indices: Vec<usize>,
     search_cache: Vec<String>,
     table_state: TableState,
     filter: FilterState,
+
     last_height: u16,
     last_snapshot_area: Rect,
+
     stats: DashboardStats,
     diff_source: Option<usize>,
     needs_reload: bool,
+
     menu_cursor: usize,
     menu_focused: bool,
+
     toasts: ToastSink,
 }
 
@@ -300,6 +305,7 @@ impl DashboardScreen {
         self.snapshots = Arc::new(entries);
         self.update_search_cache();
         self.apply_filter();
+
         // Restore the previous selection if the snapshot still exists
         if let Some(id) = selected_id
             && let Some(idx) = self.snapshots.iter().position(|e| e.id == id)
@@ -307,6 +313,7 @@ impl DashboardScreen {
         {
             self.table_state.select(Some(display_idx));
         }
+
         self.diff_source = None;
         self.needs_reload = false;
         Ok(())
@@ -329,6 +336,7 @@ impl DashboardScreen {
             .iter()
             .map(|e| {
                 let mut buf = String::new();
+
                 if let Some(host) = &e.snapshot.hostname {
                     buf.push_str(&host.to_lowercase());
                 }
@@ -1203,6 +1211,7 @@ mod tests {
     async fn tab_focuses_menu_and_arrows_move_cursor() -> Result<()> {
         let mut screen = test_screen().await?;
         assert!(!screen.menu_focused);
+
         let _ = screen.handle_key(key(KeyCode::Tab)).await;
         assert!(screen.menu_focused);
         let start = screen.menu_cursor;
@@ -1263,6 +1272,7 @@ mod tests {
             username: "test".to_string(),
             password: Zeroizing::new("password".to_string()),
         };
+
         for (exclusive, expected) in [(false, "lock shared"), (true, "lock exclusive")] {
             let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
             Repository::init(
@@ -1292,6 +1302,7 @@ mod tests {
                 None,
             );
             screen.stats.total = 123456;
+
             for width in [40, 80, 120] {
                 let text = render_header(&screen, width);
                 assert!(
@@ -1300,6 +1311,7 @@ mod tests {
                 );
                 assert!(text.contains("123456 snapshots"));
             }
+
             handle.unlock().await;
             assert_eq!(
                 screen.lock_handle.as_ref().unwrap().status(),

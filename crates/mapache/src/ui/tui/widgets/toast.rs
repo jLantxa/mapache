@@ -182,6 +182,7 @@ impl ToastQueue {
             if y < area.y {
                 break;
             }
+
             let rect = Rect {
                 x: area.x + area.width.saturating_sub(width),
                 y,

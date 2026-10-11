@@ -50,14 +50,17 @@ pub struct FileExplorerScreen {
     current_tree: Tree,
     path_stack: Vec<PathStackEntry>,
     current_path: PathBuf,
+
     list_state: ListState,
     last_height: u16,
     last_list_area: Rect,
+
     filter: FilterState,
     loading: bool,
     spinner: Spinner,
     pending_nav: Option<LoadingNav>,
     load_task: Option<BackgroundTask<Tree>>,
+
     toasts: ToastSink,
 }
 
@@ -709,6 +712,7 @@ mod tests {
         // 'l' starts the load in the background instead of freezing the loop.
         let transition = screen.handle_key(KeyEvent::from(KeyCode::Char('l'))).await;
         assert!(transition.is_none());
+
         assert!(
             screen.loading,
             "opening a subtree must not block the event loop"

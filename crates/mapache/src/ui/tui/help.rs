@@ -58,6 +58,7 @@ pub fn render(frame: &mut Frame, screen_hints: &[(&str, &str)], scroll: &mut u16
     for (key, label) in GLOBAL_HINTS {
         lines.push(row(key, label));
     }
+
     if !screen_hints.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("This screen", theme::THEME.header)));

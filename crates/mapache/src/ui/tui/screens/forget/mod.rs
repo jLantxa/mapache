@@ -88,10 +88,13 @@ pub struct ForgetScreen {
     phase: ForgetPhase,
     entries: Arc<SnapshotEntryList>,
     selected: ForgetSelection,
+
     table_state: TableState,
     last_table_area: Rect,
+
     retention: RetentionConfig,
     result: Option<ForgetResult>,
+
     toasts: ToastSink,
 }
 
@@ -191,6 +194,7 @@ impl ForgetScreen {
                 self.result = Some(ForgetResult::Success { removed_count });
             }
         }
+
         self.phase = ForgetPhase::Result;
     }
 
@@ -569,6 +573,7 @@ mod tests {
             username: "test".to_string(),
             password: Zeroizing::new("password".to_string()),
         };
+
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
         Repository::init(
             THIS_REPOSITORY_VERSION,
@@ -581,6 +586,7 @@ mod tests {
         .await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+
         let mut entries = Vec::new();
         for snapshot_index in 1..=3 {
             let id = ID::from_bytes([snapshot_index; 32]);
@@ -599,6 +605,7 @@ mod tests {
                 active: true,
             });
         }
+
         Ok(ForgetScreen::new(
             repo,
             Arc::new(entries),
@@ -622,9 +629,11 @@ mod tests {
                 .iter()
                 .position(|selected| *selected)
                 .unwrap();
+
             let removed_id = screen.entries[selected_index].id;
             let path = screen.repo.get_path(ContentIdType::Snapshot, &removed_id);
             screen.execute_forget().await;
+
             assert!(!screen.repo.backend().path_exists(&path).await);
             assert_eq!(
                 screen

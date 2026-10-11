@@ -38,8 +38,10 @@ impl SnapshotForm {
                     config_defaults
                         .and_then(|cfg| cfg.description.clone())
                         .unwrap_or_default()).help("Optional free-form description for this snapshot."),
+
             FormField::toggle("Dry run:",
                     config_defaults.map(|cfg| cfg.dry_run).unwrap_or(false)).help("Simulate the snapshot without writing repository data."),
+
             FormField::section("Advanced"),
             FormField::list("Exclude:",
                     config_defaults
@@ -50,6 +52,7 @@ impl SnapshotForm {
                         .and_then(|cfg| cfg.exclude_file.as_ref())
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default()).help("Read exclude patterns from this file, one per line."),
+
             FormField::toggle("As root:",
                     config_defaults.and_then(|cfg| cfg.as_root).unwrap_or(false)).help("Store paths relative to the filesystem root."),
             FormField::toggle("No parent:",
@@ -77,6 +80,7 @@ impl SnapshotForm {
                     config_defaults
                         .and_then(|cfg| cfg.with_atime)
                         .unwrap_or(false)).help("Store access times in snapshot metadata."),
+
             FormField::number("Readers:",
                     config_defaults
                         .and_then(|cfg| cfg.num_readers)
@@ -85,6 +89,7 @@ impl SnapshotForm {
                     config_defaults
                         .and_then(|cfg| cfg.num_packers)
                         .unwrap_or(DEFAULT_SNAPSHOT_PACKERS) as u32).help("Number of parallel packers used to write blobs.").bounds(1, u32::MAX),
+
             FormField::action("Start Snapshot"),
         ];
         let form = Form::new(fields, 17);
@@ -291,11 +296,13 @@ mod tests {
             form.handle_key(KeyCode::Char(character));
         }
         form.handle_key(KeyCode::Enter);
+
         assert_eq!(
             form.to_snapshot_options().paths,
             vec![PathBuf::from("data, archives")]
         );
         assert!(form.validate());
+
         form.handle_key(KeyCode::Enter);
         form.handle_key(KeyCode::Backspace);
         form.handle_key(KeyCode::Esc);
@@ -314,6 +321,7 @@ mod tests {
                 };
             }
         }
+
         let opts = form.to_snapshot_options();
         let exclude = opts.exclude.unwrap();
         assert_eq!(exclude, vec!["*.log".to_string(), "target/".to_string()]);
@@ -348,6 +356,7 @@ mod tests {
             assert!(!form.validate());
             assert!(form.to_snapshot_options().paths.is_empty());
         }
+
         assert!(make_form_with_paths(&["data"]).validate());
     }
 
@@ -360,6 +369,7 @@ mod tests {
             ConfigAction::Start
         ));
         assert!(!form.validate());
+
         let text = crate::ui::tui::test_support::render_text(80, 16, |frame| {
             render_config(frame, &form);
         });
@@ -377,6 +387,7 @@ mod tests {
         };
         let form = SnapshotForm::new(Some(&defaults));
         assert_eq!(form.to_snapshot_options().paths, defaults.paths);
+
         let text = crate::ui::tui::test_support::render_text(100, 18, |frame| {
             render_config(frame, &form);
         });
@@ -401,10 +412,12 @@ mod tests {
         assert!(form.validate());
         assert!(form.dry_run());
         assert_eq!(form.parent().unwrap().unwrap().to_string(), "latest");
+
         let options = form.to_snapshot_options();
         assert_eq!(options.exclude_file, defaults.exclude_file);
         assert!(options.no_scan && options.one_file_system && options.fail_on_skipped);
         assert!(options.skip_if_unchanged && options.with_atime);
+
         form.form.focus_field("No parent:");
         form.form.handle_key(KeyCode::Enter);
         assert!(!form.validate());

@@ -39,8 +39,10 @@ enum ChangedKind {
 struct DiffEntry {
     path: PathBuf,
     depth: usize,
+
     diff: NodeDiff,
     changed_kind: Option<ChangedKind>,
+
     is_dir: bool,
     has_changes: bool,
     expanded: bool,
@@ -56,18 +58,23 @@ pub struct DiffScreen {
     snapshots: Arc<SnapshotEntryList>,
     source_idx: usize,
     target_idx: usize,
+
     entries: Vec<DiffEntry>,
     visible: Vec<usize>,
     list_state: ListState,
     counts: DiffCounts,
+
     loading: bool,
     error: Option<String>,
     show_all: bool,
+
     last_height: usize,
     last_tree_area: Rect,
+
     spinner: Spinner,
     filter: FilterState,
     toasts: ToastSink,
+
     rx: mpsc::UnboundedReceiver<Result<DiffLoadResult>>,
 }
 
@@ -228,6 +235,7 @@ impl DiffScreen {
                 show_entry[i] = true;
             }
         }
+
         for i in (0..self.entries.len()).rev() {
             if show_entry[i] {
                 let depth = self.entries[i].depth;
@@ -239,6 +247,7 @@ impl DiffScreen {
                 }
             }
         }
+
         for i in 0..self.entries.len() {
             if self.entries[i].is_dir && !self.entries[i].expanded {
                 let depth = self.entries[i].depth;

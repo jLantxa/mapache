@@ -290,6 +290,7 @@ mod tests {
                     FormFieldType::Text(TextInput::with_text("restore-target".to_string()));
             }
         }
+
         screen.config.form.focus_field("Delete:");
         screen.config.form.handle_key(KeyCode::Enter);
         screen.config.form.focus_field("Paths:");
@@ -297,13 +298,16 @@ mod tests {
         screen
             .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
+
         assert_eq!(screen.phase, RestorePhase::Confirm);
         assert!(screen.task.is_none());
+
         let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
             screen.render(frame);
         });
         assert!(text.contains("Confirm Restore + Delete"));
         assert!(text.contains("root directory remains protected"));
+
         screen
             .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .await;

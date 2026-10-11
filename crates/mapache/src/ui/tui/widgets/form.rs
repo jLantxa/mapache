@@ -27,6 +27,7 @@ pub enum FormFieldType {
 pub struct FormField {
     pub label: String,
     pub field_type: FormFieldType,
+
     help: Option<String>,
     error: Option<String>,
     number_bounds: (u32, u32),
@@ -171,6 +172,7 @@ pub struct Form {
     focus: usize,
     editing: bool,
     label_width: usize,
+
     /// Scratch buffer used while editing a numeric field.
     number_edit: Option<String>,
     /// Scratch editor used while adding an entry to a `MultiSelect` field.
@@ -178,6 +180,7 @@ pub struct Form {
     /// Whether the numeric edit buffer still holds the pre-edit value, so the
     /// next typed digit replaces it instead of appending.
     number_edit_fresh: bool,
+
     /// Whether validation errors are currently displayed. Set by
     /// [`Form::reveal_errors`] on a failed submit and cleared on the next edit.
     show_errors: bool,
@@ -191,11 +194,13 @@ pub struct Form {
 impl Form {
     pub fn new(fields: Vec<FormField>, label_width: usize) -> Self {
         let initial_values = fields.iter().map(FormField::value).collect();
+
         // Section labels are decoration, so start on the first usable field.
         let focus = fields
             .iter()
             .position(|field| !matches!(field.field_type, FormFieldType::Label(_)))
             .unwrap_or(0);
+
         Self {
             fields,
             focus,
@@ -514,6 +519,7 @@ impl Form {
             .iter()
             .zip(&self.initial_values)
             .any(|(field, initial)| field.value() != *initial);
+
         if matches!(action, FormAction::Edited) {
             self.clear_errors();
             self.confirm_discard = false;
@@ -558,6 +564,7 @@ impl Form {
             ) {
                 return self.handle_multiselect_edit(key);
             }
+
             let field = &mut self.fields[self.focus];
             match &mut field.field_type {
                 FormFieldType::Text(input) => {
@@ -690,6 +697,7 @@ impl Form {
         let focus_style = Style::default().fg(theme::THEME.green);
 
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(self.fields.len());
+
         for (i, field) in self.fields.iter().enumerate() {
             let focused = i == self.focus;
             let row_style = if focused {
@@ -697,6 +705,7 @@ impl Form {
             } else {
                 Style::default()
             };
+
             // Value cells share this style: the focus colour, or the default.
             let value_style = if focused {
                 focus_style
@@ -857,6 +866,7 @@ mod tests {
             form.focused_message(),
             Some(FormMessage::Help("Bounded count"))
         );
+
         form.handle_key(KeyCode::Left);
         assert_eq!(form.get_number_by_label("Count"), Some(5));
         form.handle_key(KeyCode::Enter);
@@ -932,6 +942,7 @@ mod tests {
         f.handle_key(KeyCode::Enter); // start editing
         f.handle_key(key('z'));
         f.handle_key(KeyCode::Esc); // stops editing (text is kept)
+
         assert!(!f.is_editing());
         // TextInput Esc stops editing but doesn't clear the buffer —
         // the form treats this as Edited (field value changed)
@@ -1047,6 +1058,7 @@ mod tests {
         assert_eq!(f.focused_message(), None);
         assert!(f.set_error("Count", "Must be positive"));
         assert!(f.focus_field("Count"));
+
         // Errors are hidden until a failed submit reveals them.
         assert!(matches!(
             f.focused_message(),
@@ -1057,6 +1069,7 @@ mod tests {
             f.focused_message(),
             Some(FormMessage::Error("Must be positive"))
         ));
+
         // Editing the field clears the stale error and falls back to help.
         f.handle_key(KeyCode::Right);
         assert!(matches!(
@@ -1265,13 +1278,16 @@ mod tests {
                 form.render(frame, frame.area(), "Options");
             })
         };
+
         let text = render(&form, 10);
         for expected in ["Basic", "Advanced", "[daily]"] {
             assert!(text.contains(expected), "missing {expected}: {text}");
         }
+
         form.set_error("Tags:", "Tag required");
         form.reveal_errors();
         assert!(render(&form, 5).contains("Tag required"));
+
         form.focus_field("Flag");
         form.handle_key(key(' '));
         form.handle_key(KeyCode::Esc);

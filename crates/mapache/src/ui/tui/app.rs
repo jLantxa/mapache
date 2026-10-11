@@ -95,6 +95,7 @@ impl App {
         if let Some(screen) = stack.last_mut() {
             screen.attach_toasts(toasts.clone());
         }
+
         Self {
             stack,
             should_quit: false,
@@ -335,6 +336,7 @@ mod tests {
             worker_finished.store(true, Ordering::SeqCst);
             Ok(())
         });
+
         let app = App {
             stack: vec![Box::new(WorkerScreen { signal, task })],
             should_quit: false,
@@ -353,6 +355,7 @@ mod tests {
         ] {
             let (mut app, _finished) = worker_app(key.modifiers.contains(KeyModifiers::CONTROL));
             app.handle_key(key).await;
+
             assert!(app.should_quit);
         }
     }

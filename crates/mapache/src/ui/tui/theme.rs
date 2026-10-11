@@ -15,6 +15,7 @@ pub(crate) fn empty_state(frame: &mut Frame, area: Rect, title: &str, message: &
     let block = block(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
     if inner.height > 0 {
         frame.render_widget(
             Paragraph::new(Span::styled(message.to_string(), THEME.subtext))
@@ -81,6 +82,7 @@ pub(crate) struct Theme {
     pub surface: Color,
     pub subtext_dim: Color,
     pub subtext: Color,
+
     // Accents
     pub blue: Color,
     pub green: Color,
@@ -97,6 +99,7 @@ pub(crate) struct Theme {
     pub menu_key: Style,       // Keyboard-hint key styling
     pub menu_selected: Style,  // Focused action in the command menu
     pub footer: Style,         // Footer / secondary text
+
     // Snapshot-table columns
     pub snap_id: Style,
     pub snap_date: Style,
@@ -104,20 +107,24 @@ pub(crate) struct Theme {
     pub snap_size: Style,
     pub snap_active: Style,
     pub snap_inactive: Style,
+
     // File-tree
     pub dir_fg: Color,
     pub file_fg: Color,
     pub symlink_fg: Color,
     pub file_size: Style,
     pub breadcrumb: Style,
+
     // Progress
     pub progress_filled: Color,
     pub progress_empty: Color,
+
     // Status colours (use `.fg` on these for Toast, or pass whole Style)
     pub success: Style,
     pub error: Style,
     pub warning: Style,
     pub info: Style,
+
     // Stat cards
     pub stat_label: Style,
     pub stat_value: Style,
@@ -148,12 +155,14 @@ const ELECTRIC: Theme = {
         surface,
         subtext_dim,
         subtext,
+
         blue,
         green,
         yellow,
         red,
         peach,
         teal,
+
         header: Style::new().fg(teal).add_modifier(Modifier::BOLD),
         border: Style::new().fg(border_line),
         border_focused: Style::new().fg(teal),
@@ -161,23 +170,28 @@ const ELECTRIC: Theme = {
         menu_key: Style::new().fg(teal).add_modifier(Modifier::BOLD),
         menu_selected: Style::new().bg(teal).fg(bg).add_modifier(Modifier::BOLD),
         footer: Style::new().fg(subtext),
+
         snap_id: Style::new().fg(green),
         snap_date: Style::new().fg(yellow),
         snap_host: Style::new().fg(pink),
         snap_size: Style::new().fg(mauve),
         snap_active: Style::new().fg(green),
         snap_inactive: Style::new().fg(subtext_dim),
+
         dir_fg: blue,
         file_fg: text,
         symlink_fg: pink,
         file_size: Style::new().fg(subtext_dim),
         breadcrumb: Style::new().fg(teal).add_modifier(Modifier::BOLD),
+
         progress_filled: teal,
         progress_empty: overlay,
+
         success: Style::new().fg(green).add_modifier(Modifier::BOLD),
         error: Style::new().fg(red).add_modifier(Modifier::BOLD),
         warning: Style::new().fg(yellow).add_modifier(Modifier::BOLD),
         info: Style::new().fg(blue).add_modifier(Modifier::BOLD),
+
         stat_label: Style::new().fg(subtext),
         stat_value: Style::new().fg(text).add_modifier(Modifier::BOLD),
     }

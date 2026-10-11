@@ -31,8 +31,10 @@ pub struct SnapshotDetailScreen {
     repo: Arc<Repository>,
     snapshots: Arc<SnapshotEntryList>,
     current_index: usize,
+
     scroll: ScrollState,
     cached_lines: Vec<Line<'static>>,
+
     toasts: ToastSink,
 }
 
@@ -75,6 +77,7 @@ impl SnapshotDetailScreen {
             }
             self.current_index + 1
         };
+
         self.current_index = new_index;
         self.scroll.reset();
     }

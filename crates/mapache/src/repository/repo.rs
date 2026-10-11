@@ -388,11 +388,13 @@ impl Repository {
         let dry_run = backend.is_dry_run();
         let (repo, secure_storage) =
             Self::try_open_unlocked(auth, key_file_path, backend, config).await?;
+
         tracing::info!(target: "repo", "Acquiring lock (exclusive={exclusive_lock})");
         let lock = repo
             .try_acquire_lock_with_retry(exclusive_lock, retry_duration)
             .await?;
         tracing::info!(target: "repo", "Lock acquired");
+
         let lock_handle = LockHandle::new(repo.clone(), lock, !dry_run);
 
         Ok((repo, secure_storage, lock_handle))
@@ -491,6 +493,7 @@ impl Repository {
             pack_saver_handle: parking_lot::RwLock::new(None),
             stats: RepoStats::default(),
         };
+
         let repo = Arc::new(repo);
         repo.master_index.set_loader(repo.clone());
 
@@ -818,6 +821,7 @@ impl Repository {
                             MapacheError::Internal(format!("ECC encode task failed: {e}"))
                         })?
                         .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
+
                 if raw_ecc.is_empty() {
                     None
                 } else {
@@ -1627,6 +1631,7 @@ impl Repository {
                 let index_blobs = index.num_blobs() as u64;
                 let is_newest = i == 0;
                 let fits = resident_blobs.saturating_add(index_blobs) <= budget;
+
                 if is_newest || fits {
                     // Hot: load fully into RAM
                     self.master_index.add_index(index);
@@ -1702,6 +1707,7 @@ pub async fn find_in_snapshot(
     } else {
         Path::new("**").join(pattern)
     };
+
     let glob_rule = GlobRule::new(&search_path);
     let mut stream =
         SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None).await?;
@@ -1754,6 +1760,7 @@ mod tests {
             false,
         )
         .await?;
+
         let (repo, _, handle) = Repository::try_open_with_lock(
             &auth,
             None,
@@ -1766,6 +1773,7 @@ mod tests {
         drop(handle.clone());
         tokio::task::yield_now().await;
         assert_eq!(repo.get_locks().await?.len(), 1);
+
         let (_, _, other) = Repository::try_open_with_lock(
             &auth,
             None,
@@ -1786,6 +1794,7 @@ mod tests {
                 .iter()
                 .any(|lock| lock.is_exclusive())
         );
+
         other.unlock().await;
         handle.set_exclusive(true).await?;
         assert!(repo.get_locks().await?[0].is_exclusive());
@@ -1794,8 +1803,10 @@ mod tests {
                 .await,
             Err(MapacheError::Locked(_))
         ));
+
         handle.set_exclusive(false).await?;
         assert!(!repo.get_locks().await?[0].is_exclusive());
+
         let last = handle.clone();
         drop(handle);
         tokio::task::yield_now().await;
@@ -1822,9 +1833,11 @@ mod tests {
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
         let dry_repo = repo.for_dry_run().await?;
+
         assert!(dry_repo.backend().is_dry_run());
         assert!(!repo.backend().is_dry_run());
         assert!(!Arc::ptr_eq(&repo.index(), &dry_repo.index()));
+
         let path = Path::new("dry-run-test");
         dry_repo
             .backend()
@@ -1853,6 +1866,7 @@ mod tests {
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
         let source = tempdir()?;
         std::fs::write(source.path().join("file.txt"), "snapshot dry-run data")?;
+
         let args = crate::commands::cmd_snapshot::CmdArgs {
             paths: vec![source.path().to_path_buf()],
             as_root: Some(true),
@@ -1871,6 +1885,7 @@ mod tests {
         )
         .await
         .map_err(|error| MapacheError::Internal(error.to_string()))?;
+
         assert!(matches!(
             outcome,
             crate::commands::cmd_snapshot::SnapshotOutcome::Saved(_)

@@ -230,6 +230,7 @@ impl FileGroup {
 struct ObjectScan {
     packs: FileGroup,
     ecc: FileGroup,
+
     /// `.tmp` / `.dropped` leftovers and anything else unrecognized.
     other: FileGroup,
     pack_ids: Vec<ID>,
@@ -580,6 +581,7 @@ pub async fn collect_stats(
             dangling: f.dangling,
             duplicate_blobs: f.duplicate_blobs,
         }),
+
         index_count: index_scan.files.count,
         index_bytes: index_scan.files.bytes,
         index_ecc_count: index_scan.ecc.count,
@@ -587,6 +589,7 @@ pub async fn collect_stats(
         indexed_blobs,
         indexed_raw_bytes: indexed_raw,
         indexed_encoded_bytes: indexed_encoded,
+
         snapshots_count: snapshot_scan.files.count,
         snapshots_bytes: snapshot_scan.files.bytes,
         snapshots_ecc_count: snapshot_scan.ecc.count,
@@ -603,9 +606,11 @@ pub async fn collect_stats(
         unreferenced_blobs,
         unreferenced_encoded_bytes,
         total_restorable_bytes: snap_stats.total_restorable_bytes,
+
         ratio_total,
         ratio_data,
         ratio_tree,
+
         keys_count: keys.files.count,
         keys_bytes: keys.files.bytes,
         manifest_bytes: manifest_size,
@@ -698,12 +703,14 @@ impl StatsReport {
                 ecc_bytes: self.packs_ecc_bytes,
                 other_count: self.leftover_count,
                 other_bytes: self.leftover_bytes,
+
                 parsed_footer: self.footers.is_some(),
                 footer_blob_count: self.footers.as_ref().map(|f| f.blobs),
                 footer_encoded_bytes: self.footers.as_ref().map(|f| f.encoded_bytes),
                 footer_raw_bytes: self.footers.as_ref().map(|f| f.raw_bytes),
                 footer_dangling_blobs: self.footers.as_ref().map(|f| f.dangling),
             },
+
             indices: IndicesOutput {
                 count: self.index_count,
                 total_bytes: self.index_bytes,
@@ -713,6 +720,7 @@ impl StatsReport {
                 indexed_raw_bytes: self.indexed_raw_bytes,
                 indexed_encoded_bytes: self.indexed_encoded_bytes,
             },
+
             snapshots: SnapshotsOutput {
                 count: self.snapshots_count,
                 total_snapshot_bytes: self.snapshots_bytes,
@@ -727,13 +735,16 @@ impl StatsReport {
                 referenced_encoded_bytes_data: self.referenced_encoded_bytes_data,
                 referenced_raw_bytes_tree: self.referenced_raw_bytes_tree,
                 referenced_encoded_bytes_tree: self.referenced_encoded_bytes_tree,
+
                 unreferenced_blobs: self.unreferenced_blobs,
                 unreferenced_encoded_bytes: self.unreferenced_encoded_bytes,
+
                 compression_ratio_total: self.ratio_total,
                 compression_ratio_data: self.ratio_data,
                 compression_ratio_tree: self.ratio_tree,
                 total_restorable_bytes: self.total_restorable_bytes,
             },
+
             keys: KeysOutput {
                 count: self.keys_count,
                 total_bytes: self.keys_bytes,
@@ -773,6 +784,7 @@ fn render_stats(report: &StatsReport) {
             ),
         );
     }
+
     if let Some(footers) = &report.footers {
         row(
             "Footer blobs",
@@ -885,6 +897,7 @@ fn render_stats(report: &StatsReport) {
         "Restorable size",
         utils::format_size_binary(report.total_restorable_bytes, 3),
     );
+
     if report.unreferenced_blobs > 0 {
         row(
             "Unreferenced blobs",
@@ -997,18 +1010,21 @@ impl SnapshotAnalysis {
         self.num_referenced_tree_blobs = self
             .num_referenced_tree_blobs
             .saturating_add(other.num_referenced_tree_blobs);
+
         self.total_raw_data_size_data = self
             .total_raw_data_size_data
             .saturating_add(other.total_raw_data_size_data);
         self.total_encoded_data_size_data = self
             .total_encoded_data_size_data
             .saturating_add(other.total_encoded_data_size_data);
+
         self.total_raw_data_size_tree = self
             .total_raw_data_size_tree
             .saturating_add(other.total_raw_data_size_tree);
         self.total_encoded_data_size_tree = self
             .total_encoded_data_size_tree
             .saturating_add(other.total_encoded_data_size_tree);
+
         self.total_restorable_bytes = self
             .total_restorable_bytes
             .saturating_add(other.total_restorable_bytes);

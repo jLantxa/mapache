@@ -109,6 +109,7 @@ mod tests {
             worker_finished.store(true, Ordering::SeqCst);
             Ok(())
         });
+
         ready.await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), task.shutdown())
             .await

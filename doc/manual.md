@@ -1575,7 +1575,9 @@ mapache tui -r <URL>
 
 Launches an interactive terminal user interface with screens for:
 
-- **Dashboard** — overview of the repository with version info and key stats
+- **Dashboard** — overview with version, snapshot count, latest snapshot and
+  session lock status (`shared`, `exclusive`, `released` or `off`). Lock status
+  comes from the in-memory session handle, without additional repository queries.
 - **File explorer** — browse snapshot contents with inline detail panel
 - **Snapshot detail** — inspect individual snapshots
 - **Snapshot creation wizard**
@@ -1585,6 +1587,69 @@ Launches an interactive terminal user interface with screens for:
   browse adjacent pairs, `/` to filter, `u` to toggle unchanged files)
 - **Find screen** — real-time glob search across all snapshots with progress,
   results table, and direct navigation to explorer/restore
+- **Stats screen** (`6`) — repository statistics; asks on entry whether to
+  collect quick or full stats (`f` afterwards adds the pack footers, `--full`,
+  without re-reading other data) and `r` to refresh
+- **Clean screen** (`7`) — run garbage collection with a tolerance percentage,
+  an optional `--no-repack`/`--dry-run` mode, a live progress view and a
+  summary of what was removed
+- **Verify screen** (`8`) — run repository verification with optional
+  `--read-packs` (and parallel worker count), percentage sampling, ECC
+  `--repair`, and `--fail-early`, showing live per-phase progress and a
+  pass/fail report with the integrity counters
+
+Press `?` (or `F1`) anywhere for a list of key bindings, `Ctrl+C` to quit, and
+use the mouse wheel to scroll.
+
+Quitting during snapshot, restore, clean or verify requests cancellation and
+waits for the operation to finish before releasing the session lock. Clean
+requires exclusive access while executing GC; it refuses to run if another
+repository lock is active, then restores the previous session mode afterwards.
+Stats refresh reloads the index; leaving, refreshing or changing stats mode
+cancels and waits for the previous collection.
+
+Configuration forms group options into **Basic** and **Advanced** sections.
+Tab/Shift+Tab or the arrow keys move between fields, skipping section headers;
+the form scrolls to keep the focused field visible and displays its help below.
+Numeric fields accept typed digits as well as left/right adjustments.
+
+Snapshot paths, restore path selections, tags, host filters and include/exclude
+lists appear as chips. Enter opens an
+empty entry editor; type a value and press Enter again to add it. Backspace in
+an empty editor removes the last chip, and Esc discards an unfinished entry.
+Each entry is a single value, so commas inside paths and glob patterns are
+preserved. Restore preloads paths selected in the file explorer; removing all
+path chips restores the entire snapshot. Non-empty Include patterns override
+the path selection. The restore target remains a single destination directory.
+
+Submitting invalid options focuses the offending field and shows the error
+(for example, **Paths required**). Esc leaves an unchanged form immediately;
+for changed values, it displays a warning and requires a second Esc to discard
+them. Any other key dismisses that warning. While editing, Esc first closes
+the editor; text-field edits are retained, while unfinished numeric/chip edits
+are discarded.
+
+In retention, confirmed discard restores the last applied rule and Force
+values; applying a valid form establishes the new saved state.
+
+Snapshot configuration also exposes **Exclude file**, **No scan**,
+**One filesystem**, **Fail on skipped**, **Skip unchanged**, **Parent** and
+**With atime**. Parent accepts a snapshot ID or `latest`; it cannot be combined
+with **No parent**. **Dry run** simulates the snapshot with an isolated index
+and a write-discarding backend. Progress is marked `[DRY RUN]`, and the summary
+does not report a saved snapshot.
+
+Restore supports **Include file** and **Exclude file** (one pattern per line),
+**Quit on error** and **Sparse**. File patterns are combined with the form's
+include/exclude lists using the same preparation as the CLI. **Delete** removes
+target items absent from the snapshot after restoring and requires an extra
+confirmation, except during a dry run. The target root stays protected unless
+**No preserve root** is explicitly enabled; this option requires **Delete**.
+
+Forget retention's **Keep min** keeps at least the given number of matching
+snapshots after applying its rules. **Force** permanently deletes selected
+snapshot metadata rather than staging it for removal; these snapshots cannot
+be recalled. Keep-tags, host and tag filters remain available as chips.
 
 Requires a supported terminal.
 

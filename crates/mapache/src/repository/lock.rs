@@ -236,6 +236,10 @@ impl Lock {
 
 #[derive(Clone)]
 pub struct LockHandle {
+    state: Arc<LockState>,
+}
+
+struct LockState {
     repo: Arc<Repository>,
     lock: Arc<Mutex<Lock>>,
     alive_flag: Arc<AtomicBool>,
@@ -244,7 +248,82 @@ pub struct LockHandle {
     alive: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LockStatus {
+    Shared,
+    Exclusive,
+    Released,
+}
+
 impl LockHandle {
+    pub(crate) fn status(&self) -> LockStatus {
+        self.state.status()
+    }
+
+    pub fn new(repo: Arc<Repository>, lock: Arc<Mutex<Lock>>, alive: bool) -> Self {
+        Self {
+            state: Arc::new(LockState::new(repo, lock, alive)),
+        }
+    }
+
+    pub async fn unlock(&self) {
+        self.state.unlock().await;
+    }
+
+    pub fn trigger_unlock(&self) {
+        self.state.trigger_unlock();
+    }
+
+    pub(crate) async fn set_exclusive(&self, exclusive: bool) -> Result<()> {
+        let _guard = self.state.unlock_mutex.lock().await;
+        if self.status() == LockStatus::Released {
+            return Err(MapacheError::Locked(
+                "session lock has been released".to_string(),
+            ));
+        }
+        let (id, previous) = {
+            let mut lock = self.state.lock.lock();
+            let previous = lock.exclusive;
+            lock.exclusive = exclusive;
+            (*lock.id(), previous)
+        };
+        let result = async {
+            self.state.repo.save_lock(&self.state.lock).await?;
+            if exclusive
+                && self
+                    .state
+                    .repo
+                    .get_locks()
+                    .await?
+                    .iter()
+                    .any(|lock| *lock.id() != id && !lock.is_stale())
+            {
+                return Err(MapacheError::Locked(
+                    "exclusive operation conflicts with another repository lock".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            self.state.lock.lock().exclusive = previous;
+            self.state.repo.save_lock(&self.state.lock).await?;
+        }
+        result
+    }
+}
+
+impl LockState {
+    pub(crate) fn status(&self) -> LockStatus {
+        if !self.alive || !self.alive_flag.load(Ordering::SeqCst) {
+            LockStatus::Released
+        } else if self.lock.lock().is_exclusive() {
+            LockStatus::Exclusive
+        } else {
+            LockStatus::Shared
+        }
+    }
+
     pub fn new(repo: Arc<Repository>, lock: Arc<Mutex<Lock>>, alive: bool) -> Self {
         let handle = Self {
             repo: repo.clone(),
@@ -266,11 +345,13 @@ impl LockHandle {
         let repo = self.repo.clone();
         let lock = self.lock.clone();
         let alive_flag = self.alive_flag.clone();
+        let unlock_mutex = self.unlock_mutex.clone();
 
         self.runtime_handle.spawn(async move {
             loop {
                 tokio::time::sleep(LOCK_REFRESH_PERIOD).await;
 
+                let _guard = unlock_mutex.lock().await;
                 if !alive_flag.load(Ordering::Relaxed) {
                     break;
                 }
@@ -352,7 +433,7 @@ impl LockHandle {
     }
 }
 
-impl Drop for LockHandle {
+impl Drop for LockState {
     fn drop(&mut self) {
         self.trigger_unlock();
     }

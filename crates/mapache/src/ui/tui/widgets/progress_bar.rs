@@ -170,7 +170,7 @@ impl ProgressBar {
             spans.push(Span::styled(format_duration(d), eta_style));
         }
 
-        let rate_str = utils::format_size_binary(self.rate as u64, 2);
+        let rate_str = utils::format_size_binary(self.rate as u64, 3);
         spans.push(Span::raw(spacer));
         spans.push(Span::styled(rate_str, speed_style));
         spans.push(Span::styled("/s", speed_style));
@@ -220,14 +220,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builder_percentage_clamped() {
+    fn rendered_percentage_clamps_above_100() {
         let bar = ProgressBar::new().bytes(200, 100);
-        assert_eq!(bar.percentage, 100.0);
+        let rendered = crate::ui::tui::test_support::render_text(60, 5, |frame| {
+            frame.render_widget(bar.render(), frame.area());
+        });
+        assert!(
+            rendered.contains("100.0%"),
+            "bar must clamp the percentage to 100: {rendered:?}"
+        );
     }
 
     #[test]
-    fn builder_zero_expected() {
+    fn rendered_percentage_without_expected_bytes_stays_zero() {
         let bar = ProgressBar::new().bytes(50, 0);
-        assert_eq!(bar.percentage, 0.0);
+        let rendered = crate::ui::tui::test_support::render_text(60, 5, |frame| {
+            frame.render_widget(bar.render(), frame.area());
+        });
+        assert!(
+            rendered.contains("0.0%"),
+            "bar must default to 0% without expected bytes: {rendered:?}"
+        );
     }
 }

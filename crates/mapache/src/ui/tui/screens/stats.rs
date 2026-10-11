@@ -573,11 +573,13 @@ fn files(items: usize, bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::error::{MapacheError, Result};
     use crate::{
         backend::{StorageBackend, mock::MockBackend},
         commands::cmd_snapshot::{self, SnapshotRunOptions},
-        common::defaults::TEST_REPO_CONFIG,
+        common::{
+            defaults::TEST_REPO_CONFIG,
+            error::{MapacheError, Result},
+        },
         repository::repo::{Auth, THIS_REPOSITORY_VERSION},
     };
     use zeroize::Zeroizing;

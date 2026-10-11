@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use s3::{Bucket, Region, creds::Credentials};
 use zeroize::Zeroizing;
@@ -9,7 +8,10 @@ use crate::{
     backend::{
         BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry_with,
     },
-    common::defaults,
+    common::{
+        defaults,
+        error::{MapacheError, Result},
+    },
 };
 
 /// A storage backend that interacts with S3-compatible APIs.

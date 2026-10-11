@@ -7,7 +7,6 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use russh::{
     client,
@@ -30,6 +29,7 @@ use crate::{
         limiter::{RateLimiter, ThrottledReader, ThrottledWriter},
         retry, set_readonly_mode,
     },
+    common::error::{MapacheError, Result},
     repository::repo::REPO_TMP_EXTENSION,
     ui::{self, cli::color::Colorize},
     utils::{self, size},

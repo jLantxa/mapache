@@ -2,10 +2,12 @@ use std::time::Instant;
 
 use ratatui::{Frame, layout::Rect};
 
-use crate::ui::events::RestoreEvent;
-use crate::ui::tui::{
-    theme,
-    widgets::{TaskProgressState, TaskProgressWidget},
+use crate::ui::{
+    events::RestoreEvent,
+    tui::{
+        theme,
+        widgets::{TaskProgressState, TaskProgressWidget},
+    },
 };
 
 pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {

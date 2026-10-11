@@ -1,9 +1,11 @@
 use std::{path::Path, sync::Arc};
 
-use crate::common::error::Result;
 use async_trait::async_trait;
 
-use crate::backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents};
+use crate::{
+    backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents},
+    common::error::Result,
+};
 
 /// A dummy storage backend that sets itself before another backend, redirecting
 /// reads but ignoring writes.

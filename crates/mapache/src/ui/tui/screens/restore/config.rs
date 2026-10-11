@@ -259,8 +259,11 @@ impl RestoreConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::ui::tui::widgets::{FormFieldType, TextInput};
-    use crate::{common::ID, repository::snapshot::Snapshot};
+    use crate::{
+        common::ID,
+        repository::snapshot::Snapshot,
+        ui::tui::widgets::{FormFieldType, TextInput},
+    };
 
     use super::*;
 

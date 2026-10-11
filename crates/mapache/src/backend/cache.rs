@@ -5,14 +5,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::common::error::Result;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 use crate::{
     backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents, localfs::LocalFS},
-    common::{ContentIdType, defaults::APP_NAME, error::MapacheError, global::BASE_DIRS},
+    common::{
+        ContentIdType,
+        defaults::APP_NAME,
+        error::{MapacheError, Result},
+        global::BASE_DIRS,
+    },
 };
 
 /// Represents the state of a file in the download queue.

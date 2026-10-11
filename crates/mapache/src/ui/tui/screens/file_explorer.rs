@@ -589,10 +589,10 @@ mod tests {
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::Snapshot,
         },
+        ui::tui::widgets::FilterAction,
     };
     use zeroize::Zeroizing;
 
-    use crate::ui::tui::widgets::FilterAction;
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
     async fn make_repo() -> Result<(Arc<Repository>, ID)> {

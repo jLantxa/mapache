@@ -30,7 +30,6 @@ use std::{
     time::SystemTime,
 };
 
-use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
 use url::Url;
@@ -41,7 +40,10 @@ use crate::{
         dry::DryBackend, limiter::ThrottledBackend, localfs::LocalFS, s3::S3Backend,
         sftp::SftpBackend,
     },
-    common::ContentIdType,
+    common::{
+        ContentIdType,
+        error::{MapacheError, Result},
+    },
     ui,
 };
 

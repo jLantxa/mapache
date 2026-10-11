@@ -7,11 +7,14 @@ use std::{
     sync::Arc,
 };
 
-use crate::common::error;
 use futures::FutureExt;
 
 use crate::{
-    common::{ID, error::Result, traits::BlobSaver},
+    common::{
+        ID,
+        error::{self, Result},
+        traits::BlobSaver,
+    },
     fs::{
         extract_parent, get_intermediate_paths,
         node::{Node, NodeType},

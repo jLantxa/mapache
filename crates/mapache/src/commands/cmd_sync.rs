@@ -8,7 +8,6 @@ use std::{
     time::Instant,
 };
 
-use crate::common::error::Result;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
@@ -17,7 +16,11 @@ use serde::Serialize;
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler},
-    common::{defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError, global::GlobalOpts},
+    common::{
+        defaults::UI_RATE_ESTIMATOR_WINDOW,
+        error::{MapacheError, Result},
+        global::GlobalOpts,
+    },
     repository::lock::{Lock, LockHandle},
     repository::repo::{self, LOCKS_DIR, Repository},
     ui::{

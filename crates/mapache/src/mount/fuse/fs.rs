@@ -1,6 +1,5 @@
 use std::{ffi::OsStr, path::Path, sync::Arc};
 
-use crate::common::error::{MapacheError, Result};
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
     LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
@@ -10,7 +9,11 @@ use futures::StreamExt;
 use parking_lot::RwLock;
 
 use crate::{
-    common::{ID, traits::BlobLoader},
+    common::{
+        ID,
+        error::{MapacheError, Result},
+        traits::BlobLoader,
+    },
     fs::node::NodeType,
     mount::fuse::{
         cache::{BlobCache, TreeCache},

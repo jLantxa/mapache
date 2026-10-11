@@ -1,10 +1,12 @@
 use std::io::{self, BufRead, Write};
 
-use crate::common::error::{MapacheError, Result};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    common::{self, ID},
+    common::{
+        self, ID,
+        error::{MapacheError, Result},
+    },
     repository::{repo::Auth, snapshot::SnapshotEntryList},
     ui::cli::{
         color::Colorize,

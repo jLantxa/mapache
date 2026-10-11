@@ -24,21 +24,14 @@ use crate::{
 
 /// Returns whether a blob should undergo full compression, based on a sample.
 /// Small blobs always qualify so callers can compare their full compressed size.
-pub(crate) fn is_likely_compressible(data: &[u8]) -> Result<bool> {
-    thread_local! {
-        static PROBE_STORAGE: SecureStorage = SecureStorage::new().with_compression(1);
-    }
-
+pub(crate) fn is_likely_compressible(storage: &SecureStorage, data: &[u8]) -> Result<bool> {
     if data.len() < defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE {
         return Ok(true);
     }
     let sample = build_probe_sample(data);
-    PROBE_STORAGE.with(|storage| {
-        let compressed_len = storage.compress(&sample)?.len();
-        let minimum_savings =
-            sample.len() * defaults::INCOMPRESSIBLE_PROBE_MIN_SAVINGS_PERCENT / 100;
-        Ok(compressed_len <= sample.len() - minimum_savings)
-    })
+    let compressed_len = storage.compress(&sample)?.len();
+    let minimum_savings = sample.len() * defaults::INCOMPRESSIBLE_PROBE_MIN_SAVINGS_PERCENT / 100;
+    Ok(compressed_len <= sample.len() - minimum_savings)
 }
 
 fn build_probe_sample(data: &[u8]) -> Vec<u8> {
@@ -81,16 +74,18 @@ mod compressibility_tests {
 
     #[test]
     fn rejects_incompressible_data() -> Result<()> {
+        let storage = SecureStorage::new().with_compression(1);
         let data = incompressible_data(defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE * 2);
-        assert!(!is_likely_compressible(&data)?);
+        assert!(!is_likely_compressible(&storage, &data)?);
         Ok(())
     }
 
     #[test]
     fn rejects_media_with_small_compressible_header() -> Result<()> {
+        let storage = SecureStorage::new().with_compression(1);
         let mut data = incompressible_data(size::MiB as usize);
         data[..2048].fill(0);
-        assert!(!is_likely_compressible(&data)?);
+        assert!(!is_likely_compressible(&storage, &data)?);
         Ok(())
     }
 
@@ -109,22 +104,25 @@ mod compressibility_tests {
             .len();
         assert!(compressed_len < sample.len());
         assert!(compressed_len > sample.len() * 95 / 100);
-        assert!(!is_likely_compressible(&data)?);
+        let storage = SecureStorage::new().with_compression(1);
+        assert!(!is_likely_compressible(&storage, &data)?);
         Ok(())
     }
 
     #[test]
     fn accepts_compressible_data() -> Result<()> {
+        let storage = SecureStorage::new().with_compression(1);
         let data = b"compressible text\n".repeat(32 * 1024);
-        assert!(is_likely_compressible(&data)?);
+        assert!(is_likely_compressible(&storage, &data)?);
         Ok(())
     }
 
     #[test]
     fn detects_compressible_tail() -> Result<()> {
+        let storage = SecureStorage::new().with_compression(1);
         let mut data = incompressible_data(defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE * 8);
         data.extend_from_slice(&b"compressible text\n".repeat(8 * 1024));
-        assert!(is_likely_compressible(&data)?);
+        assert!(is_likely_compressible(&storage, &data)?);
         Ok(())
     }
 
@@ -133,8 +131,9 @@ mod compressibility_tests {
     #[case(1)]
     #[case(defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE - 1)]
     fn small_blobs_bypass_probe(#[case] len: usize) -> Result<()> {
+        let storage = SecureStorage::new().with_compression(1);
         let data = incompressible_data(len);
-        assert!(is_likely_compressible(&data)?);
+        assert!(is_likely_compressible(&storage, &data)?);
         Ok(())
     }
 
@@ -150,7 +149,8 @@ mod compressibility_tests {
             old_sample.extend_from_slice(&data[offset..offset + old_window_size]);
         }
 
-        assert!(!is_likely_compressible(&data)?);
+        let storage0 = SecureStorage::new().with_compression(1);
+        assert!(!is_likely_compressible(&storage0, &data)?);
         for level in [3, 19] {
             let storage = SecureStorage::new().with_compression(level);
             assert!(storage.compress(&old_sample)?.len() < old_sample.len());
@@ -163,7 +163,7 @@ mod compressibility_tests {
                             let sample = old_sample.clone();
                             storage.compress(&sample)?.len() < sample.len()
                         }
-                        "new_probe" => is_likely_compressible(&data)?,
+                        "new_probe" => is_likely_compressible(&storage, &data)?,
                         _ => true,
                     };
                     if should_compress {

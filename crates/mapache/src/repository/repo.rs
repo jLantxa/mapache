@@ -676,7 +676,7 @@ impl Repository {
             (self.secure_storage.encrypt(&data)?, false)
         } else if !skip_incompressible {
             (self.secure_storage.encode(&data)?, true)
-        } else if is_likely_compressible(&data)? {
+        } else if is_likely_compressible(&self.secure_storage, &data)? {
             let candidate = self.secure_storage.compress(&data)?;
             let compressed = candidate.len() < data.len();
             let plaintext = if compressed {

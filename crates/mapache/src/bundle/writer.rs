@@ -190,7 +190,7 @@ impl BundleWriter {
                 if !self.skip_incompressible {
                     return Ok((self.storage.encode(data.as_ref())?, true));
                 }
-                if !is_likely_compressible(data.as_ref())? {
+                if !is_likely_compressible(&self.storage, data.as_ref())? {
                     return Ok((self.storage.encrypt(data.as_ref())?, false));
                 }
                 let candidate = self.storage.compress(data.as_ref())?;

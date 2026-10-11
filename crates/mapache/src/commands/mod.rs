@@ -245,6 +245,11 @@ pub struct CliGlobalArgs {
     #[serde(rename = "index-mode")]
     pub index_mode: Option<IndexMode>,
 
+    /// Skip compression when a fast sample probe saves less than 5%
+    #[clap(long = "skip-incompressible", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[serde(rename = "skip-incompressible")]
+    pub skip_incompressible: Option<bool>,
+
     /// Disable repository locking (read-only operations)
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub no_lock: Option<bool>,
@@ -264,6 +269,7 @@ impl CliGlobalArgs {
             json: Some(false),
             verbosity: Some(DEFAULT_VERBOSITY),
             compression_level: Some(DEFAULT_COMPRESSION),
+            skip_incompressible: Some(false),
             retry_lock_duration: Some(Duration::minutes(5)),
             limit_upload: Some(10 * 1024 * 1024),
             limit_download: Some(50 * 1024 * 1024),
@@ -300,6 +306,7 @@ impl Merge for CliGlobalArgs {
         merge_opt(&mut self.json, other.json);
         merge_opt(&mut self.verbosity, other.verbosity);
         merge_opt(&mut self.compression_level, other.compression_level);
+        merge_opt(&mut self.skip_incompressible, other.skip_incompressible);
         merge_opt(&mut self.retry_lock_duration, other.retry_lock_duration);
         merge_opt(&mut self.limit_upload, other.limit_upload);
         merge_opt(&mut self.limit_download, other.limit_download);
@@ -393,6 +400,7 @@ pub struct GlobalArgs {
     pub json: bool,
     pub verbosity: Option<u32>,
     pub compression_level: Compression,
+    pub skip_incompressible: bool,
     pub retry_lock_duration: Option<Duration>,
     pub limit_upload: Option<u64>,
     pub limit_download: Option<u64>,
@@ -422,6 +430,7 @@ impl GlobalArgs {
             pack_size: (self.pack_size_mib * size::MiB as f32) as u64,
             use_cache: !self.no_cache,
             compression: self.compression_level,
+            skip_incompressible: self.skip_incompressible,
             index_mode,
         }
     }
@@ -451,6 +460,7 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
         json: cli.json.unwrap_or(false),
         verbosity: cli.verbosity,
         compression_level,
+        skip_incompressible: cli.skip_incompressible.unwrap_or(false),
         retry_lock_duration: cli.retry_lock_duration,
         limit_upload: cli.limit_upload,
         limit_download: cli.limit_download,
@@ -881,6 +891,7 @@ impl GlobalArgs {
             json: false,
             verbosity: None,
             compression_level: DEFAULT_COMPRESSION,
+            skip_incompressible: false,
             retry_lock_duration: None,
             limit_upload: None,
             limit_download: None,

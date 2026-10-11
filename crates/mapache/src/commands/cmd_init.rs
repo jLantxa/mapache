@@ -81,12 +81,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
     }
 
     // TODO(v1-removal): The v1 format has no per-blob compression marker.
-    if args.format < 2 && matches!(global_args.compression_level, Compression::None) {
-        return Err(InitError::RepoInitError(
+    if args.format < 2
+        && (matches!(global_args.compression_level, Compression::None)
+            || global_args.skip_incompressible)
+    {
+        let msg = if matches!(global_args.compression_level, Compression::None) {
             "compression 'none' is not supported in repository format v1; \
              use format 2 or a compression preset"
-                .to_string(),
-        ));
+        } else {
+            "skip-incompressible is not supported in repository format v1; \
+             use format 2"
+        };
+        return Err(InitError::RepoInitError(msg.to_string()));
     }
 
     // ECC is only supported on v2+ repos.

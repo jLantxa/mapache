@@ -14,12 +14,172 @@ use zeroize::Zeroizing;
 
 use crate::{
     common::{
+        defaults,
         error::{MapacheError, Result},
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
     fs,
-    repository::repo::Auth,
+    repository::{repo::Auth, storage::SecureStorage},
 };
+
+/// Returns whether a blob should undergo full compression, based on a sample.
+/// Small blobs always qualify so callers can compare their full compressed size.
+pub(crate) fn is_likely_compressible(data: &[u8]) -> Result<bool> {
+    thread_local! {
+        static PROBE_STORAGE: SecureStorage = SecureStorage::new().with_compression(1);
+    }
+
+    if data.len() < defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE {
+        return Ok(true);
+    }
+    let sample = build_probe_sample(data);
+    PROBE_STORAGE.with(|storage| {
+        let compressed_len = storage.compress(&sample)?.len();
+        let minimum_savings =
+            sample.len() * defaults::INCOMPRESSIBLE_PROBE_MIN_SAVINGS_PERCENT / 100;
+        Ok(compressed_len <= sample.len() - minimum_savings)
+    })
+}
+
+fn build_probe_sample(data: &[u8]) -> Vec<u8> {
+    let total = defaults::INCOMPRESSIBLE_PROBE_SAMPLE_SIZE.min(data.len());
+    let windows = defaults::INCOMPRESSIBLE_PROBE_WINDOWS;
+
+    if windows <= 1 || data.len() <= total {
+        return data[..total].to_vec();
+    }
+
+    let window_size = total / windows;
+    if window_size == 0 {
+        return data[..total].to_vec();
+    }
+
+    let region_size = data.len() / windows;
+    let mut sample = Vec::with_capacity(window_size * windows);
+    for window in 0..windows {
+        let offset = window * region_size + (region_size - window_size) / 2;
+        sample.extend_from_slice(&data[offset..offset + window_size]);
+    }
+    sample
+}
+
+#[cfg(test)]
+mod compressibility_tests {
+    use super::*;
+
+    fn incompressible_data(len: usize) -> Vec<u8> {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rejects_incompressible_data() -> Result<()> {
+        let data = incompressible_data(defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE * 2);
+        assert!(!is_likely_compressible(&data)?);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_media_with_small_compressible_header() -> Result<()> {
+        let mut data = incompressible_data(size::MiB as usize);
+        data[..2048].fill(0);
+        assert!(!is_likely_compressible(&data)?);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_marginal_sample_gains() -> Result<()> {
+        let mut data = incompressible_data(size::MiB as usize);
+        let region_size = data.len() / defaults::INCOMPRESSIBLE_PROBE_WINDOWS;
+        for region in data.chunks_exact_mut(region_size) {
+            let center = region.len() / 2;
+            region[center..center + 128].fill(0);
+        }
+        let sample = build_probe_sample(&data);
+        let compressed_len = SecureStorage::new()
+            .with_compression(1)
+            .compress(&sample)?
+            .len();
+        assert!(compressed_len < sample.len());
+        assert!(compressed_len > sample.len() * 95 / 100);
+        assert!(!is_likely_compressible(&data)?);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_compressible_data() -> Result<()> {
+        let data = b"compressible text\n".repeat(32 * 1024);
+        assert!(is_likely_compressible(&data)?);
+        Ok(())
+    }
+
+    #[test]
+    fn detects_compressible_tail() -> Result<()> {
+        let mut data = incompressible_data(defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE * 8);
+        data.extend_from_slice(&b"compressible text\n".repeat(8 * 1024));
+        assert!(is_likely_compressible(&data)?);
+        Ok(())
+    }
+
+    #[rstest::rstest]
+    #[case(0)]
+    #[case(1)]
+    #[case(defaults::INCOMPRESSIBLE_PROBE_MIN_SIZE - 1)]
+    fn small_blobs_bypass_probe(#[case] len: usize) -> Result<()> {
+        let data = incompressible_data(len);
+        assert!(is_likely_compressible(&data)?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "manual compression CPU benchmark"]
+    fn benchmark_media_probe() -> Result<()> {
+        let mut data = incompressible_data(size::MiB as usize);
+        data[..2048].fill(0);
+        let mut old_sample = Vec::with_capacity(64 * 1024);
+        let old_window_size = 16 * 1024;
+        for window in 0..4 {
+            let offset = (data.len() - old_window_size) * window / 3;
+            old_sample.extend_from_slice(&data[offset..offset + old_window_size]);
+        }
+
+        assert!(!is_likely_compressible(&data)?);
+        for level in [3, 19] {
+            let storage = SecureStorage::new().with_compression(level);
+            assert!(storage.compress(&old_sample)?.len() < old_sample.len());
+            for policy in ["full", "old_probe", "new_probe"] {
+                let started = std::time::Instant::now();
+                let mut full_compressions = 0;
+                for _ in 0..64 {
+                    let should_compress = match policy {
+                        "old_probe" => {
+                            let sample = old_sample.clone();
+                            storage.compress(&sample)?.len() < sample.len()
+                        }
+                        "new_probe" => is_likely_compressible(&data)?,
+                        _ => true,
+                    };
+                    if should_compress {
+                        std::hint::black_box(storage.compress(&data)?);
+                        full_compressions += 1;
+                    }
+                }
+                eprintln!(
+                    "level={level} policy={policy} elapsed={:?} full_compressions={full_compressions}/64",
+                    started.elapsed()
+                );
+            }
+        }
+        Ok(())
+    }
+}
 
 // --- Constants ---
 

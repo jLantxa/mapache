@@ -1,13 +1,15 @@
 #![cfg(test)]
 
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
 
     use anyhow::{Context, Result};
 
     use mapache::{
+        backend::localfs::LocalFS,
         commands::{Compression, UseSnapshot},
-        repository::repo::SNAPSHOTS_DIR,
+        common::ID,
+        repository::repo::{Repository, SNAPSHOTS_DIR},
         utils,
     };
 
@@ -751,6 +753,98 @@ mod tests {
             "index should have been created"
         );
 
+        Ok(())
+    }
+
+    #[rstest::rstest]
+    #[case(true, Compression::Fastest, false, true)]
+    #[case(true, Compression::Best, false, true)]
+    #[case(false, Compression::Fastest, true, true)]
+    #[case(true, Compression::None, false, false)]
+    #[tokio::test]
+    async fn test_skip_incompressible_snapshot_restore(
+        #[case] skip_incompressible: bool,
+        #[case] compression: Compression,
+        #[case] random_compressed: bool,
+        #[case] text_compressed: bool,
+    ) -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+        ctx.global.skip_incompressible = skip_incompressible;
+        ctx.global.compression_level = compression;
+
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let random: Vec<u8> = (0..2 * 1024 * 1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect();
+        let small_random = &random[..384 * 1024];
+        let mut media = random[..96 * 1024].to_vec();
+        media[..512].fill(0);
+        let text = b"compressible text\n".repeat(24 * 1024);
+        let data_dir = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&data_dir)?;
+        std::fs::write(data_dir.join("random.bin"), small_random)?;
+        std::fs::write(data_dir.join("media.jpg"), &media)?;
+        std::fs::write(data_dir.join("chunked.bin"), &random)?;
+        std::fs::write(data_dir.join("text.txt"), &text)?;
+
+        ctx.snapshot_builder(vec![data_dir])
+            .root(true)
+            .run(&ctx.global)
+            .await?;
+
+        let (repo, _) = Repository::try_open_unlocked(
+            &ctx.auth,
+            None,
+            Arc::new(LocalFS::new(ctx.repo_path.clone())),
+            ctx.global.to_repo_config(),
+        )
+        .await?;
+        repo.reload_master_index().await?;
+
+        let random_id = ID::from_content(small_random);
+        let media_id = ID::from_content(&media);
+        let text_id = ID::from_content(&text);
+        let mut stored_random_compressed = None;
+        let mut stored_media_compressed = None;
+        let mut stored_text_compressed = None;
+        repo.index()
+            .for_each_id(|id, locator| {
+                if *id == random_id {
+                    stored_random_compressed = Some(locator.compressed);
+                }
+                if *id == media_id {
+                    stored_media_compressed = Some(locator.compressed);
+                }
+                if *id == text_id {
+                    stored_text_compressed = Some(locator.compressed);
+                }
+            })
+            .await;
+        assert_eq!(stored_random_compressed, Some(random_compressed));
+        assert_eq!(stored_media_compressed, Some(random_compressed));
+        assert_eq!(stored_text_compressed, Some(text_compressed));
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+        assert_eq!(
+            std::fs::read(restore_path.join("random.bin"))?,
+            small_random
+        );
+        assert_eq!(std::fs::read(restore_path.join("chunked.bin"))?, random);
+        assert_eq!(std::fs::read(restore_path.join("media.jpg"))?, media);
+        assert_eq!(std::fs::read(restore_path.join("text.txt"))?, text);
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await?;
         Ok(())
     }
 

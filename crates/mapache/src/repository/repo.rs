@@ -33,7 +33,7 @@ use crate::{
         storage::{EncodingContext, SecureStorage},
     },
     ui::{self},
-    utils::collections::IdSet,
+    utils::{collections::IdSet, is_likely_compressible},
 };
 
 pub const THIS_REPOSITORY_VERSION: u32 = 2;
@@ -118,6 +118,8 @@ pub struct RepoConfig {
     pub use_cache: bool,
     /// Compression level to use for new data.
     pub(crate) compression: Compression,
+    /// Skip compressing blobs that a cheap probe shows are incompressible.
+    pub(crate) skip_incompressible: bool,
     /// Index loading mode: eager (all in RAM) or lazy (hot + cold).
     pub index_mode: IndexMode,
 }
@@ -207,6 +209,8 @@ pub struct Repository {
 
     /// Compression preset for new blobs (None = store blobs uncompressed).
     compression: Compression,
+    /// Whether to skip compression when the probe shows no gain.
+    skip_incompressible: bool,
 
     // Paths
     objects_path: PathBuf,
@@ -433,12 +437,17 @@ impl Repository {
         repo.manifest().validate_algorithms()?;
 
         // TODO(v1-removal): The v1 format has no per-blob compression marker.
-        if version < 2 && matches!(config.compression, Compression::None) {
-            return Err(MapacheError::Repo(
+        if version < 2
+            && (matches!(config.compression, Compression::None) || config.skip_incompressible)
+        {
+            let msg = if matches!(config.compression, Compression::None) {
                 "compression 'none' is not supported in repository format v1; \
                  migrate the repository to v2 first"
-                    .to_string(),
-            ));
+            } else {
+                "skip-incompressible requires repository format v2; \
+                 migrate the repository to v2 first"
+            };
+            return Err(MapacheError::Repo(msg.to_string()));
         }
 
         // TODO(v1-removal): Nonce position depends on repo version.
@@ -488,6 +497,7 @@ impl Repository {
             secure_storage,
             max_packer_size: config.pack_size,
             compression: config.compression,
+            skip_incompressible: config.skip_incompressible,
             master_index,
             pack_saver_tx: parking_lot::RwLock::new(None),
             pack_saver_handle: parking_lot::RwLock::new(None),
@@ -567,6 +577,7 @@ impl Repository {
                 pack_size: self.max_packer_size,
                 use_cache: false,
                 compression: self.compression,
+                skip_incompressible: self.skip_incompressible,
                 index_mode: self.master_index.index_mode(),
             },
         )
@@ -659,11 +670,23 @@ impl Repository {
         }
 
         let raw_length = data.len() as u64;
-        let compressed = !matches!(self.compression, Compression::None);
-        let encoded_data = if compressed {
-            self.secure_storage.encode(&data)?
+        let should_compress = !matches!(self.compression, Compression::None);
+        let skip_incompressible = self.skip_incompressible && self.has_compression_marker();
+        let (encoded_data, compressed) = if !should_compress {
+            (self.secure_storage.encrypt(&data)?, false)
+        } else if !skip_incompressible {
+            (self.secure_storage.encode(&data)?, true)
+        } else if is_likely_compressible(&data)? {
+            let candidate = self.secure_storage.compress(&data)?;
+            let compressed = candidate.len() < data.len();
+            let plaintext = if compressed {
+                &candidate[..]
+            } else {
+                &data[..]
+            };
+            (self.secure_storage.encrypt(plaintext)?, compressed)
         } else {
-            self.secure_storage.encrypt(&data)?
+            (self.secure_storage.encrypt(&data)?, false)
         };
 
         let tx = {

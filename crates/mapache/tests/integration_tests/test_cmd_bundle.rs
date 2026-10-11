@@ -8,12 +8,20 @@ mod tests {
         synthetic::{Dataset, SyntheticData},
     };
 
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
     #[tokio::test]
-    async fn test_bundle_and_extract() -> Result<()> {
+    async fn test_bundle_and_extract(#[case] skip_incompressible: bool) -> Result<()> {
         let mut ctx = TestContext::new().await?;
+        ctx.global.skip_incompressible = skip_incompressible;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
         let synthetic = SyntheticData::new(dataset);
         let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+        let mut media = vec![0u8; 96 * 1024];
+        rand::fill(&mut media[..]);
+        media[..512].fill(0);
+        std::fs::write(backup_data_path.join("media.jpg"), &media)?;
 
         let bundle_path = ctx._tmp_dir.path().join("test_bundle.mapache");
         let extract_path = ctx._tmp_dir.path().join("extracted");
@@ -37,6 +45,9 @@ mod tests {
             .await?;
 
         let backup_dir_name = backup_data_path.file_name().unwrap();
+        let extracted_media_path = extract_path.join(backup_dir_name).join("media.jpg");
+        assert_eq!(std::fs::read(&extracted_media_path)?, media);
+        std::fs::remove_file(extracted_media_path)?;
         synthetic.verify_all_exact(&extract_path.join(backup_dir_name))?;
 
         Ok(())

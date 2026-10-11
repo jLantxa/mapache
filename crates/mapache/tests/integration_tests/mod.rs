@@ -159,6 +159,7 @@ impl TestContext {
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
+            skip_incompressible: false,
             limit_upload: None,
             limit_download: None,
             index_mode: IndexMode::Eager,

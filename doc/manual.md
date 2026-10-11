@@ -1706,6 +1706,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `--quiet` | Suppress all logging output (verbosity = 0) |
 | `-v, --verbosity <0-3>` | Verbosity level (0 = quiet, 3 = most verbose) |
 | `--compression <LEVEL>` | Compression: `none`, `fastest`, `fast` (default), `balanced`, `better`, `best`, or `level:N` (N = 1–19) |
+| `--skip-incompressible` | Skip compression when a fast sample probe saves less than 5%. Saves CPU; may leave marginally compressible blobs uncompressed |
 | `--retry-lock <DUR>` | Retry acquiring a lock for a duration (e.g., `5m`, `30s`, `5m30s`) |
 | `--limit-upload <SPEED>` | Upload bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
 | `--limit-download <SPEED>` | Download bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
@@ -1726,16 +1727,36 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `level:N` | N | Custom zstd level (1–19) |
 
 With `none`, data and tree blobs are stored uncompressed, which saves CPU and
-avoids wasting space on content that does not compress. Each blob stores a
-single *compressed/uncompressed* marker, so restoring, verifying, or migrating
-the repository requires no extra configuration. Metadata (footers, index,
-snapshots) is always compressed regardless of this setting. `none` is also
-available in the TOML config as `compression = "none"`.
+avoids wasting space on content that does not compress. When using a
+compression level, `--skip-incompressible` can avoid compressing blobs that a
+fast multi-window probe predicts will gain little from compression. For blobs
+of at least 64 KiB, it samples 16 KiB from the centers of four evenly spaced
+regions using zstd level 1, independently of the selected compression level.
+This avoids over-weighting small file headers and trailers. Full compression
+is attempted only if the sample saves at least 5%; the full result is then kept
+only if it is smaller than the original. Smaller blobs are compressed and
+size-compared directly. This trades some compression ratio for less CPU work;
+it does not classify files by extension, so compressible regions in ISO images
+can still be compressed.
+
+The option affects newly written blobs only; deduplicated blobs already in the
+repository are not re-encoded. To compare performance, use separate fresh
+repositories with identical settings. Stored size can remain almost unchanged
+for JPEG/MP4 data, and hashing, encryption, or I/O may still dominate runtime.
+`skip-incompressible` is also available in the TOML config as
+`skip-incompressible = true`.
+
+Each blob stores a single *compressed/uncompressed* marker, so restoring,
+verifying, or migrating the repository requires no extra configuration.
+Metadata (footers, index, snapshots) is always compressed regardless of this
+setting. `none` is also available in the TOML config as `compression = "none"`.
 
 > **Note:** `none` requires repository format v2. The v1 format always stores
 > blobs zstd-compressed and has no per-blob compression marker, so using
 > `--compression none` (or `compression = "none"`) against a v1
 > repository fails — migrate it to v2 first (`mapache migrate -r <URL>`).
+> Similarly, `--skip-incompressible` only takes effect on repositories that
+> store the per-blob compression marker (v2).
 
 ### Bandwidth Limit Format
 

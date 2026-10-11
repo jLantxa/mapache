@@ -68,6 +68,24 @@ pub(crate) const DEFAULT_COMPRESSION: Compression = Compression::Fast;
 /// Maximum number of zstd compressor contexts to keep in the pool.
 pub(crate) const DEFAULT_COMPRESSOR_POOL_SIZE: usize = 16;
 
+/// Total number of bytes probed to decide whether a blob is incompressible
+/// when `--skip-incompressible` is enabled. The sample is spread across
+/// [`INCOMPRESSIBLE_PROBE_WINDOWS`] windows so that data with a compressible
+/// region (e.g. a text body behind an already-compressed header) is still
+/// detected as compressible.
+pub(crate) const INCOMPRESSIBLE_PROBE_SAMPLE_SIZE: usize = 16 * size::KiB as usize;
+
+/// Number of regions whose centers supply the probe windows.
+pub(crate) const INCOMPRESSIBLE_PROBE_WINDOWS: usize = 4;
+
+/// Blobs smaller than this are always compressed and size-compared exactly
+/// (no probe): probing tiny blobs would not save meaningful CPU and would
+/// only add a false-positive risk.
+pub(crate) const INCOMPRESSIBLE_PROBE_MIN_SIZE: usize = 64 * size::KiB as usize;
+
+/// Minimum sample savings required before attempting full compression.
+pub(crate) const INCOMPRESSIBLE_PROBE_MIN_SAVINGS_PERCENT: usize = 5;
+
 // --- Display ---
 /// Display length for the repository ID in bytes
 pub(crate) const SHORT_REPO_ID_LEN: usize = 5;
@@ -117,6 +135,7 @@ pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
     pack_size: DEFAULT_PACK_SIZE,
     use_cache: false,
     compression: Compression::Fastest,
+    skip_incompressible: false,
     index_mode: IndexMode::Eager,
 };
 

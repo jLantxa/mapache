@@ -39,6 +39,7 @@ pub enum ForgetError {
     ForgetFailed(String),
     #[error("forget interrupted by user")]
     Interrupted,
+
     #[error(transparent)]
     Repo(#[from] MapacheError),
     #[error(transparent)]
@@ -188,6 +189,7 @@ impl Merge for CmdArgs {
         if self.hosts.is_empty() {
             self.hosts = other.hosts;
         }
+
         merge_opt(&mut self.keep_last, other.keep_last);
         merge_opt(&mut self.keep_within, other.keep_within);
         merge_opt(&mut self.keep_yearly, other.keep_yearly);
@@ -197,6 +199,7 @@ impl Merge for CmdArgs {
         merge_opt(&mut self.keep_hourly, other.keep_hourly);
         merge_opt(&mut self.keep_tags, other.keep_tags);
         merge_opt(&mut self.keep_min, other.keep_min);
+
         // skip: dry_run
         // skip: run_gc
         merge_opt(&mut self.tolerance, other.tolerance);
@@ -484,6 +487,7 @@ async fn forget_phase(
 
     if !dry_run && !removed_snapshots.is_empty() {
         tracing::info!(target: "forget", "Updating repository (removing {} snapshots)", removed_snapshots.len());
+
         for entry in &removed_snapshots {
             tracing::info!(target: "forget", "Removing snapshot {} ({:?}, tags={:?})", entry.id, entry.snapshot.timestamp, entry.snapshot.tags);
             if args.force {

@@ -242,6 +242,7 @@ pub struct LockHandle {
 struct LockState {
     repo: Arc<Repository>,
     lock: Arc<Mutex<Lock>>,
+
     alive_flag: Arc<AtomicBool>,
     unlock_mutex: Arc<tokio::sync::Mutex<()>>,
     runtime_handle: tokio::runtime::Handle,
@@ -281,6 +282,7 @@ impl LockHandle {
                 "session lock has been released".to_string(),
             ));
         }
+
         let (id, previous) = {
             let mut lock = self.state.lock.lock();
             let previous = lock.exclusive;
@@ -305,6 +307,7 @@ impl LockHandle {
             Ok(())
         }
         .await;
+
         if result.is_err() {
             self.state.lock.lock().exclusive = previous;
             self.state.repo.save_lock(&self.state.lock).await?;

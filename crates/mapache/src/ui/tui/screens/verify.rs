@@ -46,6 +46,7 @@ enum VerifyResult {
 pub struct VerifyScreen {
     repo: Arc<Repository>,
     lock_handle: Option<LockHandle>,
+
     phase: VerifyPhase,
     form: Form,
     shutdown_signal: Arc<AtomicBool>,
@@ -53,6 +54,7 @@ pub struct VerifyScreen {
     task: Option<BackgroundTask<VerifyResult>>,
     progress: PhaseProgress,
     summary: Option<VerifyResult>,
+
     toasts: ToastSink,
 }
 

@@ -61,18 +61,23 @@ pub struct FindScreen {
     repo: Arc<Repository>,
     focus: Focus,
     search_input: TextInput,
+
     results: Vec<FindResult>,
     filtered_indices: Vec<usize>,
     list_state: ListState,
+
     is_searching: bool,
     search_rx: Option<mpsc::UnboundedReceiver<SearchUpdate>>,
     search_cancel: Arc<AtomicBool>,
     search_progress: Option<(usize, usize, usize)>,
     status_message: String,
+
     last_height: usize,
     spinner: Spinner,
     last_results_area: Rect,
+
     snapshots: Arc<SnapshotEntryList>,
+
     toasts: ToastSink,
 }
 

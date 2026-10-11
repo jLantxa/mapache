@@ -46,6 +46,7 @@ pub struct SnapshotCreateScreen {
     form: SnapshotForm,
     progress: ProgressState,
     shutdown_signal: Arc<AtomicBool>,
+
     rx: Option<mpsc::UnboundedReceiver<BackupEvent>>,
     task: Option<BackgroundTask<SummaryResult>>,
     summary: Option<SummaryResult>,

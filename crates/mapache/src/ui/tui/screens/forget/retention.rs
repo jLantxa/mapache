@@ -57,12 +57,14 @@ impl RetentionConfig {
                     config
                         .and_then(|c| c.keep_yearly.map(|n| n.to_string()))
                         .unwrap_or_default()).help("Keep the latest snapshot of each of the last N years ('all' for every year)."),
+
             FormField::list("Keep tags:", keep_tags).help("Always keep snapshots carrying any of these tags. Enter adds a tag; Backspace removes the last."),
             FormField::text("Keep min:",
                     config
                         .and_then(|args| args.keep_min)
                         .map(|count| count.to_string())
                         .unwrap_or_default()).help("Keep at least N matching snapshots after applying retention rules ('all' keeps every one)."),
+
             FormField::section("Advanced - Filters / Deletion"),
             FormField::list("Hosts:", hosts).help("Only consider snapshots from these hosts. Enter adds a host; Backspace removes the last."),
             FormField::list("Tags (filter):", tags_filter).help("Only consider snapshots carrying all of these tags. Enter adds one; Backspace removes the last."),
@@ -88,6 +90,7 @@ impl RetentionConfig {
 
     fn validate(&mut self) -> bool {
         self.form.clear_errors();
+
         for label in [
             "Keep last:",
             "Keep within:",
@@ -102,6 +105,7 @@ impl RetentionConfig {
             if value.is_empty() {
                 continue;
             }
+
             let error = if label == "Keep within:" {
                 utils::parse_duration_string(value)
                     .err()
@@ -109,6 +113,7 @@ impl RetentionConfig {
             } else {
                 cmd_forget::parse_retention_number(value).err()
             };
+
             if let Some(error) = error {
                 self.form.set_error(label, error);
                 self.form.focus_field(label);
@@ -299,6 +304,7 @@ mod tests {
                 }
             }
         }
+
         let rules = rc.to_rules();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0], RetentionRule::KeepLast(3));
@@ -309,6 +315,7 @@ mod tests {
     fn to_rules_keep_tags_from_multiselect() {
         let mut rc = RetentionConfig::new(None);
         set_multi_by_label(&mut rc, "Keep tags:", &["important", "archive"]);
+
         let rules = rc.to_rules();
         assert_eq!(rules.len(), 1);
         match &rules[0] {
@@ -338,12 +345,14 @@ mod tests {
         ] {
             let mut config = make_config_with_field(label, value);
             config.form.handle_key(KeyCode::BackTab);
+
             assert!(matches!(
                 config.handle_key(KeyCode::Enter),
                 RetentionAction::None
             ));
             assert!(!config.validate());
         }
+
         let mut config = make_config("all");
         config.form.handle_key(KeyCode::BackTab);
         assert!(matches!(
@@ -369,6 +378,7 @@ mod tests {
         let mut config = RetentionConfig::new(None);
         config.form.focus_field("Force:");
         config.handle_key(KeyCode::Enter);
+
         assert!(config.force());
         assert!(matches!(
             config.handle_key(KeyCode::Esc),
@@ -379,6 +389,7 @@ mod tests {
             RetentionAction::Cancel
         ));
         assert!(!config.force());
+
         config.form.focus_field("Force:");
         config.handle_key(KeyCode::Enter);
         config.handle_key(KeyCode::Tab);
@@ -403,6 +414,7 @@ mod tests {
             keep_tags: Some("archive".to_string()),
             ..Default::default()
         };
+
         let mut config = RetentionConfig::new(Some(&defaults));
         assert!(config.validate());
         assert_eq!(config.keep_min(), Some(3));

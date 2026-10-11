@@ -125,6 +125,7 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize, out: &mut Vec<Line<'s
             width += 1;
         }
     }
+
     flush_span(&mut spans, &mut current, current_style);
     if !spans.is_empty() {
         lines.push(Line::from(spans));

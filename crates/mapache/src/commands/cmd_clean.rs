@@ -33,6 +33,7 @@ pub enum CleanError {
     ExecuteFailed(String),
     #[error("cleanup interrupted by user")]
     Interrupted,
+
     #[error(transparent)]
     Repo(#[from] MapacheError),
     #[error(transparent)]
@@ -179,6 +180,7 @@ pub async fn run_with_repo(
                     plan.actionable_small_packs(),
                     plan.tolerated_packs
                 );
+
                 let actionable = plan.unused_packs.len()
                     + plan.obsolete_packs.len()
                     + plan.actionable_small_packs();
@@ -271,8 +273,10 @@ pub struct CleanReport {
     pub obsolete_packs: usize,
     pub small_packs: usize,
     pub tolerated_packs: usize,
+
     pub added_bytes: u64,
     pub deleted_bytes: u64,
+
     pub dry_run: bool,
     pub duration: Duration,
 }
@@ -358,6 +362,7 @@ where
             CleanError::ExecuteFailed(e.to_string())
         })?;
         tracing::info!(target: "clean", "GC execution finished. Added: {}, Deleted: {}", utils::format_size_binary(gc_sizes.added_bytes, 1), utils::format_size_binary(gc_sizes.deleted_bytes, 1));
+
         report.added_bytes = gc_sizes.added_bytes;
         report.deleted_bytes = gc_sizes.deleted_bytes;
     }
@@ -413,8 +418,10 @@ struct CleanOutput {
     obsolete_packs: usize,
     small_packs: usize,
     tolerated_packs: usize,
+
     added_bytes: u64,
     deleted_bytes: u64,
+
     net_freed_bytes: i64,
     duration_secs: f64,
 }

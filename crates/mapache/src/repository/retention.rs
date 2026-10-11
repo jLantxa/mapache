@@ -133,6 +133,7 @@ impl RetentionOptions {
         if let Some(n) = self.keep_hourly {
             rules.push(RetentionRule::KeepHourly(n));
         }
+
         if let Some(tags) = &self.keep_tags {
             rules.push(RetentionRule::KeepTags(tags.clone()));
         }
@@ -442,6 +443,7 @@ pub fn build_forget_plan(
 
     in_scope.sort_unstable_by_key(|e| e.snapshot.timestamp);
     let keep = apply_retention_rules_with_reasons(&in_scope, rules, keep_min, now);
+
     let remove: IdSet<ID> = in_scope_ids
         .iter()
         .copied()

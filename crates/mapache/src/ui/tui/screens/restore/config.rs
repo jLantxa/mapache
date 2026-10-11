@@ -43,6 +43,7 @@ impl RestoreConfig {
                         .collect()).help("Paths to restore (empty restores all). Enter adds a path; Backspace removes the last."),
             FormField::text("Target Path:", "").help("Required destination directory for restored files."),
             FormField::toggle("Dry Run:", false).help("Report what would be restored without writing anything."),
+
             FormField::section("Advanced"),
             FormField::toggle("Strip Prefix:", false).help("Strip the snapshot's root prefix from restored paths."),
             FormField::toggle("Verify Content:", false).help("Verify each restored file against its checksum."),
@@ -62,6 +63,7 @@ impl RestoreConfig {
             FormField::toggle("No preserve root:", false).help("Allow deletion in the target root directory; requires Delete."),
             FormField::toggle("Quit on error:", false).help("Stop restoring immediately when an error occurs."),
             FormField::toggle("Sparse:", false).help("Create sparse files instead of preallocating disk space."),
+
             FormField::action("Start Restore"),
         ];
 
@@ -169,6 +171,7 @@ impl RestoreConfig {
 
     fn validate(&mut self) -> bool {
         self.form.clear_errors();
+
         let error = if self.get_target().as_os_str().is_empty() {
             Some(("Target Path:", "Target path required".to_string()))
         } else if self
@@ -336,15 +339,18 @@ mod tests {
             config.form.get_multi_by_label("Paths:").unwrap(),
             &["data, archives".to_string()]
         );
+
         config.handle_key(KeyCode::Enter);
         for character in "other data".chars() {
             config.handle_key(KeyCode::Char(character));
         }
         config.handle_key(KeyCode::Enter);
+
         assert_eq!(
             config.get_include().unwrap(),
             vec![PathBuf::from("data, archives"), PathBuf::from("other data")]
         );
+
         config.handle_key(KeyCode::Enter);
         config.handle_key(KeyCode::Backspace);
         config.handle_key(KeyCode::Backspace);
@@ -383,12 +389,14 @@ mod tests {
     fn advanced_restore_fields_reach_command_args() {
         let mut config = RestoreConfig::new(make_snapshot_entry(), None);
         assert!(config.get_exclude().is_none());
+
         for label in ["Delete:", "No preserve root:", "Quit on error:", "Sparse:"] {
             config.form.focus_field(label);
             config.form.handle_key(KeyCode::Enter);
         }
         set_text(&mut config, "Include file:", "include.txt");
         set_text(&mut config, "Exclude file:", "exclude.txt");
+
         let args = config.to_args();
         assert_eq!(args.include_file, Some(PathBuf::from("include.txt")));
         assert_eq!(args.exclude_file, Some(PathBuf::from("exclude.txt")));
@@ -420,8 +428,10 @@ mod tests {
         let path = temporary.path().join("filters.txt");
         set_text(&mut config, "Include file:", &path.to_string_lossy());
         assert!(!config.validate());
+
         std::fs::write(&path, "data\n").unwrap();
         assert!(config.validate());
+
         set_text(
             &mut config,
             "Exclude file:",

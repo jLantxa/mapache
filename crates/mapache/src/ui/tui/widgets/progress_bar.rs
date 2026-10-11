@@ -14,12 +14,16 @@ pub struct ProgressBar {
     percentage: f64,
     processed_bytes: u64,
     expected_bytes: u64,
+
     processed_items: u64,
     expected_items: u64,
+
     skipped_bytes: u64,
     elapsed: std::time::Duration,
+
     scanning: bool,
     cancelling: bool,
+
     rate: f64,
     eta: Option<Duration>,
 }

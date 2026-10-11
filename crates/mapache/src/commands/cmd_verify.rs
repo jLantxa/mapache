@@ -52,6 +52,7 @@ struct VerifyProgressMsg {
     missing_packs: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     corrupt_blobs: Option<usize>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pack_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,12 +61,15 @@ struct VerifyProgressMsg {
     packs_processed: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     packs_corrupt: Option<usize>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     blobs_verified: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     blobs_dangling: Option<usize>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     failed_early: Option<bool>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +94,7 @@ struct VerifyErrorMsg {
     blob_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
+
     error: String,
 }
 
@@ -164,9 +169,11 @@ struct VerifyCompleteMsg {
     packs_repaired: usize,
     blobs_verified: usize,
     blobs_dangling: usize,
+
     snapshots_verified: usize,
     snapshots_corrupt: usize,
     metadata_files_corrupt: usize,
+
     passed: bool,
     failed_early: bool,
     read_packs: bool,
@@ -186,6 +193,7 @@ pub enum VerifyError {
     VerifyFailed(String),
     #[error("verify interrupted by user")]
     Interrupted,
+
     #[error(transparent)]
     Repo(#[from] MapacheError),
     #[error(transparent)]
@@ -287,6 +295,7 @@ struct VerifyStats {
     packs_repaired: AtomicUsize,
     blobs_verified: AtomicUsize,
     blobs_dangling: AtomicUsize,
+
     metadata_files_processed: AtomicUsize,
     metadata_files_corrupt: AtomicUsize,
     metadata_files_repaired: AtomicUsize,
@@ -300,6 +309,7 @@ impl VerifyStats {
             packs_repaired: AtomicUsize::new(0),
             blobs_verified: AtomicUsize::new(0),
             blobs_dangling: AtomicUsize::new(0),
+
             metadata_files_processed: AtomicUsize::new(0),
             metadata_files_corrupt: AtomicUsize::new(0),
             metadata_files_repaired: AtomicUsize::new(0),
@@ -314,6 +324,7 @@ struct VerifyCtx<'a> {
     corrupt_blobs: &'a Arc<parking_lot::Mutex<IdSet<ID>>>,
     cleanup_handler: &'a CleanupHandler,
     reporter: &'a dyn VerifyReporter,
+
     json_out: bool,
     parallel: usize,
     fail_early: bool,
@@ -336,6 +347,7 @@ pub struct VerifySummary {
     pub snapshots_verified: usize,
     pub snapshots_corrupt: usize,
     pub metadata_files_corrupt: usize,
+
     pub passed: bool,
     pub failed_early: bool,
     pub read_packs: bool,
@@ -540,6 +552,7 @@ pub async fn run_with_repo(
             is_sampled: args.sample.is_some(),
             repair: args.repair,
         };
+
         let failed_early = verify_packs_physically(&verify_ctx, &packs_to_verify).await?;
         if cleanup_handler.is_interrupted() {
             tracing::info!(target: "verify", "Verify interrupted by user");
@@ -549,6 +562,7 @@ pub async fn run_with_repo(
     } else {
         false
     };
+
     // Verify metadata files (index, snapshot, manifest).
     // Always runs; ECC repair only when --repair is set and ECC is enabled.
     if !cleanup_handler.is_interrupted() {
@@ -563,6 +577,7 @@ pub async fn run_with_repo(
         )
         .await?;
     }
+
     let mut logical_failed_early = false;
     let mut snapshots_corrupt = 0;
     let mut num_snapshots_total = 0;
@@ -696,6 +711,7 @@ pub async fn run_with_repo(
         failed_early: physical_failed_early || logical_failed_early,
         read_packs: args.read_packs,
     };
+
     emit_final_report(&summary, json_out, reporter.as_ref());
 
     Ok(summary)
@@ -710,6 +726,7 @@ async fn check_index_consistency(
 ) -> Result<usize, VerifyError> {
     reporter.message(Heading, "Verifying Index Consistency...");
     tracing::info!(target: "verify", "Verifying index consistency");
+
     let mut missing_packs = IdSet::default();
     repo.index().for_each_pack_id(|pack_id| {
         if !packs_all.contains(pack_id) {
@@ -924,6 +941,7 @@ async fn verify_metadata_files(
             &format!("Metadata verification passed. {total} metadata files verified."),
         );
     }
+
     if repaired > 0 {
         reporter.message(
             Info,
@@ -933,6 +951,7 @@ async fn verify_metadata_files(
             ),
         );
     }
+
     reporter.message(Log, "");
 
     Ok(())
@@ -1384,6 +1403,7 @@ fn emit_final_report(summary: &VerifySummary, json_out: bool, reporter: &dyn Ver
                 ),
             );
         }
+
         if summary.packs_missing > 0 {
             reporter.message(
                 Log,
@@ -1393,6 +1413,7 @@ fn emit_final_report(summary: &VerifySummary, json_out: bool, reporter: &dyn Ver
                 ),
             );
         }
+
         if summary.metadata_files_corrupt > 0 {
             reporter.message(
                 Log,
@@ -1406,6 +1427,7 @@ fn emit_final_report(summary: &VerifySummary, json_out: bool, reporter: &dyn Ver
                 ),
             );
         }
+
         if summary.snapshots_corrupt > 0 {
             reporter.message(
                 Log,
@@ -1415,6 +1437,7 @@ fn emit_final_report(summary: &VerifySummary, json_out: bool, reporter: &dyn Ver
                 ),
             );
         }
+
         if summary.failed_early {
             reporter.message(Note, "Note: Verification was partial due to --fail-early.");
         }

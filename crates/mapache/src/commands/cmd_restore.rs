@@ -51,6 +51,7 @@ pub enum RestoreError {
     RestoreFailed(String),
     #[error("restore interrupted by user")]
     Interrupted,
+
     #[error(transparent)]
     Repo(#[from] MapacheError),
     #[error(transparent)]
@@ -74,6 +75,7 @@ impl ToExitCode for RestoreError {
 pub(crate) struct RestoreCounters {
     pub(crate) error_count: Arc<AtomicU64>,
     pub(crate) warning_count: Arc<AtomicU64>,
+
     pub(crate) total_items: Arc<AtomicU64>,
     pub(crate) total_bytes: Arc<AtomicU64>,
     pub(crate) skipped_bytes: Arc<AtomicU64>,
@@ -368,12 +370,14 @@ pub(crate) async fn prepare_restore(
         .map(|path| read_filtered_paths_from_file(path))
         .transpose()?;
     let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
+
     let includes_from_file = args
         .include_file
         .as_ref()
         .map(|path| read_filtered_paths_from_file(path))
         .transpose()?;
     let all_includes = merge_filtered_paths(args.include.as_ref(), includes_from_file.as_ref());
+
     let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
     let parsed_includes = expand_include_paths(
         repo,
@@ -382,6 +386,7 @@ pub(crate) async fn prepare_restore(
         parsed_excludes.clone(),
     )
     .await?;
+
     let strip_prefix = if args.strip_prefix.unwrap_or(false) {
         parsed_includes
             .as_ref()
@@ -389,6 +394,7 @@ pub(crate) async fn prepare_restore(
     } else {
         None
     };
+
     let target = get_absolute_normalized_path(target).map_err(|error| {
         RestoreError::TargetError(format!("invalid target path: {}", error.inner()))
     })?;
@@ -437,6 +443,7 @@ pub(crate) async fn run_with_repo(
     let dry_run = args.dry_run;
     let delete = args.delete.unwrap_or(false);
     let no_preserve_root = args.no_preserve_root.unwrap_or(false);
+
     let (abs_normalized_target, options) =
         prepare_restore(repo.clone(), args, &snapshot_pair).await?;
     let parsed_includes = options.include.clone();
@@ -500,6 +507,7 @@ fn report_completion(counters: &RestoreCounters, start: Instant, dry_run: bool, 
     let items = counters.total_items.load(Ordering::Relaxed);
     let bytes = counters.total_bytes.load(Ordering::Relaxed);
     let skipped = counters.skipped_bytes.load(Ordering::Relaxed);
+
     if json_output {
         #[derive(Serialize)]
         struct RestoreCompleteMsg {

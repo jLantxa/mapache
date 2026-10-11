@@ -26,23 +26,31 @@ pub struct TaskProgressState {
     pub expected_bytes: u64,
     pub processed_bytes: u64,
     pub skipped_bytes: u64,
+
     pub expected_items: u64,
     pub processed_items: u64,
+
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
     pub current_message: String,
+
     pub start_time: Instant,
     pub finish_time: Option<Instant>,
+
     pub scanning: bool,
     pub cancelling: bool,
+
     pub rate_estimator: RateEstimator,
 }
 
 pub struct PhaseProgress {
     current: Option<(&'static str, u64, Option<u64>, Option<String>)>,
+
     entries: VecDeque<(Style, String)>,
     pub errors: VecDeque<String>,
+
     pub cancelling: bool,
+
     spinner: Spinner,
     idle: &'static str,
 }
@@ -137,6 +145,7 @@ impl PhaseProgress {
                 theme::THEME.warning,
             )));
         }
+
         frame.render_widget(Paragraph::new(lines).block(theme::block("Progress")), area);
     }
 
@@ -145,6 +154,7 @@ impl PhaseProgress {
             .entries
             .len()
             .saturating_sub(area.height.saturating_sub(2) as usize);
+
         let lines: Vec<_> = self
             .entries
             .iter()
@@ -161,6 +171,7 @@ impl PhaseProgress {
                 ])
             })
             .collect();
+
         frame.render_widget(Paragraph::new(lines).block(theme::block("Details")), area);
     }
 }

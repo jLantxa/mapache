@@ -30,18 +30,23 @@ use crate::{
 /// re-reading the index or the snapshots.
 pub struct StatsScreen {
     repo: Arc<Repository>,
+
     /// Waiting for the user to pick quick or full before any collection starts.
     choosing: bool,
     /// Whether the currently shown report includes parsed pack footers.
     full: bool,
+
     base_loading: bool,
     footers_loading: bool,
     error: Option<String>,
+
     base_task: Option<BackgroundTask<StatsReport>>,
     footers_task: Option<BackgroundTask<FooterReport>>,
+
     report: Option<StatsReport>,
     lines: Vec<Line<'static>>,
     scroll: ScrollState,
+
     spinner: Spinner,
     toasts: ToastSink,
 }
@@ -72,6 +77,7 @@ impl StatsScreen {
         self.shutdown().await;
         self.base_task = None;
         self.footers_task = None;
+
         self.base_loading = true;
         self.footers_loading = false;
         self.error = None;
@@ -102,11 +108,13 @@ impl StatsScreen {
             // The base collection will chain into the footer pass when it lands.
             return;
         }
+
         let pack_ids = self
             .report
             .as_ref()
             .map(|report| report.pack_ids.clone())
             .unwrap_or_default();
+
         self.footers_loading = true;
         self.spinner.reset();
 
@@ -136,11 +144,13 @@ impl StatsScreen {
             if let Some(mut task) = self.footers_task.take() {
                 task.shutdown().await;
             }
+
             self.footers_loading = false;
             if let Some(report) = self.report.as_mut() {
                 report.footers = None;
                 report.full = false;
             }
+
             self.rebuild_lines();
         } else {
             self.full = true;
@@ -385,6 +395,7 @@ impl Screen for StatsScreen {
 
 fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
     let size = |bytes| format_size_binary(bytes, 3);
+
     let mut lines = vec![
         section("Packs"),
         kv(
@@ -392,12 +403,14 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
             count_and_size(report.packs_count, "pack", "packs", report.packs_bytes),
         ),
     ];
+
     if report.packs_ecc_count > 0 {
         lines.push(kv(
             "ECC sidecars",
             files(report.packs_ecc_count, report.packs_ecc_bytes),
         ));
     }
+
     if report.leftover_count > 0 {
         lines.push(kv(
             "Leftover files",
@@ -421,6 +434,7 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
                 },
             ),
         ]);
+
         if f.duplicate_blobs > 0 {
             lines.push(kv_styled(
                 "Footer duplicate blobs",
@@ -429,17 +443,20 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
             ));
         }
     }
+
     lines.extend([
         Line::from(""),
         section("Index"),
         kv("Index files", files(report.index_count, report.index_bytes)),
     ]);
+
     if report.index_ecc_count > 0 {
         lines.push(kv(
             "ECC sidecars",
             files(report.index_ecc_count, report.index_ecc_bytes),
         ));
     }
+
     lines.extend([
         kv(
             "Indexed blobs",
@@ -461,12 +478,14 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
             ),
         ),
     ]);
+
     if report.snapshots_ecc_count > 0 {
         lines.push(kv(
             "ECC sidecars",
             files(report.snapshots_ecc_count, report.snapshots_ecc_bytes),
         ));
     }
+
     lines.extend([
         kv(
             "Referenced blobs",
@@ -502,6 +521,7 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
         ),
         kv("Restorable size", size(report.total_restorable_bytes)),
     ]);
+
     if report.unreferenced_blobs > 0 {
         lines.push(kv_styled(
             "Unreferenced blobs",
@@ -513,6 +533,7 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
             theme::THEME.warning,
         ));
     }
+
     lines.extend([
         Line::from(""),
         section("Keys"),
@@ -525,6 +546,7 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
         kv("Manifest", size(report.manifest_bytes)),
         kv("Total size", size(report.total_repo_bytes)),
     ]);
+
     lines
 }
 
@@ -570,6 +592,7 @@ mod tests {
             }),
             ..Default::default()
         };
+
         let lines = build_lines(&report);
         let headers: Vec<_> = lines
             .iter()
@@ -582,6 +605,7 @@ mod tests {
             headers,
             vec!["Packs", "Index", "Snapshots", "Keys", "Repository"]
         );
+
         let dangling = lines
             .iter()
             .find(|line| line.to_string().contains("Footer dangling blobs"))
@@ -592,6 +616,7 @@ mod tests {
             .unwrap();
         assert_eq!(dangling.spans.last().unwrap().style, theme::THEME.warning);
         assert_eq!(duplicates.spans.last().unwrap().style, theme::THEME.error);
+
         assert!(
             !lines
                 .iter()
@@ -606,6 +631,7 @@ mod tests {
             username: "test".to_string(),
             password: Zeroizing::new("password".to_string()),
         };
+
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
         Repository::init(
             THIS_REPOSITORY_VERSION,
@@ -619,6 +645,7 @@ mod tests {
         let (reader, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
         reader.reload_master_index().await?;
+
         let (writer, _) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
         let source = tempfile::tempdir()?;
@@ -631,6 +658,7 @@ mod tests {
             num_packers: Some(1),
             ..Default::default()
         };
+
         cmd_snapshot::run_with_repo(
             writer,
             None,
@@ -650,6 +678,7 @@ mod tests {
         screen.start_base().await;
         screen.base_task.as_mut().unwrap().wait().await;
         screen.poll();
+
         let report = screen.report.as_ref().unwrap();
         assert_eq!(report.snapshots_count, 1);
         assert!(report.indexed_blobs > 0);

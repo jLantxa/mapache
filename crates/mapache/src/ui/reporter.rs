@@ -188,6 +188,7 @@ impl VerifyReporter for CliVerifyReporter {
                 style
             }
         });
+
         bar.set_message("OK");
         *self.rate.lock() = rate;
         *self.bar.lock() = Some(bar);
@@ -270,6 +271,7 @@ mod tests {
                 captured.lock().push(event);
             }
         }));
+
         reporter.message(VerifyMessage::Log, "normal");
         reporter.message(VerifyMessage::Warning, "warning");
         reporter.message(VerifyMessage::Error, "error");
@@ -278,6 +280,7 @@ mod tests {
         reporter.begin_phase("test", 3, PhaseStyle::Generic);
         reporter.phase_progress(1, Some("OK"));
         reporter.end_phase(false);
+
         let events = events.lock();
         assert!(matches!(&events[0], TaskEvent::Log(message) if message == "normal"));
         assert!(matches!(&events[1], TaskEvent::Warning(message) if message == "warning"));

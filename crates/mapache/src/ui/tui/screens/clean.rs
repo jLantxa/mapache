@@ -51,6 +51,7 @@ enum CleanResult {
 pub struct CleanScreen {
     repo: Arc<Repository>,
     lock_handle: Option<LockHandle>,
+
     phase: CleanPhase,
     form: Form,
     shutdown_signal: Arc<AtomicBool>,
@@ -58,6 +59,7 @@ pub struct CleanScreen {
     task: Option<BackgroundTask<CleanResult>>,
     progress: PhaseProgress,
     summary: Option<CleanResult>,
+
     toasts: ToastSink,
 }
 
@@ -66,9 +68,11 @@ impl CleanScreen {
         let fields = vec![
             FormField::section("Basic"),
             FormField::toggle("Dry run:", false).help("Show what would be removed or repacked without changing the repository."),
+
             FormField::section("Advanced"),
             FormField::number("Tolerance %:", 0).help("How much unreferenced space to tolerate before repacking (0 uses the default).").bounds(0, 100),
             FormField::toggle("No repack:", false).help("Only delete unreferenced packs; never repack partially-used ones."),
+
             FormField::action("Run Clean"),
         ];
 
@@ -453,6 +457,7 @@ async fn run_clean(
     {
         return CleanResult::Error(format!("could not restore shared session lock: {error}"));
     }
+
     result
 }
 
@@ -473,6 +478,7 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+
         Repository::init(
             THIS_REPOSITORY_VERSION,
             &auth,
@@ -494,6 +500,7 @@ mod tests {
         let (_, _, other) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
+
         repo.init_pack_saver(1)?;
         repo.encode_and_save_blob(
             BlobType::Data,
@@ -514,6 +521,7 @@ mod tests {
         assert!(matches!(result, CleanResult::Error(_)));
         assert_eq!(handle.status(), LockStatus::Shared);
         assert_eq!(repo.list_packs().await?.len(), 1);
+
         other.unlock().await;
         let saw_gc = Arc::new(AtomicBool::new(false));
         let observed = saw_gc.clone();
@@ -524,6 +532,7 @@ mod tests {
                 observed.store(true, Ordering::SeqCst);
             }
         });
+
         let result = run_clean(
             repo.clone(),
             0.1,
@@ -540,6 +549,7 @@ mod tests {
         assert!(repo.list_packs().await?.is_empty());
         assert_eq!(handle.status(), LockStatus::Shared);
         assert_eq!(repo.get_locks().await?.len(), 1);
+
         handle.set_exclusive(true).await?;
         let result = run_clean(
             repo,
@@ -552,6 +562,7 @@ mod tests {
         .await;
         assert!(matches!(result, CleanResult::Done(_)));
         assert_eq!(handle.status(), LockStatus::Exclusive);
+
         handle.unlock().await;
         Ok(())
     }

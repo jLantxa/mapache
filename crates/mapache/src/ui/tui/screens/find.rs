@@ -1,12 +1,18 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
 };
 use tokio::sync::mpsc;
@@ -22,7 +28,9 @@ use crate::{
         app::{Screen, Transition},
         screens::{file_explorer::FileExplorerScreen, restore::RestoreScreen},
         theme,
-        widgets::{StateNavigation, TextInput},
+        widgets::{
+            Spinner, StateNavigation, TextInput, ToastSink, click_to_index, impl_attach_toasts,
+        },
     },
     utils,
 };
@@ -58,11 +66,14 @@ pub struct FindScreen {
     list_state: ListState,
     is_searching: bool,
     search_rx: Option<mpsc::UnboundedReceiver<SearchUpdate>>,
+    search_cancel: Arc<AtomicBool>,
     search_progress: Option<(usize, usize, usize)>,
     status_message: String,
     last_height: usize,
-    spinner_tick: u8,
+    spinner: Spinner,
+    last_results_area: Rect,
     snapshots: Arc<SnapshotEntryList>,
+    toasts: ToastSink,
 }
 
 impl FindScreen {
@@ -77,10 +88,13 @@ impl FindScreen {
             list_state: ListState::default(),
             is_searching: false,
             search_rx: None,
+            search_cancel: Arc::new(AtomicBool::new(false)),
             search_progress: None,
             status_message: "Type a glob pattern and press Enter to search".to_string(),
             last_height: 0,
-            spinner_tick: 0,
+            spinner: Spinner::default(),
+            last_results_area: Rect::default(),
+            toasts: ToastSink::default(),
         }
     }
 
@@ -95,19 +109,26 @@ impl FindScreen {
         self.search_rx = Some(rx);
         self.search_progress = None;
         self.is_searching = true;
-        self.spinner_tick = 0;
+        self.spinner.reset();
         self.status_message = format!("Searching for '{}'...", pattern);
         self.results.clear();
         self.filtered_indices.clear();
         self.focus = Focus::Input;
 
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search_cancel = cancel.clone();
+
         let repo = self.repo.clone();
         let entries = self.snapshots.clone();
+        let toasts = self.toasts.clone();
         tokio::spawn(async move {
             let total = entries.len();
             let mut all_results = Vec::new();
 
             for (i, entry) in entries.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
                 match find_in_snapshot(repo.clone(), &entry.snapshot, &pattern).await {
                     Ok(found) => {
                         for (path, node) in found {
@@ -120,6 +141,7 @@ impl FindScreen {
                     }
                     Err(e) => {
                         tracing::warn!("Search failed in snapshot {}: {}", entry.id, e);
+                        toasts.warning(format!("Search failed in snapshot {}: {e}", entry.id));
                     }
                 }
 
@@ -255,7 +277,7 @@ impl FindScreen {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let spinner = theme::SPINNER_CHARS[(self.spinner_tick % 4) as usize];
+        let spinner = self.spinner.glyph();
 
         let (msg, style) = if self.is_searching {
             let msg = format!(" {} {}", spinner, self.status_message);
@@ -272,6 +294,7 @@ impl FindScreen {
     }
 
     fn render_results(&mut self, frame: &mut Frame, area: Rect) {
+        self.last_results_area = area;
         if self.results.is_empty() {
             return;
         }
@@ -279,7 +302,7 @@ impl FindScreen {
         let max_rows = area.height.saturating_sub(2) as usize;
         let display_len = self.display_len();
 
-        let title = format!(" Results ({}) ", display_len);
+        let title = format!("Results ({})", display_len);
 
         let items: Vec<ListItem<'_>> = self
             .filtered_indices
@@ -375,7 +398,7 @@ impl FindScreen {
             Span::raw("  "),
             Span::styled(format!("{:lw$}", "Size", lw = lw), theme::THEME.menu_key),
             Span::styled(
-                utils::format_size_binary(node.metadata.size, 2),
+                utils::format_size_binary(node.metadata.size, 3),
                 theme::THEME.snap_size,
             ),
         ]));
@@ -412,37 +435,15 @@ impl FindScreen {
         let widget = Paragraph::new(lines).block(theme::block("Details"));
         frame.render_widget(widget, area);
     }
-
-    fn render_hints(&self, frame: &mut Frame, area: Rect) {
-        let hints = if self.is_searching {
-            theme::key_hint_footer(&[("Esc", "waiting...")])
-        } else {
-            match self.focus {
-                Focus::Input => {
-                    theme::key_hint_footer(&[("Esc", "back"), ("Enter", "search"), ("q", "quit")])
-                }
-                Focus::Results => theme::key_hint_footer(&[
-                    ("Esc", "back"),
-                    ("\u{2191}\u{2193}", "navigate"),
-                    ("Enter", "browse"),
-                    ("r", "restore"),
-                    ("/", "search"),
-                    ("q", "quit"),
-                ]),
-            }
-        };
-        frame.render_widget(Paragraph::new(hints), area);
-    }
 }
 
 #[async_trait]
 impl Screen for FindScreen {
     fn render(&mut self, frame: &mut Frame) {
         self.check_search_updates();
-        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        self.spinner.tick();
 
-        let area = frame.area();
-        let inner = area.inner(theme::CONTENT_MARGIN);
+        let inner = frame.area().inner(theme::CONTENT_MARGIN);
 
         let has_results = !self.results.is_empty();
         let detail_height = if has_results && self.selected_result().is_some() {
@@ -450,6 +451,7 @@ impl Screen for FindScreen {
         } else {
             0u16
         };
+        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -459,7 +461,7 @@ impl Screen for FindScreen {
                 Constraint::Length(1),
                 Constraint::Min(5),
                 Constraint::Length(detail_height),
-                Constraint::Length(1),
+                Constraint::Length(footer.len() as u16),
             ])
             .split(inner);
 
@@ -480,11 +482,18 @@ impl Screen for FindScreen {
             self.render_detail(frame, chunks[4]);
         }
 
-        self.render_hints(frame, chunks[5]);
+        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[5]);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
         if self.is_searching {
+            if key.code == KeyCode::Esc {
+                self.search_cancel.store(true, Ordering::Relaxed);
+                self.is_searching = false;
+                self.search_progress = None;
+                self.search_rx = None;
+                self.status_message = "Search cancelled.".to_string();
+            }
             return None;
         }
 
@@ -502,7 +511,6 @@ impl Screen for FindScreen {
                     self.start_search();
                     None
                 }
-                KeyCode::Char('q') => Some(Transition::Quit),
                 _ => {
                     self.search_input.handle_key(key.code);
                     None
@@ -523,6 +531,8 @@ impl Screen for FindScreen {
                             Ok(explorer) => Some(Transition::Push(Box::new(explorer))),
                             Err(e) => {
                                 tracing::error!("Failed to open file explorer: {}", e);
+                                self.toasts
+                                    .error(format!("Failed to open file explorer: {e}"));
                                 None
                             }
                         }
@@ -552,5 +562,106 @@ impl Screen for FindScreen {
                 _ => None,
             },
         }
+    }
+
+    async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(
+            mouse.kind,
+            crossterm::event::MouseEventKind::Down(MouseButton::Left)
+        ) || self.is_searching
+        {
+            return false;
+        }
+        let Some(idx) = click_to_index(
+            mouse.row,
+            self.list_state.offset(),
+            self.last_results_area,
+            0,
+        ) else {
+            return false;
+        };
+        if idx < self.display_len() {
+            self.focus = Focus::Results;
+            self.list_state.select(Some(idx));
+            return true;
+        }
+        false
+    }
+
+    fn help_hints(&self) -> Vec<(&'static str, &'static str)> {
+        if self.is_searching {
+            return vec![("Esc", "cancel")];
+        }
+        match self.focus {
+            Focus::Input => vec![("Esc", "back"), ("Enter", "search")],
+            Focus::Results => vec![
+                ("Esc", "back"),
+                ("\u{2191}\u{2193} j/k", "navigate"),
+                ("Enter", "browse"),
+                ("r", "restore"),
+                ("/", "search"),
+                ("q", "back"),
+            ],
+        }
+    }
+
+    fn text_input_active(&self) -> bool {
+        matches!(self.focus, Focus::Input) && !self.is_searching
+    }
+
+    impl_attach_toasts!(toasts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backend::{StorageBackend, mock::MockBackend},
+        common::{defaults::TEST_REPO_CONFIG, error::Result},
+        repository::repo::{Auth, THIS_REPOSITORY_VERSION},
+    };
+    use zeroize::Zeroizing;
+
+    async fn make_screen() -> Result<FindScreen> {
+        let auth = Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        Ok(FindScreen::new(repo, Arc::new(Vec::new())))
+    }
+
+    #[tokio::test]
+    async fn escape_cancels_an_in_flight_search() -> Result<()> {
+        let mut screen = make_screen().await?;
+        screen.is_searching = true;
+        screen.status_message = "Searching...".to_string();
+
+        let transition = screen.handle_key(KeyEvent::from(KeyCode::Esc)).await;
+
+        assert!(transition.is_none());
+        assert!(!screen.is_searching);
+        assert_eq!(screen.status_message, "Search cancelled.");
+        assert!(screen.search_cancel.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hints_offer_cancel_while_searching() -> Result<()> {
+        let mut screen = make_screen().await?;
+        screen.is_searching = true;
+        assert_eq!(screen.help_hints(), vec![("Esc", "cancel")]);
+        Ok(())
     }
 }

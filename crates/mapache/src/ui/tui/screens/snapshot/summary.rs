@@ -21,7 +21,7 @@ pub enum SummaryAction {
     Done,
 }
 
-pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
+pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>, dry_run: bool) {
     let area = frame.area();
     let inner = area.inner(theme::CONTENT_MARGIN);
 
@@ -36,7 +36,14 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
             snapshot_id,
             duration,
         }) => {
-            render_success(frame, chunks[0], summary.as_ref(), snapshot_id, *duration);
+            render_success(
+                frame,
+                chunks[0],
+                summary.as_ref(),
+                snapshot_id,
+                *duration,
+                dry_run,
+            );
         }
         Some(SummaryResult::Cancelled) => {
             Toast::with_text(
@@ -45,8 +52,16 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
                 Text::from(vec![
                     Line::from("Snapshot was cancelled."),
                     Line::from(""),
-                    Line::from("Some data may have been written to the repository."),
-                    Line::from("You may want to run 'clean' to clean up."),
+                    Line::from(if dry_run {
+                        "No repository data was written."
+                    } else {
+                        "Some data may have been written to the repository."
+                    }),
+                    Line::from(if dry_run {
+                        "No cleanup is needed."
+                    } else {
+                        "You may want to run 'clean' to clean up."
+                    }),
                 ]),
             )
             .render(area, frame);
@@ -85,6 +100,7 @@ fn render_success(
     summary: &SnapshotSummary,
     snapshot_id: &ID,
     duration: std::time::Duration,
+    dry_run: bool,
 ) {
     let inner = area.inner(Margin::new(1, 1));
     let chunks = Layout::default()
@@ -193,7 +209,11 @@ fn render_success(
             Constraint::Length(data_col_w),
         ],
     )
-    .block(theme::block("This snapshot added"));
+    .block(theme::block(if dry_run {
+        "Dry run: estimated additions"
+    } else {
+        "This snapshot added"
+    }));
     frame.render_widget(data_table, chunks[1]);
 
     let stats_line = Line::from(vec![Span::raw(format!(
@@ -204,13 +224,17 @@ fn render_success(
     ))]);
     frame.render_widget(Paragraph::new(stats_line), chunks[2]);
 
-    let id_line = Line::from(vec![
-        Span::styled("Snapshot ID: ", Style::default().bold()),
-        Span::styled(
-            snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-            theme::THEME.snap_id,
-        ),
-    ]);
+    let id_line = if dry_run {
+        Line::from("Dry run: no snapshot saved")
+    } else {
+        Line::from(vec![
+            Span::styled("Snapshot ID: ", Style::default().bold()),
+            Span::styled(
+                snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
+                theme::THEME.snap_id,
+            ),
+        ])
+    };
     frame.render_widget(Paragraph::new(id_line), chunks[3]);
 }
 
@@ -220,9 +244,9 @@ fn render_footer(frame: &mut Frame, area: Rect, summary: &Option<SummaryResult>)
         | Some(SummaryResult::Cancelled)
         | Some(SummaryResult::Error(_))
         | Some(SummaryResult::NoChanges) => {
-            theme::key_hint_footer(&[("Enter", "done"), ("Esc", "done"), ("q", "quit")])
+            theme::key_hint_footer(&[("Enter", "done"), ("Esc", "done"), ("q", "back")])
         }
-        _ => theme::key_hint_footer(&[("q", "quit")]),
+        _ => theme::key_hint_footer(&[("q", "back")]),
     };
     frame.render_widget(Paragraph::new(footer), area);
 }
@@ -232,5 +256,24 @@ pub fn handle_summary_key(key: KeyCode) -> SummaryAction {
         KeyCode::Char('q') => SummaryAction::Quit,
         KeyCode::Enter | KeyCode::Esc => SummaryAction::Done,
         _ => SummaryAction::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dry_run_summary_does_not_claim_a_saved_snapshot() {
+        let result = Some(SummaryResult::Success {
+            summary: Box::default(),
+            snapshot_id: ID::default(),
+            duration: std::time::Duration::ZERO,
+        });
+        let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
+            render_summary(frame, &result, true);
+        });
+        assert!(text.contains("Dry run: no snapshot saved"));
+        assert!(!text.contains("Snapshot ID:"));
     }
 }

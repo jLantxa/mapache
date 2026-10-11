@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Local;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Paragraph, Row, Table, TableState},
@@ -19,13 +19,15 @@ use crate::{
     common::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
-        retention::apply_retention_rules,
+        retention::build_forget_plan,
         snapshot::SnapshotEntryList,
     },
     ui::tui::{
         app::{Screen, Transition},
         theme,
-        widgets::{Dialog, FormFieldType, StateNavigation},
+        widgets::{
+            Dialog, FormFieldType, StateNavigation, ToastSink, click_to_index, impl_attach_toasts,
+        },
     },
     utils,
 };
@@ -87,8 +89,10 @@ pub struct ForgetScreen {
     entries: Arc<SnapshotEntryList>,
     selected: ForgetSelection,
     table_state: TableState,
+    last_table_area: Rect,
     retention: RetentionConfig,
     result: Option<ForgetResult>,
+    toasts: ToastSink,
 }
 
 impl ForgetScreen {
@@ -97,35 +101,43 @@ impl ForgetScreen {
         entries: Arc<SnapshotEntryList>,
         config: Option<cmd_forget::CmdArgs>,
     ) -> Self {
-        let len = entries.len();
-        let mut selected = ForgetSelection::new(len);
-
-        let retention = RetentionConfig::new(config.as_ref());
-        let rules = retention.to_rules();
-
-        if !rules.is_empty() {
-            let mut sorted_indices: Vec<_> = (0..entries.len()).collect();
-            sorted_indices.sort_unstable_by_key(|&i| entries[i].snapshot.timestamp);
-            let sorted_refs: Vec<_> = sorted_indices.iter().map(|&i| &entries[i]).collect();
-            let keep_ids = apply_retention_rules(&sorted_refs, &rules, None, Local::now());
-            for (i, entry) in entries.iter().enumerate() {
-                selected.set(i, !keep_ids.contains(&entry.id));
-            }
-        }
-
         let mut table_state = TableState::default();
         if !entries.is_empty() {
             table_state.select(Some(0));
         }
 
-        Self {
+        let mut screen = Self {
             repo,
             phase: ForgetPhase::Selection,
+            selected: ForgetSelection::new(entries.len()),
             entries,
-            selected,
             table_state,
-            retention,
+            last_table_area: Rect::default(),
+            retention: RetentionConfig::new(config.as_ref()),
             result: None,
+            toasts: ToastSink::default(),
+        };
+        screen.apply_retention_to_selection();
+        screen
+    }
+
+    /// Recomputes the selection from the retention form using the same plan the
+    /// CLI uses, so host/tag filters and retention rules behave identically in
+    /// both front ends.
+    fn apply_retention_to_selection(&mut self) {
+        let rules = self.retention.to_rules();
+        let filter = self.retention.filter();
+        let refs: Vec<&_> = self.entries.iter().collect();
+        let plan = build_forget_plan(
+            &refs,
+            &filter,
+            &rules,
+            self.retention.keep_min(),
+            Local::now(),
+        );
+
+        for (i, entry) in self.entries.iter().enumerate() {
+            self.selected.set(i, plan.remove.contains(&entry.id));
         }
     }
 
@@ -148,16 +160,26 @@ impl ForgetScreen {
             let mut removed_count = 0;
             for idx in &to_remove {
                 if let Some(entry) = self.entries.get(*idx) {
-                    if let Err(e) = self
-                        .repo
-                        .set_extension(
-                            ContentIdType::Snapshot,
-                            &entry.id,
-                            Some(REPO_DROPPED_EXTENSION),
-                        )
-                        .await
-                    {
+                    let result = if self.retention.force() {
+                        self.repo
+                            .delete_file(ContentIdType::Snapshot, &entry.id, None)
+                            .await
+                            .map(|_| ())
+                    } else {
+                        self.repo
+                            .set_extension(
+                                ContentIdType::Snapshot,
+                                &entry.id,
+                                Some(REPO_DROPPED_EXTENSION),
+                            )
+                            .await
+                    };
+                    if let Err(e) = result {
                         tracing::error!("Failed to forget snapshot {}: {}", entry.id.to_hex(), e);
+                        self.toasts.error(format!(
+                            "Failed to forget snapshot {}: {e}",
+                            entry.id.to_hex()
+                        ));
                     } else {
                         removed_count += 1;
                     }
@@ -215,15 +237,7 @@ impl ForgetScreen {
     fn handle_retention_key(&mut self, key: KeyEvent) -> ForgetAction {
         match self.retention.handle_key(key.code) {
             RetentionAction::Apply => {
-                let rules = self.retention.to_rules();
-                let mut sorted_indices: Vec<_> = (0..self.entries.len()).collect();
-                sorted_indices.sort_unstable_by_key(|&i| self.entries[i].snapshot.timestamp);
-                let sorted_refs: Vec<_> =
-                    sorted_indices.iter().map(|&i| &self.entries[i]).collect();
-                let keep_ids = apply_retention_rules(&sorted_refs, &rules, None, Local::now());
-                for (i, entry) in self.entries.iter().enumerate() {
-                    self.selected.set(i, !keep_ids.contains(&entry.id));
-                }
+                self.apply_retention_to_selection();
                 self.phase = ForgetPhase::Selection;
                 ForgetAction::None
             }
@@ -232,16 +246,21 @@ impl ForgetScreen {
                 ForgetAction::None
             }
             RetentionAction::None => match key.code {
-                KeyCode::Char('0') => {
+                // While a field is being edited every key belongs to the
+                // field, so screen-level shortcuts must not fire.
+                KeyCode::Char('0') if !self.retention.form.is_editing() => {
                     // Reset form fields
                     for field in self.retention.form.fields_mut() {
-                        if let FormFieldType::Text(ref mut input) = field.field_type {
-                            input.clear();
+                        match &mut field.field_type {
+                            FormFieldType::Text(input) => input.clear(),
+                            FormFieldType::MultiSelect(items) => items.clear(),
+                            FormFieldType::Toggle(value) => *value = false,
+                            _ => {}
                         }
                     }
                     ForgetAction::None
                 }
-                KeyCode::Char('q') => ForgetAction::Quit,
+                KeyCode::Char('q') if !self.retention.form.is_editing() => ForgetAction::Quit,
                 _ => ForgetAction::None,
             },
         }
@@ -260,15 +279,18 @@ impl ForgetScreen {
     }
 
     fn render_selection(&mut self, frame: &mut Frame) {
-        let area = frame.area();
+        let inner = frame.area().inner(theme::CONTENT_MARGIN);
+        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(3),
-                Constraint::Length(2),
+                Constraint::Length(footer.len() as u16),
             ])
-            .split(area.inner(theme::CONTENT_MARGIN));
+            .split(inner);
+
+        self.last_table_area = chunks[1];
 
         let selected = self.selected_count();
         let header = Paragraph::new(format!(
@@ -278,6 +300,17 @@ impl ForgetScreen {
         ))
         .style(theme::THEME.header);
         frame.render_widget(header, chunks[0]);
+
+        // Derive column widths from the available space so the Tags column is
+        // dropped (rather than clipped) on narrow terminals.
+        let usable = chunks[1].width.saturating_sub(2);
+        let remaining = usable.saturating_sub(5 + 12 + 15);
+        let show_tags = remaining >= 30;
+        let date_width = if show_tags {
+            remaining.saturating_sub(10).clamp(16, 20)
+        } else {
+            remaining.max(16)
+        };
 
         let rows: Vec<Row> = self
             .entries
@@ -289,7 +322,6 @@ impl ForgetScreen {
                 let id = e.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
                 let date = utils::pretty_print_timestamp(&e.snapshot.timestamp, None);
                 let host = e.snapshot.hostname.as_deref().unwrap_or("");
-                let tags = theme::format_tags(&e.snapshot.tags);
 
                 let style = if is_selected {
                     Style::default().fg(theme::THEME.red)
@@ -297,47 +329,53 @@ impl ForgetScreen {
                     Style::default()
                 };
 
-                Row::new(vec![
+                let mut cells = vec![
                     Span::styled(selected_str, style),
                     Span::styled(id, theme::THEME.snap_id),
                     Span::styled(date, theme::THEME.snap_date),
                     Span::styled(host, theme::THEME.snap_host),
-                    Span::raw(tags),
-                ])
+                ];
+                if show_tags {
+                    cells.push(Span::raw(theme::format_tags(&e.snapshot.tags)));
+                }
+                Row::new(cells)
             })
             .collect();
 
-        let table = Table::new(
-            rows,
-            vec![
-                Constraint::Length(5),
-                Constraint::Length(12),
-                Constraint::Length(30),
-                Constraint::Length(15),
-                Constraint::Min(20),
-            ],
-        )
-        .header(Row::new(vec!["", "ID", "Date", "Host", "Tags"]).style(theme::THEME.header))
-        .block(theme::block("Snapshots"))
-        .row_highlight_style(theme::THEME.selection);
+        let mut widths = vec![
+            Constraint::Length(5),
+            Constraint::Length(12),
+            Constraint::Length(date_width),
+            Constraint::Length(15),
+        ];
+        if show_tags {
+            widths.push(Constraint::Min(20));
+        }
 
-        frame.render_stateful_widget(table, chunks[1], &mut self.table_state);
-        theme::render_scrollbar(
-            frame,
-            chunks[1],
-            self.entries.len(),
-            self.table_state.selected().unwrap_or(0),
-        );
+        let mut header_cells = vec!["", "ID", "Date", "Host"];
+        if show_tags {
+            header_cells.push("Tags");
+        }
 
-        let footer = theme::key_hint_footer(&[
-            ("Space", "toggle"),
-            ("Enter", "confirm"),
-            ("r", "retention"),
-            ("a", "toggle all"),
-            ("Esc", "back"),
-            ("q", "quit"),
-        ]);
-        frame.render_widget(Paragraph::new(footer), chunks[2]);
+        if self.entries.is_empty() {
+            theme::empty_state(frame, chunks[1], "Snapshots", "No snapshots to forget.");
+        } else {
+            let table = Table::new(rows, widths)
+                .header(Row::new(header_cells).style(theme::THEME.header))
+                .block(theme::block("Snapshots"))
+                .row_highlight_style(theme::THEME.selection);
+
+            frame.render_stateful_widget(table, chunks[1], &mut self.table_state);
+            theme::render_scrollbar(
+                frame,
+                chunks[1],
+                self.entries.len(),
+                self.table_state.selected().unwrap_or(0),
+            );
+        }
+
+        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
+        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[2]);
     }
 
     fn render_confirm(&self, frame: &mut Frame) {
@@ -348,6 +386,11 @@ impl ForgetScreen {
                 Span::raw(" snapshots."),
             ]),
             Line::from(""),
+            Line::from(if self.retention.force() {
+                "Force enabled: snapshot metadata will be permanently deleted."
+            } else {
+                "Snapshot metadata will be staged for removal and can be recalled."
+            }),
             Line::from(Span::styled(
                 "THIS ACTION IS NOT EASILY REVERSIBLE.",
                 theme::THEME.error,
@@ -406,8 +449,7 @@ impl Screen for ForgetScreen {
         match self.phase {
             ForgetPhase::Selection => self.render_selection(frame),
             ForgetPhase::Retention => {
-                let area = frame.area();
-                let inner = area.inner(theme::CONTENT_MARGIN);
+                let inner = frame.area().inner(theme::CONTENT_MARGIN);
                 self.retention.render(frame, inner);
             }
             ForgetPhase::Confirm => {
@@ -447,11 +489,159 @@ impl Screen for ForgetScreen {
             }
         }
     }
+
+    async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if self.phase != ForgetPhase::Selection
+            || !matches!(
+                mouse.kind,
+                crossterm::event::MouseEventKind::Down(MouseButton::Left)
+            )
+        {
+            return false;
+        }
+        // The table has a header row above the items.
+        let Some(idx) = click_to_index(
+            mouse.row,
+            self.table_state.offset(),
+            self.last_table_area,
+            1,
+        ) else {
+            return false;
+        };
+        if idx < self.entries.len() {
+            self.table_state.select(Some(idx));
+            return true;
+        }
+        false
+    }
+
+    fn help_hints(&self) -> Vec<(&'static str, &'static str)> {
+        match self.phase {
+            ForgetPhase::Selection => vec![
+                ("Space", "toggle"),
+                ("Enter", "confirm"),
+                ("r", "retention"),
+                ("a", "toggle all"),
+                ("Esc", "back"),
+                ("q", "back"),
+            ],
+            ForgetPhase::Retention => {
+                if self.retention.form.is_editing() {
+                    vec![("Enter", "confirm"), ("Esc", "cancel edit")]
+                } else {
+                    vec![
+                        ("Tab", "navigate"),
+                        ("Enter", "edit / apply"),
+                        ("Space", "toggle"),
+                        ("0", "clear fields"),
+                        ("Esc", "back"),
+                        ("q", "back"),
+                    ]
+                }
+            }
+            ForgetPhase::Confirm => vec![("Enter", "proceed"), ("Esc", "cancel"), ("q", "back")],
+            ForgetPhase::Result => vec![("Enter", "continue"), ("Esc", "back"), ("q", "back")],
+        }
+    }
+
+    fn text_input_active(&self) -> bool {
+        self.phase == ForgetPhase::Retention && self.retention.form.is_editing()
+    }
+
+    impl_attach_toasts!(toasts);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ForgetSelection;
+    use super::*;
+    use crate::{
+        backend::{Handle, StorageBackend, WriteContents, mock::MockBackend},
+        common::{ID, defaults::TEST_REPO_CONFIG, error::Result},
+        repository::{
+            repo::{Auth, THIS_REPOSITORY_VERSION},
+            snapshot::{Snapshot, SnapshotEntry},
+        },
+    };
+    use zeroize::Zeroizing;
+
+    async fn make_screen(force: bool) -> Result<ForgetScreen> {
+        let auth = Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        let mut entries = Vec::new();
+        for snapshot_index in 1..=3 {
+            let id = ID::from_bytes([snapshot_index; 32]);
+            backend
+                .write(
+                    &Handle::new(&repo.get_path(ContentIdType::Snapshot, &id)),
+                    WriteContents::Owned(vec![snapshot_index]),
+                )
+                .await?;
+            entries.push(SnapshotEntry {
+                id,
+                snapshot: Snapshot {
+                    timestamp: Local::now() - chrono::Duration::minutes(i64::from(snapshot_index)),
+                    ..Default::default()
+                },
+                active: true,
+            });
+        }
+        Ok(ForgetScreen::new(
+            repo,
+            Arc::new(entries),
+            Some(cmd_forget::CmdArgs {
+                keep_last: Some(1),
+                keep_min: Some(2),
+                force,
+                ..Default::default()
+            }),
+        ))
+    }
+
+    #[tokio::test]
+    async fn keep_min_limits_selection_and_force_controls_staging() -> Result<()> {
+        for force in [false, true] {
+            let mut screen = make_screen(force).await?;
+            assert_eq!(screen.selected_count(), 1);
+            let selected_index = screen
+                .selected
+                .bits
+                .iter()
+                .position(|selected| *selected)
+                .unwrap();
+            let removed_id = screen.entries[selected_index].id;
+            let path = screen.repo.get_path(ContentIdType::Snapshot, &removed_id);
+            screen.execute_forget().await;
+            assert!(!screen.repo.backend().path_exists(&path).await);
+            assert_eq!(
+                screen
+                    .repo
+                    .backend()
+                    .path_exists(&path.with_extension(REPO_DROPPED_EXTENSION))
+                    .await,
+                !force
+            );
+            assert_eq!(screen.repo.list_snapshot_ids().await?.len(), 2);
+            assert!(matches!(
+                screen.result,
+                Some(ForgetResult::Success { removed_count: 1 })
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn selection_set_out_of_bounds() {

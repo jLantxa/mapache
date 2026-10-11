@@ -86,6 +86,60 @@ impl RetentionRule {
     }
 }
 
+/// The retention options a front end collected, before they become rules.
+///
+/// The CLI fills this from its parsed arguments and the TUI from its form, so
+/// both build the rule list through one implementation and agree on ordering.
+#[derive(Debug, Default, Clone)]
+pub struct RetentionOptions {
+    pub keep_last: Option<usize>,
+    pub keep_within: Option<Duration>,
+    pub keep_yearly: Option<usize>,
+    pub keep_monthly: Option<usize>,
+    pub keep_weekly: Option<usize>,
+    pub keep_daily: Option<usize>,
+    pub keep_hourly: Option<usize>,
+    /// `Some(empty)` is kept as a (no-op) rule, matching `--keep-tags ''`; a
+    /// front end with no tag rule at all passes `None`.
+    pub keep_tags: Option<BTreeSet<String>>,
+}
+
+impl RetentionOptions {
+    /// Every option that was set, as a rule.
+    ///
+    /// The order is fixed so the per-snapshot reason reported by
+    /// [`apply_retention_rules_with_reasons`] does not depend on which front
+    /// end collected the options.
+    pub fn to_rules(&self) -> Vec<RetentionRule> {
+        let mut rules = Vec::new();
+        if let Some(n) = self.keep_last {
+            rules.push(RetentionRule::KeepLast(n));
+        }
+        if let Some(d) = self.keep_within {
+            rules.push(RetentionRule::KeepWithin(d));
+        }
+        if let Some(n) = self.keep_yearly {
+            rules.push(RetentionRule::KeepYearly(n));
+        }
+        if let Some(n) = self.keep_monthly {
+            rules.push(RetentionRule::KeepMonthly(n));
+        }
+        if let Some(n) = self.keep_weekly {
+            rules.push(RetentionRule::KeepWeekly(n));
+        }
+        if let Some(n) = self.keep_daily {
+            rules.push(RetentionRule::KeepDaily(n));
+        }
+        if let Some(n) = self.keep_hourly {
+            rules.push(RetentionRule::KeepHourly(n));
+        }
+        if let Some(tags) = &self.keep_tags {
+            rules.push(RetentionRule::KeepTags(tags.clone()));
+        }
+        rules
+    }
+}
+
 /// Why a snapshot survived the retention policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepReason {
@@ -317,6 +371,90 @@ pub fn filter_snapshots_by_hosts<'a>(
         .collect()
 }
 
+/// Host and tag pre-filters applied before retention rules.
+///
+/// These are *not* retention rules: they remove snapshots from consideration
+/// entirely. Snapshots excluded by a filter are neither kept nor removed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForgetFilter {
+    /// Only consider snapshots from these hosts. Empty means "all hosts".
+    pub hosts: Vec<String>,
+    /// Only consider snapshots carrying all of these tags. Empty means "all".
+    pub tags: BTreeSet<String>,
+}
+
+impl ForgetFilter {
+    /// Whether this filter excludes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.hosts.is_empty() && self.tags.is_empty()
+    }
+}
+
+/// The outcome of applying a [`ForgetFilter`] and a set of retention rules.
+///
+/// Produced by [`build_forget_plan`], the single decision function shared by the
+/// CLI (`mapache forget`) and the TUI retention form.
+#[derive(Debug, Default)]
+pub struct ForgetPlan {
+    /// Snapshots that passed the pre-filters and are therefore governed by the
+    /// retention rules.
+    pub in_scope: IdSet<ID>,
+    /// IDs of the snapshots kept by the retention rules, with the reason each
+    /// one survived. Empty when no rules are given.
+    pub keep: IdMap<ID, Vec<KeepReason>>,
+    /// In-scope snapshots that no rule kept and that must therefore be removed.
+    /// Empty when no rules are given.
+    pub remove: IdSet<ID>,
+}
+
+/// Applies host/tag pre-filters and retention rules to `snapshots`.
+///
+/// This is the single source of truth for the keep/remove decision shared by the
+/// CLI `forget` command and the TUI retention form: given the same snapshots,
+/// [`ForgetFilter`], rules, `keep_min` and `now`, both compute exactly the same
+/// result.
+///
+/// Snapshots excluded by the filters are left untouched: they appear in none of
+/// [`ForgetPlan::in_scope`], [`ForgetPlan::keep`] or [`ForgetPlan::remove`].
+/// When `rules` is empty nothing is removed by policy, so both `keep` and
+/// `remove` are empty and every in-scope snapshot is implicitly kept.
+pub fn build_forget_plan(
+    snapshots: &[&SnapshotEntry],
+    filter: &ForgetFilter,
+    rules: &[RetentionRule],
+    keep_min: Option<usize>,
+    now: DateTime<Local>,
+) -> ForgetPlan {
+    let mut in_scope = filter_snapshots_by_hosts(snapshots.iter().copied(), &filter.hosts);
+    if !filter.tags.is_empty() {
+        in_scope.retain(|e| e.snapshot.has_tags(&filter.tags));
+    }
+
+    let in_scope_ids: IdSet<ID> = in_scope.iter().map(|e| e.id).collect();
+
+    if rules.is_empty() {
+        return ForgetPlan {
+            in_scope: in_scope_ids,
+            keep: IdMap::default(),
+            remove: IdSet::default(),
+        };
+    }
+
+    in_scope.sort_unstable_by_key(|e| e.snapshot.timestamp);
+    let keep = apply_retention_rules_with_reasons(&in_scope, rules, keep_min, now);
+    let remove: IdSet<ID> = in_scope_ids
+        .iter()
+        .copied()
+        .filter(|id| !keep.contains_key(id))
+        .collect();
+
+    ForgetPlan {
+        in_scope: in_scope_ids,
+        keep,
+        remove,
+    }
+}
+
 /// Generic helper function to abstract the common logic for period-based retention.
 ///
 /// It finds the latest snapshot for each unique period (defined by `key_extractor`)
@@ -521,6 +659,38 @@ mod tests {
     // Helper function to create the expected ID HashSet
     fn create_expected_ids(id_vals: &[u32]) -> IdSet<ID> {
         id_vals.iter().map(|&v| create_id(v)).collect()
+    }
+
+    #[test]
+    fn test_retention_options_build_rules_in_stable_order() {
+        let options = RetentionOptions {
+            keep_last: Some(2),
+            keep_within: Some(Duration::days(7)),
+            keep_yearly: Some(1),
+            keep_monthly: Some(2),
+            keep_weekly: Some(3),
+            keep_daily: Some(4),
+            keep_hourly: Some(5),
+            keep_tags: Some(["important".to_string()].into_iter().collect()),
+        };
+        assert_eq!(
+            options.to_rules(),
+            vec![
+                RetentionRule::KeepLast(2),
+                RetentionRule::KeepWithin(Duration::days(7)),
+                RetentionRule::KeepYearly(1),
+                RetentionRule::KeepMonthly(2),
+                RetentionRule::KeepWeekly(3),
+                RetentionRule::KeepDaily(4),
+                RetentionRule::KeepHourly(5),
+                RetentionRule::KeepTags(["important".to_string()].into_iter().collect()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_retention_options_default_build_no_rules() {
+        assert!(RetentionOptions::default().to_rules().is_empty());
     }
 
     #[test]
@@ -810,6 +980,92 @@ mod tests {
 
         let filtered_empty = filter_snapshots_by_hosts(snapshots.iter(), &[]);
         assert_eq!(filtered_empty.len(), 4);
+    }
+
+    #[test]
+    fn test_build_forget_plan_no_filter_no_rules_keeps_all_in_scope() {
+        let snapshots = create_mock_snapshots();
+        let refs: Vec<_> = snapshots.iter().collect();
+        let plan = build_forget_plan(&refs, &ForgetFilter::default(), &[], None, test_now());
+
+        assert_eq!(plan.in_scope.len(), snapshots.len());
+        assert!(plan.keep.is_empty());
+        assert!(plan.remove.is_empty());
+    }
+
+    #[test]
+    fn test_build_forget_plan_applies_host_and_tag_filters() {
+        let snapshots = [
+            create_snapshot(
+                0,
+                test_now() - Duration::days(3),
+                &["backup"],
+                Some("server"),
+            ),
+            create_snapshot(
+                1,
+                test_now() - Duration::days(2),
+                &["release"],
+                Some("server"),
+            ),
+            create_snapshot(
+                2,
+                test_now() - Duration::days(1),
+                &["backup"],
+                Some("laptop"),
+            ),
+            create_snapshot(3, test_now(), &["backup"], None),
+        ];
+        let refs: Vec<_> = snapshots.iter().collect();
+
+        let filter = ForgetFilter {
+            hosts: vec!["server".to_string()],
+            tags: ["backup".to_string()].into_iter().collect(),
+        };
+        let plan = build_forget_plan(
+            &refs,
+            &filter,
+            &[RetentionRule::KeepLast(1)],
+            None,
+            test_now(),
+        );
+
+        // Only snapshot 0 matches both the host and the tag filter.
+        assert_eq!(plan.in_scope.len(), 1);
+        assert!(plan.in_scope.contains(&create_id(0)));
+        // KeepLast(1) keeps the only in-scope snapshot.
+        assert!(plan.keep.contains_key(&create_id(0)));
+        assert!(plan.remove.is_empty());
+    }
+
+    #[test]
+    fn test_build_forget_plan_removes_out_of_scope_from_decision() {
+        let snapshots = [
+            create_snapshot(0, test_now() - Duration::days(2), &[], Some("server")),
+            create_snapshot(1, test_now() - Duration::days(1), &[], Some("laptop")),
+            create_snapshot(2, test_now(), &[], Some("server")),
+        ];
+        let refs: Vec<_> = snapshots.iter().collect();
+
+        let filter = ForgetFilter {
+            hosts: vec!["server".to_string()],
+            tags: BTreeSet::new(),
+        };
+        let plan = build_forget_plan(
+            &refs,
+            &filter,
+            &[RetentionRule::KeepLast(1)],
+            None,
+            test_now(),
+        );
+
+        // Laptop snapshot is out of scope and untouched.
+        assert!(!plan.in_scope.contains(&create_id(1)));
+        assert!(!plan.keep.contains_key(&create_id(1)));
+        assert!(!plan.remove.contains(&create_id(1)));
+        // Newest server snapshot is kept, the older server one is removed.
+        assert!(plan.keep.contains_key(&create_id(2)));
+        assert!(plan.remove.contains(&create_id(0)));
     }
 
     #[test]

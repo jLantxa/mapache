@@ -10,17 +10,12 @@ use std::{
 
 use clap::Args;
 use futures::{StreamExt, TryStreamExt};
-use indicatif::{ProgressBar, ProgressState};
-use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{
-        ContentIdType, ID, config::CommandHooks, defaults::UI_RATE_ESTIMATOR_WINDOW,
-        error::MapacheError, global::GlobalOpts, hooks,
-    },
+    common::{ContentIdType, ID, config::CommandHooks, error::MapacheError, hooks},
     fs::tree::SerializedNodeStream,
     repository::{
         lock::LockHandle,
@@ -30,8 +25,18 @@ use crate::{
         storage::SecureStorage,
         verify::{verify_metadata_file, verify_pack, verify_snapshot_refs},
     },
-    ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
-    utils::{self, collections::IdSet, rate_estimator::RateEstimator},
+    ui::{
+        self,
+        reporter::{
+            CliVerifyReporter, PhaseStyle,
+            VerifyMessage::{
+                Error, Failure, FinalSuccess, Heading, HeadingError, Info, InfoSoft, Log, Note,
+                Repaired, Success, Warning,
+            },
+            VerifyReporter,
+        },
+    },
+    utils::{self, collections::IdSet},
 };
 
 #[derive(Serialize)]
@@ -155,6 +160,7 @@ struct VerifyCompleteMsg {
     duration_seconds: f64,
     packs_processed: usize,
     packs_corrupt: usize,
+    packs_missing: usize,
     packs_repaired: usize,
     blobs_verified: usize,
     blobs_dangling: usize,
@@ -307,6 +313,7 @@ struct VerifyCtx<'a> {
     stats: &'a VerifyStats,
     corrupt_blobs: &'a Arc<parking_lot::Mutex<IdSet<ID>>>,
     cleanup_handler: &'a CleanupHandler,
+    reporter: &'a dyn VerifyReporter,
     json_out: bool,
     parallel: usize,
     fail_early: bool,
@@ -314,15 +321,50 @@ struct VerifyCtx<'a> {
     repair: bool,
 }
 
-struct VerifyReport<'a> {
-    start: Instant,
-    stats: &'a VerifyStats,
-    snapshots_corrupt: usize,
-    num_snapshots_total: usize,
-    physical_failed_early: bool,
-    logical_failed_early: bool,
-    read_packs: bool,
-    json_out: bool,
+/// Result of a verification run, suitable for both CLI reporting and TUI
+/// summaries.
+#[derive(Debug, Clone)]
+pub struct VerifySummary {
+    pub duration: std::time::Duration,
+    pub packs_processed: usize,
+    pub packs_corrupt: usize,
+    /// Packs the index still references that are absent from storage.
+    pub packs_missing: usize,
+    pub packs_repaired: usize,
+    pub blobs_verified: usize,
+    pub blobs_dangling: usize,
+    pub snapshots_verified: usize,
+    pub snapshots_corrupt: usize,
+    pub metadata_files_corrupt: usize,
+    pub passed: bool,
+    pub failed_early: bool,
+    pub read_packs: bool,
+}
+
+impl VerifySummary {
+    /// The error a CLI caller should report for a failed verification, mapping
+    /// to the historical exit codes.
+    pub fn failure(&self) -> Option<VerifyError> {
+        if self.packs_corrupt > 0 {
+            Some(VerifyError::CorruptPacks(
+                "repository integrity check failed".to_string(),
+            ))
+        } else if self.packs_missing > 0 {
+            Some(VerifyError::CorruptPacks(
+                "index references missing packs".to_string(),
+            ))
+        } else if self.metadata_files_corrupt > 0 {
+            Some(VerifyError::CorruptMetadata(
+                "metadata integrity check failed".to_string(),
+            ))
+        } else if self.snapshots_corrupt > 0 {
+            Some(VerifyError::CorruptSnapshots(
+                "repository integrity check failed".to_string(),
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 pub async fn run(
@@ -366,7 +408,21 @@ pub async fn run(
             )
             .await?;
 
-            run_with_repo(repo, secure_storage, lock_handle, args, json_out).await
+            let reporter: Arc<dyn VerifyReporter> = Arc::new(CliVerifyReporter::new());
+            let summary = run_with_repo(
+                repo,
+                secure_storage,
+                lock_handle,
+                args,
+                json_out,
+                reporter,
+                None,
+            )
+            .await?;
+            match summary.failure() {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
         },
     )
     .await;
@@ -393,13 +449,19 @@ pub async fn run_with_repo(
     lock_handle: Option<LockHandle>,
     args: &CmdArgs,
     json_out: bool,
-) -> Result<(), VerifyError> {
-    let cleanup_handler = CleanupHandler::new_with_callback(move || {
-        ui::cli::log!(
-            "\n{}",
-            "Process interrupted. Cleaning up...".bold().yellow()
-        );
-    });
+    reporter: Arc<dyn VerifyReporter>,
+    interrupt: Option<Arc<AtomicBool>>,
+) -> Result<VerifySummary, VerifyError> {
+    let callback = {
+        let reporter = reporter.clone();
+        move || {
+            reporter.message(Warning, "Process interrupted. Cleaning up...");
+        }
+    };
+    let cleanup_handler = match interrupt {
+        Some(flag) => CleanupHandler::new_with_interrupt_and_callback(flag, callback),
+        None => CleanupHandler::new_with_callback(callback),
+    };
     cleanup_handler.add_lock(lock_handle);
 
     if args.repair && repo.manifest().ecc().is_none() {
@@ -428,7 +490,14 @@ pub async fn run_with_repo(
     let packs_all = repo.list_packs().await?;
 
     if let Some(dump_path) = args.dump_pack_blobs.as_ref() {
-        dump_pack_blobs(repo.clone(), secure_storage.clone(), &packs_all, dump_path).await?;
+        dump_pack_blobs(
+            repo.clone(),
+            secure_storage.clone(),
+            &packs_all,
+            dump_path,
+            reporter.as_ref(),
+        )
+        .await?;
     }
 
     // Sampling (Optional)
@@ -438,20 +507,24 @@ pub async fn run_with_repo(
         let mut rng = rand::rng();
         let target_count = sample_pack_count(packs_to_verify.len(), sample_pct);
 
-        ui::cli::log!(
-            "{} verifying {} out of {} packs ({:.2}% of the packs).\n",
-            "Sampling:".bold().cyan(),
-            target_count.to_string().bold(),
-            packs_to_verify.len(),
-            sample_pct
+        reporter.message(
+            Log,
+            &format!(
+                "Sampling: verifying {} out of {} packs ({:.2}% of the packs).",
+                target_count,
+                packs_to_verify.len(),
+                sample_pct
+            ),
         );
+        reporter.message(Log, "");
         packs_to_verify.shuffle(&mut rng);
         packs_to_verify.truncate(target_count);
     }
 
     let corrupt_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
-    check_index_consistency(&repo, &packs_all, args, json_out).await?;
+    let packs_missing =
+        check_index_consistency(&repo, &packs_all, args, json_out, reporter.as_ref()).await?;
 
     let physical_failed_early = if args.read_packs {
         let verify_ctx = VerifyCtx {
@@ -460,6 +533,7 @@ pub async fn run_with_repo(
             stats: &stats,
             corrupt_blobs: &corrupt_blobs,
             cleanup_handler: &cleanup_handler,
+            reporter: reporter.as_ref(),
             json_out,
             parallel: args.parallel,
             fail_early: args.fail_early,
@@ -485,6 +559,7 @@ pub async fn run_with_repo(
             args.repair && repo.manifest().ecc().is_some(),
             json_out,
             &cleanup_handler,
+            reporter.as_ref(),
         )
         .await?;
     }
@@ -502,6 +577,7 @@ pub async fn run_with_repo(
                 args,
                 json_out,
                 &cleanup_handler,
+                reporter.as_ref(),
             )
             .await?;
     } else if cleanup_handler.is_interrupted() {
@@ -511,8 +587,8 @@ pub async fn run_with_repo(
 
     // Back-referencing Corruption
     if !corrupt_blobs.lock().is_empty() {
-        ui::cli::log!();
-        ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
+        reporter.message(Log, "");
+        reporter.message(HeadingError, "Analyzing impact of corruption...");
 
         if json_out {
             ui::json::emit_static(
@@ -531,6 +607,7 @@ pub async fn run_with_repo(
             .map(|snapshot_id| {
                 let repo = repo.clone();
                 let corrupt_blobs = corrupt_blobs.clone();
+                let reporter = reporter.clone();
                 async move {
                     let mut stream = SerializedNodeStream::new(
                         repo.clone(),
@@ -556,11 +633,14 @@ pub async fn run_with_repo(
                                 continue;
                             }
 
-                            ui::cli::error!(
-                                "Corrupt blob {} affects file \"{}\" in snapshot {}",
-                                blob_id.to_short_hex(8).red(),
-                                path.display().to_string().bold(),
-                                snapshot_id.to_short_hex(12).yellow()
+                            reporter.message(
+                                Error,
+                                &format!(
+                                    "Corrupt blob {} affects file \"{}\" in snapshot {}",
+                                    blob_id.to_short_hex(8),
+                                    path.display(),
+                                    snapshot_id.to_short_hex(12)
+                                ),
                             );
 
                             if json_out {
@@ -583,9 +663,9 @@ pub async fn run_with_repo(
                     target: "verify",
                     "Failed to traverse snapshot for corruption analysis: {e}"
                 );
-                ui::cli::error!(
-                    "Failed to analyze corruption impact: {}",
-                    format!("{e:#}").red()
+                reporter.message(
+                    Error,
+                    &format!("Failed to analyze corruption impact: {e:#}"),
                 );
                 if args.fail_early {
                     return Err(VerifyError::VerifyFailed(format!(
@@ -596,19 +676,29 @@ pub async fn run_with_repo(
         }
     }
 
-    let final_report = VerifyReport {
-        start,
-        stats: &stats,
+    let packs_corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
+    let metadata_files_corrupt = stats.metadata_files_corrupt.load(Ordering::Relaxed);
+    let summary = VerifySummary {
+        duration: start.elapsed(),
+        packs_processed: stats.packs_processed.load(Ordering::Relaxed),
+        packs_corrupt,
+        packs_missing,
+        packs_repaired: stats.packs_repaired.load(Ordering::Relaxed),
+        blobs_verified: stats.blobs_verified.load(Ordering::Relaxed),
+        blobs_dangling: stats.blobs_dangling.load(Ordering::Relaxed),
+        snapshots_verified: num_snapshots_total,
         snapshots_corrupt,
-        num_snapshots_total,
-        physical_failed_early,
-        logical_failed_early,
+        metadata_files_corrupt,
+        passed: packs_corrupt == 0
+            && packs_missing == 0
+            && snapshots_corrupt == 0
+            && metadata_files_corrupt == 0,
+        failed_early: physical_failed_early || logical_failed_early,
         read_packs: args.read_packs,
-        json_out,
     };
-    emit_final_report(&final_report)?;
+    emit_final_report(&summary, json_out, reporter.as_ref());
 
-    Ok(())
+    Ok(summary)
 }
 
 async fn check_index_consistency(
@@ -616,8 +706,9 @@ async fn check_index_consistency(
     packs_all: &IdSet<ID>,
     args: &CmdArgs,
     json_out: bool,
-) -> Result<IdSet<ID>, VerifyError> {
-    ui::cli::log!("{}", "Verifying Index Consistency...".bold());
+    reporter: &dyn VerifyReporter,
+) -> Result<usize, VerifyError> {
+    reporter.message(Heading, "Verifying Index Consistency...");
     tracing::info!(target: "verify", "Verifying index consistency");
     let mut missing_packs = IdSet::default();
     repo.index().for_each_pack_id(|pack_id| {
@@ -632,12 +723,12 @@ async fn check_index_consistency(
             "Index refers to {} missing packs",
             missing_packs.len()
         );
-        ui::cli::error!(
-            "Index refers to {} missing packs!",
-            missing_packs.len().to_string().bold().red()
+        reporter.message(
+            Error,
+            &format!("Index refers to {} missing packs!", missing_packs.len()),
         );
         for p in &missing_packs {
-            ui::cli::log!("  - Missing Pack: {}", p);
+            reporter.message(Log, &format!("  - Missing Pack: {p}"));
         }
         if args.fail_early {
             return Err(VerifyError::VerifyFailed(
@@ -646,10 +737,9 @@ async fn check_index_consistency(
         }
     } else {
         tracing::info!(target: "verify", "Index consistency check passed");
-        ui::cli::log!(
-            "{} {}",
-            "Index consistency check passed.".bold().green(),
-            "All indexed blobs point to existing packs."
+        reporter.message(
+            Success,
+            "Index consistency check passed. All indexed blobs point to existing packs.",
         );
     }
 
@@ -664,9 +754,9 @@ async fn check_index_consistency(
         );
     }
 
-    ui::cli::log!();
+    reporter.message(Log, "");
 
-    Ok(missing_packs)
+    Ok(missing_packs.len())
 }
 
 async fn verify_metadata_files(
@@ -676,11 +766,12 @@ async fn verify_metadata_files(
     repair: bool,
     json_out: bool,
     cleanup_handler: &CleanupHandler,
+    reporter: &dyn VerifyReporter,
 ) -> Result<(), VerifyError> {
     if repair {
-        ui::cli::log!("{}", "Verifying Metadata Files (ECC)...".bold());
+        reporter.message(Heading, "Verifying Metadata Files (ECC)...");
     } else {
-        ui::cli::log!("{}", "Verifying Metadata Files...".bold());
+        reporter.message(Heading, "Verifying Metadata Files...");
     }
 
     let mut files_to_verify: Vec<(ContentIdType, Option<ID>, std::path::PathBuf)> = Vec::new();
@@ -699,22 +790,16 @@ async fn verify_metadata_files(
 
     let total = files_to_verify.len();
     if total == 0 {
-        ui::cli::log!("No metadata files to verify.");
+        reporter.message(Log, "No metadata files to verify.");
         return Ok(());
     }
 
-    let style = default_progress_style()
-        .template("[{elapsed}] [{bar:25.cyan/white}] {pos}/{len} files ({msg})")
-        .expect("invalid progress bar template for verify metadata");
-
-    let bar = ProgressBar::new(total as u64);
-    bar.set_draw_target(default_bar_draw_target());
-    bar.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-    bar.set_style(style);
-    bar.set_message("OK");
+    reporter.begin_phase("Metadata files", total as u64, PhaseStyle::Metadata);
+    reporter.phase_progress(0, Some("OK"));
 
     let interrupted_flag = cleanup_handler.interrupted.clone();
 
+    let mut processed: u64 = 0;
     for (file_type, file_id, file_path) in &files_to_verify {
         if interrupted_flag.load(Ordering::Relaxed) {
             break;
@@ -744,28 +829,23 @@ async fn verify_metadata_files(
                         .file_id
                         .map(|id| id.to_short_hex(8))
                         .unwrap_or_else(|| file_path.display().to_string());
-                    bar.suspend(|| {
-                        ui::cli::log!(
-                            "{} {} {} REPAIRED via ECC.",
-                            "[REPAIRED]".green().bold(),
-                            file_stats.file_type,
-                            label
-                        );
-                    });
+                    reporter.message(
+                        Repaired,
+                        &format!("{} {} REPAIRED via ECC.", file_stats.file_type, label),
+                    );
                 } else if file_stats.bit_rot {
                     stats.metadata_files_corrupt.fetch_add(1, Ordering::Relaxed);
                     let label = file_stats
                         .file_id
                         .map(|id| id.to_short_hex(8))
                         .unwrap_or_else(|| file_path.display().to_string());
-                    bar.suspend(|| {
-                        ui::cli::error!(
-                            "{} {} {} CORRUPT: ECC detected bit-rot.",
-                            "[ERROR]".red().bold(),
-                            file_stats.file_type,
-                            label
-                        );
-                    });
+                    reporter.message(
+                        Error,
+                        &format!(
+                            "{} {} CORRUPT: ECC detected bit-rot.",
+                            file_stats.file_type, label
+                        ),
+                    );
 
                     if json_out {
                         ui::json::emit_static(
@@ -788,15 +868,10 @@ async fn verify_metadata_files(
                     } else {
                         "file is unreadable or corrupt"
                     };
-                    bar.suspend(|| {
-                        ui::cli::error!(
-                            "{} {} {} CORRUPT: {}.",
-                            "[ERROR]".red().bold(),
-                            file_stats.file_type,
-                            label,
-                            reason
-                        );
-                    });
+                    reporter.message(
+                        Error,
+                        &format!("{} {} CORRUPT: {}.", file_stats.file_type, label, reason),
+                    );
 
                     if json_out {
                         ui::json::emit_static(
@@ -812,51 +887,53 @@ async fn verify_metadata_files(
             }
             Err(e) => {
                 stats.metadata_files_corrupt.fetch_add(1, Ordering::Relaxed);
-                bar.suspend(|| {
-                    ui::cli::error!("Failed to verify {}: {}", file_path.display(), e);
-                });
+                reporter.message(
+                    Error,
+                    &format!("Failed to verify {}: {e}", file_path.display()),
+                );
             }
         }
 
+        processed += 1;
         let corrupt = stats.metadata_files_corrupt.load(Ordering::Relaxed);
-        if corrupt > 0 {
-            bar.set_message(
-                utils::format_count(corrupt, "ERROR", "ERRORS")
-                    .red()
-                    .to_string(),
-            );
+        let message = if corrupt > 0 {
+            utils::format_count(corrupt, "ERROR", "ERRORS")
         } else {
-            bar.set_message("OK".to_string());
-        }
-        bar.inc(1);
+            "OK".to_string()
+        };
+        reporter.phase_progress(processed, Some(&message));
     }
 
     if cleanup_handler.is_interrupted() {
-        bar.abandon();
+        reporter.end_phase(true);
         return Ok(());
     }
 
-    bar.finish();
+    reporter.end_phase(false);
 
     let corrupt = stats.metadata_files_corrupt.load(Ordering::Relaxed);
     let repaired = stats.metadata_files_repaired.load(Ordering::Relaxed);
     if corrupt > 0 {
-        ui::cli::error!("Metadata verification failed. {} corrupt file(s).", corrupt);
+        reporter.message(
+            Error,
+            &format!("Metadata verification failed. {corrupt} corrupt file(s)."),
+        );
     } else {
-        ui::cli::log!(
-            "{} {} metadata files verified.",
-            "Metadata verification passed.".bold().green(),
-            total
+        reporter.message(
+            Success,
+            &format!("Metadata verification passed. {total} metadata files verified."),
         );
     }
     if repaired > 0 {
-        ui::cli::log!(
-            "{} {} repaired via ECC.",
-            "[INFO]".green(),
-            utils::format_count(repaired, "file was", "files were")
+        reporter.message(
+            Info,
+            &format!(
+                "{} repaired via ECC.",
+                utils::format_count(repaired, "file was", "files were")
+            ),
         );
     }
-    ui::cli::log!();
+    reporter.message(Log, "");
 
     Ok(())
 }
@@ -882,15 +959,17 @@ async fn dump_pack_blobs(
     secure_storage: Arc<SecureStorage>,
     pack_ids: &IdSet<ID>,
     path: &Path,
+    reporter: &dyn VerifyReporter,
 ) -> Result<(), VerifyError> {
     let pack_ids: Vec<ID> = pack_ids.iter().copied().collect();
     let total = pack_ids.len();
 
-    ui::cli::log!(
-        "{} dumping blob descriptors from {} packs to {}",
-        "Pack blobs:".bold().cyan(),
-        total,
-        path.display()
+    reporter.message(
+        Log,
+        &format!(
+            "Pack blobs: dumping blob descriptors from {total} packs to {}",
+            path.display()
+        ),
     );
 
     if let Some(parent) = path.parent()
@@ -901,11 +980,8 @@ async fn dump_pack_blobs(
     let file = std::fs::File::create(path).map_err(VerifyError::Io)?;
     let writer = Arc::new(parking_lot::Mutex::new(io::BufWriter::new(file)));
 
-    let progress = ProgressBar::new(total as u64);
-    progress.set_draw_target(default_bar_draw_target());
-    progress.set_style(default_progress_style());
-    progress.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-    progress.set_message("dumping");
+    reporter.begin_phase("Pack blobs", total as u64, PhaseStyle::Generic);
+    reporter.phase_progress(0, Some("dumping"));
     let done = AtomicUsize::new(0);
 
     futures::stream::iter(pack_ids)
@@ -914,7 +990,6 @@ async fn dump_pack_blobs(
             let backend = repo.backend();
             let secure_storage = secure_storage.clone();
             let writer = writer.clone();
-            let progress = progress.clone();
             let done = &done;
             async move {
                 let descriptors = Packer::parse_pack_footer(
@@ -939,8 +1014,7 @@ async fn dump_pack_blobs(
                     .collect::<Vec<_>>();
                 if lines.is_empty() {
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    progress.set_message(format!("{n}/{total} packs"));
-                    progress.inc(1);
+                    reporter.phase_progress(n as u64, Some(&format!("{n}/{total} packs")));
                     return Ok::<_, VerifyError>(());
                 }
                 lines.push(String::new());
@@ -953,8 +1027,7 @@ async fn dump_pack_blobs(
                     .map_err(VerifyError::Io)?;
 
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                progress.set_message(format!("{n}/{total} packs"));
-                progress.inc(1);
+                reporter.phase_progress(n as u64, Some(&format!("{n}/{total} packs")));
                 Ok::<_, VerifyError>(())
             }
         })
@@ -962,7 +1035,7 @@ async fn dump_pack_blobs(
         .try_collect::<Vec<_>>()
         .await?;
 
-    progress.finish_and_clear();
+    reporter.end_phase(false);
     let mut writer = writer.lock();
     writer.flush().map_err(VerifyError::Io)?;
     drop(writer);
@@ -975,49 +1048,16 @@ async fn verify_packs_physically(
     packs_to_verify: &[ID],
 ) -> Result<bool, VerifyError> {
     let suffix = if ctx.is_sampled { " (sampled)" } else { "" };
-    ui::cli::log!("{}", format!("Verifying Pack Integrity{suffix}...").bold());
+    ctx.reporter
+        .message(Heading, &format!("Verifying Pack Integrity{suffix}..."));
 
-    let verify_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
-
-    let style = default_progress_style()
-        .template(
-            "[{custom_elapsed}] [{bar:25.cyan/white}] [ETA: {custom_eta}] {pos}/{len} packs ({msg})",
-        )
-        .expect("invalid progress bar template for verify pack integrity")
-        .with_key(
-            "custom_elapsed",
-            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                let _ = write!(w, "{}", utils::pretty_print_duration(state.elapsed()));
-            },
-        )
-        .with_key(
-            "custom_eta",
-            {
-                let re = verify_rate.clone();
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let pos = state.pos() as f64;
-                    let total = state.len().map(|l| l as f64);
-                    match re.lock().eta(pos, total.unwrap_or(pos)) {
-                        Some(d) => {
-                            let _ = w.write_str(&utils::pretty_print_duration(d));
-                        }
-                        None => {
-                            let _ = w.write_str("--");
-                        }
-                    }
-                }
-            },
-        );
-
-    let bar = ProgressBar::new(packs_to_verify.len() as u64);
-    bar.set_draw_target(default_bar_draw_target());
-    bar.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-    bar.set_style(style);
-    bar.set_message("OK");
+    let total_packs = packs_to_verify.len();
+    ctx.reporter
+        .begin_phase("Pack integrity", total_packs as u64, PhaseStyle::Packs);
+    ctx.reporter.phase_progress(0, Some("OK"));
 
     let stop_flag = AtomicBool::new(false);
     let interrupted_flag = ctx.cleanup_handler.interrupted.clone();
-    let total_packs = packs_to_verify.len();
     let json_out = ctx.json_out;
 
     futures::stream::iter(packs_to_verify.iter())
@@ -1030,8 +1070,7 @@ async fn verify_packs_physically(
             let repo = ctx.repo.clone();
             let backend = repo.backend();
             let secure = ctx.secure_storage.clone();
-            let bar = bar.clone();
-            let verify_rate = verify_rate.clone();
+            let reporter = ctx.reporter;
             let stats = ctx.stats;
             let stop_flag = &stop_flag;
             let corrupt_blobs = ctx.corrupt_blobs.clone();
@@ -1057,23 +1096,22 @@ async fn verify_packs_physically(
 
                         if pack_stats.repaired {
                             stats.packs_repaired.fetch_add(1, Ordering::Relaxed);
-                            bar.suspend(|| {
-                                ui::cli::log!(
-                                    "{} Pack {} REPAIRED via ECC.",
-                                    "[REPAIRED]".green().bold(),
-                                    pack_id
-                                );
-                            });
+                            reporter
+                                .message(Repaired, &format!("Pack {pack_id} REPAIRED via ECC."));
                         } else if pack_stats.bit_rot || !pack_stats.corrupt_blobs.is_empty() {
-                            bar.suspend(|| {
-                                if pack_stats.bit_rot {
-                                    ui::cli::error!(
+                            if pack_stats.bit_rot {
+                                reporter.message(
+                                    Error,
+                                    &format!(
                                         "Pack {} CORRUPT: Bit-rot detected (file hash mismatch).",
                                         pack_id
-                                    );
-                                }
-                                if !pack_stats.corrupt_blobs.is_empty() {
-                                    ui::cli::error!(
+                                    ),
+                                );
+                            }
+                            if !pack_stats.corrupt_blobs.is_empty() {
+                                reporter.message(
+                                    Error,
+                                    &format!(
                                         "Pack {} CORRUPT: {} found.",
                                         pack_id,
                                         utils::format_count(
@@ -1081,9 +1119,9 @@ async fn verify_packs_physically(
                                             "damaged blob",
                                             "damaged blobs",
                                         )
-                                    );
-                                }
-                            });
+                                    ),
+                                );
+                            }
 
                             if json_out {
                                 let mut parts = Vec::new();
@@ -1117,9 +1155,7 @@ async fn verify_packs_physically(
                         }
                     }
                     Err(e) => {
-                        bar.suspend(|| {
-                            ui::cli::error!("Failed to process pack {}: {}", pack_id, e);
-                        });
+                        reporter.message(Error, &format!("Failed to process pack {pack_id}: {e}"));
 
                         if json_out {
                             ui::json::emit_static(
@@ -1137,18 +1173,14 @@ async fn verify_packs_physically(
                 }
 
                 let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
-                if corrupt > 0 {
-                    bar.set_message(
-                        utils::format_count(corrupt, "ERROR", "ERRORS")
-                            .red()
-                            .to_string(),
-                    );
+                let done = stats.packs_processed.load(Ordering::Relaxed)
+                    + stats.packs_corrupt.load(Ordering::Relaxed);
+                let message = if corrupt > 0 {
+                    utils::format_count(corrupt, "ERROR", "ERRORS")
                 } else {
-                    bar.set_message("OK".to_string());
-                }
-                bar.inc(1);
-                let pos = bar.position() as f64;
-                verify_rate.lock().observe(pos);
+                    "OK".to_string()
+                };
+                reporter.phase_progress(done as u64, Some(&message));
 
                 if json_out {
                     ui::json::emit_static(
@@ -1173,28 +1205,34 @@ async fn verify_packs_physically(
         .await;
 
     if ctx.cleanup_handler.is_interrupted() {
-        bar.abandon();
+        ctx.reporter.end_phase(true);
         return Ok(true);
     }
 
-    bar.finish();
+    ctx.reporter.end_phase(false);
     let failed_early = stop_flag.load(Ordering::Relaxed);
 
     if ctx.stats.packs_corrupt.load(Ordering::Relaxed) > 0 {
-        ui::cli::log!();
+        ctx.reporter.message(Log, "");
         if failed_early {
-            ui::cli::warning!("Physical verification halted early due to errors.");
+            ctx.reporter
+                .message(Warning, "Physical verification halted early due to errors.");
         } else {
-            ui::cli::error!("Physical verification failed. The repository data is corrupt.");
+            ctx.reporter.message(
+                Error,
+                "Physical verification failed. The repository data is corrupt.",
+            );
         }
     } else {
-        ui::cli::log!(
-            "{} {} blobs verified.",
-            "Physical verification passed.".bold().green(),
-            ctx.stats.blobs_verified.load(Ordering::Relaxed)
+        ctx.reporter.message(
+            Success,
+            &format!(
+                "Physical verification passed. {} blobs verified.",
+                ctx.stats.blobs_verified.load(Ordering::Relaxed)
+            ),
         );
     }
-    ui::cli::log!();
+    ctx.reporter.message(Log, "");
 
     Ok(failed_early)
 }
@@ -1206,8 +1244,9 @@ async fn verify_snapshots_logically(
     args: &CmdArgs,
     json_out: bool,
     cleanup_handler: &CleanupHandler,
+    reporter: &dyn VerifyReporter,
 ) -> Result<(bool, usize, usize), VerifyError> {
-    ui::cli::log!("{}", "Verifying Snapshot References...".bold());
+    reporter.message(Heading, "Verifying Snapshot References...");
 
     let snapshots_corrupt = AtomicUsize::new(0);
     let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
@@ -1217,7 +1256,7 @@ async fn verify_snapshots_logically(
         match res {
             Ok((id, snapshot)) => snapshots.push((id, snapshot.timestamp)),
             Err(e) => {
-                ui::cli::error!("Failed to load snapshot: {}", e);
+                reporter.message(Error, &format!("Failed to load snapshot: {e}"));
 
                 if json_out {
                     ui::json::emit_static(
@@ -1262,19 +1301,15 @@ async fn verify_snapshots_logically(
         .buffered(4);
 
     while let Some((i, snapshot_id, res, json_out)) = stream.next().await {
-        let msg = format!(
-            "{} {}",
-            snapshot_id.to_short_hex(12).bold().yellow(),
-            format!("({}/{})", i + 1, num_snapshots_total).dimmed()
-        );
+        let id = snapshot_id.to_short_hex(12);
 
         match res {
             Ok(_) => {
-                ui::cli::log!("{} {}", msg, "[OK]".bold().green());
+                reporter.check(&id, i + 1, num_snapshots_total, true);
             }
             Err(e) => {
-                ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
-                ui::cli::error!("{}", e);
+                reporter.check(&id, i + 1, num_snapshots_total, false);
+                reporter.message(Error, &format!("{e}"));
 
                 if json_out {
                     ui::json::emit_static(
@@ -1315,120 +1350,121 @@ async fn verify_snapshots_logically(
     ))
 }
 
-fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
-    let metadata_corrupt_count = report.stats.metadata_files_corrupt.load(Ordering::Relaxed);
-    if report.json_out {
-        let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
-        let packs_repaired_count = report.stats.packs_repaired.load(Ordering::Relaxed);
-        let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
-        let passed = packs_corrupt_count == 0
-            && report.snapshots_corrupt == 0
-            && metadata_corrupt_count == 0;
-
+fn emit_final_report(summary: &VerifySummary, json_out: bool, reporter: &dyn VerifyReporter) {
+    if json_out {
         ui::json::emit_static(
             "verify_complete",
             &VerifyCompleteMsg {
-                duration_seconds: report.start.elapsed().as_secs_f64(),
-                packs_processed: report.stats.packs_processed.load(Ordering::Relaxed),
-                packs_corrupt: packs_corrupt_count,
-                packs_repaired: packs_repaired_count,
-                blobs_verified: report.stats.blobs_verified.load(Ordering::Relaxed),
-                blobs_dangling: dangling_count,
-                snapshots_verified: report.num_snapshots_total,
-                snapshots_corrupt: report.snapshots_corrupt,
-                metadata_files_corrupt: metadata_corrupt_count,
-                passed,
-                failed_early: report.physical_failed_early || report.logical_failed_early,
-                read_packs: report.read_packs,
+                duration_seconds: summary.duration.as_secs_f64(),
+                packs_processed: summary.packs_processed,
+                packs_corrupt: summary.packs_corrupt,
+                packs_missing: summary.packs_missing,
+                packs_repaired: summary.packs_repaired,
+                blobs_verified: summary.blobs_verified,
+                blobs_dangling: summary.blobs_dangling,
+                snapshots_verified: summary.snapshots_verified,
+                snapshots_corrupt: summary.snapshots_corrupt,
+                metadata_files_corrupt: summary.metadata_files_corrupt,
+                passed: summary.passed,
+                failed_early: summary.failed_early,
+                read_packs: summary.read_packs,
             },
         );
     }
 
-    let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
-    let packs_repaired_count = report.stats.packs_repaired.load(Ordering::Relaxed);
-    let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
+    if !summary.passed {
+        reporter.message(Failure, "VERIFICATION FAILED");
 
-    if packs_corrupt_count > 0 || report.snapshots_corrupt > 0 || metadata_corrupt_count > 0 {
-        ui::cli::log!("{}", "VERIFICATION FAILED".bold().on_red());
-
-        if packs_corrupt_count > 0 {
-            ui::cli::log!(
-                "- {} corrupt/unreadable.",
-                utils::format_count(packs_corrupt_count, "pack", "packs")
+        if summary.packs_corrupt > 0 {
+            reporter.message(
+                Log,
+                &format!(
+                    "- {} corrupt/unreadable.",
+                    utils::format_count(summary.packs_corrupt, "pack", "packs")
+                ),
             );
         }
-        if metadata_corrupt_count > 0 {
-            ui::cli::log!(
-                "- {} with corrupted metadata.",
-                utils::format_count(metadata_corrupt_count, "metadata file", "metadata files")
+        if summary.packs_missing > 0 {
+            reporter.message(
+                Log,
+                &format!(
+                    "- {} referenced by the index but missing.",
+                    utils::format_count(summary.packs_missing, "pack", "packs")
+                ),
             );
         }
-        if report.snapshots_corrupt > 0 {
-            ui::cli::log!(
-                "- {} with broken references.",
-                utils::format_count(report.snapshots_corrupt, "snapshot", "snapshots")
+        if summary.metadata_files_corrupt > 0 {
+            reporter.message(
+                Log,
+                &format!(
+                    "- {} with corrupted metadata.",
+                    utils::format_count(
+                        summary.metadata_files_corrupt,
+                        "metadata file",
+                        "metadata files"
+                    )
+                ),
             );
         }
-        if report.physical_failed_early || report.logical_failed_early {
-            ui::cli::log!(
-                "{}",
-                "Note: Verification was partial due to --fail-early.".dimmed()
+        if summary.snapshots_corrupt > 0 {
+            reporter.message(
+                Log,
+                &format!(
+                    "- {} with broken references.",
+                    utils::format_count(summary.snapshots_corrupt, "snapshot", "snapshots")
+                ),
             );
         }
-
-        return Err(if packs_corrupt_count > 0 {
-            VerifyError::CorruptPacks("repository integrity check failed".to_string())
-        } else if metadata_corrupt_count > 0 {
-            VerifyError::CorruptMetadata("metadata integrity check failed".to_string())
-        } else {
-            VerifyError::CorruptSnapshots("repository integrity check failed".to_string())
-        });
+        if summary.failed_early {
+            reporter.message(Note, "Note: Verification was partial due to --fail-early.");
+        }
+        return;
     }
 
-    if packs_repaired_count > 0 {
-        ui::cli::log!(
-            "{} {} (ECC repair successful).",
-            "[INFO]".green(),
-            utils::format_count(packs_repaired_count, "pack was", "packs were")
+    if summary.packs_repaired > 0 {
+        reporter.message(
+            Info,
+            &format!(
+                "{} (ECC repair successful).",
+                utils::format_count(summary.packs_repaired, "pack was", "packs were")
+            ),
         );
     }
 
-    if dangling_count > 0 {
-        ui::cli::log!(
-            "{} Found {} (run 'prune' to clean up).",
-            "[INFO]".yellow(),
-            utils::format_count(dangling_count, "unreferenced blob", "unreferenced blobs")
+    if summary.blobs_dangling > 0 {
+        reporter.message(
+            InfoSoft,
+            &format!(
+                "Found {} (run 'prune' to clean up).",
+                utils::format_count(
+                    summary.blobs_dangling,
+                    "unreferenced blob",
+                    "unreferenced blobs"
+                )
+            ),
         );
     }
 
-    if !report.read_packs {
-        ui::cli::log!(
-            "{} {} {}.",
-            "Note:".bold().dimmed(),
-            "Only references were checked. To verify data integrity, run this command with"
-                .dimmed(),
-            "--read-packs".dimmed().bold()
+    if !summary.read_packs {
+        reporter.message(Note,
+            "Note: Only references were checked. To verify data integrity, run this command with --read-packs.",
         );
     }
 
-    ui::cli::log!(
-        "\n{} Verified {} and {} in {}",
-        "[SUCCESS]".bold().green(),
-        utils::format_count(report.num_snapshots_total, "snapshot", "snapshots"),
-        utils::format_count(
-            report.stats.packs_processed.load(Ordering::Relaxed),
-            "pack",
-            "packs"
+    reporter.message(
+        FinalSuccess,
+        &format!(
+            "Verified {} and {} in {}",
+            utils::format_count(summary.snapshots_verified, "snapshot", "snapshots"),
+            utils::format_count(summary.packs_processed, "pack", "packs"),
+            utils::pretty_print_duration(summary.duration)
         ),
-        utils::pretty_print_duration(report.start.elapsed())
     );
     tracing::info!(
         target: "verify",
         "Verify command completed successfully in {:?}",
-        report.start.elapsed()
+        summary.duration
     );
-
-    Ok(())
 }
 
 fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {

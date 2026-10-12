@@ -4,24 +4,24 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::Constraint,
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
-use tokio::sync::mpsc;
 
 use crate::{
     commands::cmd_verify::{self, CmdArgs},
     repository::{lock::LockHandle, repo::Repository},
     ui::{
-        events::{Event, EventSender, TaskEvent},
+        events::{Event, EventSender, TaskEvent, filtered_event_channel},
         reporter::{EventVerifyReporter, VerifyReporter},
         tui::{
             app::{Screen, Transition},
             background::BackgroundTask,
+            screens::TaskSession,
             theme::{self, kv},
             widgets::{Form, FormCommand, FormField, PhaseProgress, ToastSink, impl_attach_toasts},
         },
@@ -49,9 +49,7 @@ pub struct VerifyScreen {
 
     phase: VerifyPhase,
     form: Form,
-    shutdown_signal: Arc<AtomicBool>,
-    rx: Option<mpsc::UnboundedReceiver<TaskEvent>>,
-    task: Option<BackgroundTask<VerifyResult>>,
+    session: TaskSession<TaskEvent, VerifyResult>,
     progress: PhaseProgress,
     summary: Option<VerifyResult>,
 
@@ -85,9 +83,7 @@ impl VerifyScreen {
             lock_handle,
             phase: VerifyPhase::Config,
             form,
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
-            rx: None,
-            task: None,
+            session: TaskSession::new(),
             progress: PhaseProgress::new("Verifying\u{2026}"),
             summary: None,
             toasts: ToastSink::default(),
@@ -133,29 +129,23 @@ impl VerifyScreen {
     fn start_verify(&mut self) {
         let args = self.build_args();
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        let event_sender: EventSender = {
-            let tx = tx.clone();
-            Arc::new(move |event: Event| {
-                if let Event::Task(e) = event {
-                    let _ = tx.send(e);
-                }
-            })
-        };
+        let (event_sender, rx) = filtered_event_channel(|event| match event {
+            Event::Task(e) => Some(e),
+            _ => None,
+        });
 
-        self.rx = Some(rx);
+        self.session.begin(rx);
         self.phase = VerifyPhase::Progress;
         self.progress = PhaseProgress::new("Verifying\u{2026}");
         self.summary = None;
-        self.shutdown_signal.store(false, Ordering::SeqCst);
 
         let repo = self.repo.clone();
         let secure_storage = repo.secure_storage();
         let lock_handle = self.lock_handle.clone();
-        let shutdown_signal = self.shutdown_signal.clone();
+        let worker_signal = self.session.signal();
 
-        self.task = Some(BackgroundTask::spawn(
-            self.shutdown_signal.clone(),
+        self.session.set_task(BackgroundTask::spawn(
+            self.session.signal(),
             move || async move {
                 Ok(run_verify(
                     repo,
@@ -163,7 +153,7 @@ impl VerifyScreen {
                     lock_handle,
                     args,
                     event_sender,
-                    shutdown_signal,
+                    worker_signal,
                 )
                 .await)
             },
@@ -175,15 +165,14 @@ impl VerifyScreen {
             return;
         }
 
-        if let Some(rx) = &mut self.rx {
-            while let Ok(event) = rx.try_recv() {
-                self.progress.handle_event(event);
-            }
-        }
+        let result = {
+            let Self {
+                session, progress, ..
+            } = self;
+            session.poll(|event| progress.handle_event(event))
+        };
 
-        if let Some(task) = &mut self.task
-            && let Some(result) = task.poll()
-        {
+        if let Some(result) = result {
             let result = result.unwrap_or_else(VerifyResult::Error);
             if let VerifyResult::Error(e) = &result {
                 self.toasts.error(format!("Verify failed: {e}"));
@@ -216,20 +205,10 @@ impl Screen for VerifyScreen {
                 FormCommand::Cancel => Some(Transition::Pop),
                 FormCommand::None => None,
             },
-            VerifyPhase::Progress => match key.code {
-                KeyCode::Esc => {
-                    self.shutdown_signal.store(true, Ordering::SeqCst);
-                    self.progress.cancelling = true;
-                    None
-                }
-                KeyCode::Char('q') => Some(Transition::Quit),
-                _ => None,
-            },
-            VerifyPhase::Summary => match key.code {
-                KeyCode::Enter | KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
-                _ => None,
-            },
+            VerifyPhase::Progress => self
+                .session
+                .handle_progress_key(key.code, &mut self.progress.cancelling),
+            VerifyPhase::Summary => self.session.handle_summary_key(key.code),
         }
     }
 
@@ -252,44 +231,28 @@ impl Screen for VerifyScreen {
     impl_attach_toasts!(toasts);
 
     fn request_shutdown(&mut self) {
-        self.shutdown_signal.store(true, Ordering::SeqCst);
+        self.session.request_shutdown();
     }
 
     async fn shutdown(&mut self) {
-        if let Some(task) = &mut self.task {
-            task.shutdown().await;
-        }
+        self.session.shutdown().await;
     }
 }
 
 impl VerifyScreen {
     fn render_config(&self, frame: &mut Frame) {
-        let area = frame.area().inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), area.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(6), Constraint::Length(footer.len() as u16)])
-            .split(area);
-
+        let chunks = theme::body_with_footer(frame, &self.help_hints(), &[Constraint::Min(6)]);
         self.form.render(frame, chunks[0], "Verify Repository");
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[1]);
     }
 
     fn render_progress(&mut self, frame: &mut Frame) {
-        let area = frame.area().inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), area.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(6),
-                Constraint::Min(4),
-                Constraint::Length(footer.len() as u16),
-            ])
-            .split(area);
-
+        let chunks = theme::body_with_footer(
+            frame,
+            &self.help_hints(),
+            &[Constraint::Length(6), Constraint::Min(4)],
+        );
         self.progress.render_bar(frame, chunks[0]);
         self.progress.render_details(frame, chunks[1]);
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[2]);
     }
 
     fn render_summary(&self, frame: &mut Frame) {

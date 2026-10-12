@@ -27,7 +27,7 @@ use crate::{
         app::{Screen, Transition},
         screens::{
             clean::CleanScreen, diff::DiffScreen, find::FindScreen, forget::ForgetScreen,
-            restore::RestoreScreen, snapshot::SnapshotCreateScreen,
+            restore::RestoreScreen, snapshot::SnapshotCreateScreen, snapshot_cells,
             snapshot_detail::SnapshotDetailScreen, stats::StatsScreen, verify::VerifyScreen,
         },
         theme,
@@ -524,16 +524,14 @@ impl DashboardScreen {
                 } else {
                     theme::THEME.snap_inactive
                 };
-                let id_str = entry.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
-                let date = utils::pretty_print_timestamp(&entry.snapshot.timestamp, None);
-                let host = entry.snapshot.hostname.as_deref().unwrap_or_default();
+                let [id, date, host] = snapshot_cells(entry);
                 let size = utils::format_size_binary(entry.snapshot.size(), 3);
 
                 let mut cells = vec![
                     Span::styled(active_sym, active_style),
-                    Span::styled(id_str, theme::THEME.snap_id),
-                    Span::styled(date, theme::THEME.snap_date),
-                    Span::styled(host, theme::THEME.snap_host),
+                    id,
+                    date,
+                    host,
                     Span::styled(format!("{:>13}", size), theme::THEME.snap_size),
                 ];
                 if show_tags {

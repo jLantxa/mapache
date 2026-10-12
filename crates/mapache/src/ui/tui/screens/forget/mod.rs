@@ -7,7 +7,7 @@ use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Paragraph, Row, Table, TableState},
@@ -16,7 +16,7 @@ pub use retention::{RetentionAction, RetentionConfig};
 
 use crate::{
     commands::cmd_forget,
-    common::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
+    common::ContentIdType,
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
         retention::build_forget_plan,
@@ -24,12 +24,12 @@ use crate::{
     },
     ui::tui::{
         app::{Screen, Transition},
+        screens::snapshot_cells,
         theme,
         widgets::{
             Dialog, FormFieldType, StateNavigation, ToastSink, click_to_index, impl_attach_toasts,
         },
     },
-    utils,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -283,16 +283,11 @@ impl ForgetScreen {
     }
 
     fn render_selection(&mut self, frame: &mut Frame) {
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(3),
-                Constraint::Length(footer.len() as u16),
-            ])
-            .split(inner);
+        let chunks = theme::body_with_footer(
+            frame,
+            &self.help_hints(),
+            &[Constraint::Length(3), Constraint::Min(3)],
+        );
 
         self.last_table_area = chunks[1];
 
@@ -323,9 +318,6 @@ impl ForgetScreen {
             .map(|(idx, e)| {
                 let is_selected = self.selected.get(idx);
                 let selected_str = if is_selected { "[X]" } else { "[ ]" };
-                let id = e.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
-                let date = utils::pretty_print_timestamp(&e.snapshot.timestamp, None);
-                let host = e.snapshot.hostname.as_deref().unwrap_or("");
 
                 let style = if is_selected {
                     Style::default().fg(theme::THEME.red)
@@ -333,12 +325,8 @@ impl ForgetScreen {
                     Style::default()
                 };
 
-                let mut cells = vec![
-                    Span::styled(selected_str, style),
-                    Span::styled(id, theme::THEME.snap_id),
-                    Span::styled(date, theme::THEME.snap_date),
-                    Span::styled(host, theme::THEME.snap_host),
-                ];
+                let [id, date, host] = snapshot_cells(e);
+                let mut cells = vec![Span::styled(selected_str, style), id, date, host];
                 if show_tags {
                     cells.push(Span::raw(theme::format_tags(&e.snapshot.tags)));
                 }
@@ -377,9 +365,6 @@ impl ForgetScreen {
                 self.table_state.selected().unwrap_or(0),
             );
         }
-
-        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[2]);
     }
 
     fn render_confirm(&self, frame: &mut Frame) {

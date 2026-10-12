@@ -1,17 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    text::{Line, Span, Text},
-    widgets::Paragraph,
-};
-use tokio::sync::mpsc;
+use std::sync::{Arc, atomic::AtomicBool};
 
 use crate::{
     commands::cmd_clean,
@@ -20,10 +7,11 @@ use crate::{
         repo::Repository,
     },
     ui::{
-        events::{Event, EventSender, GcEvent, GcTaskKind, TaskEvent},
+        events::{Event, EventSender, GcEvent, GcTaskKind, TaskEvent, filtered_event_channel},
         tui::{
             app::{Screen, Transition},
             background::BackgroundTask,
+            screens::TaskSession,
             theme::{self, kv, section},
             widgets::{
                 Dialog, Form, FormCommand, FormField, PhaseProgress, ToastSink, impl_attach_toasts,
@@ -31,6 +19,14 @@ use crate::{
         },
     },
     utils,
+};
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Rect},
+    text::{Line, Span, Text},
+    widgets::Paragraph,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,9 +50,7 @@ pub struct CleanScreen {
 
     phase: CleanPhase,
     form: Form,
-    shutdown_signal: Arc<AtomicBool>,
-    rx: Option<mpsc::UnboundedReceiver<GcEvent>>,
-    task: Option<BackgroundTask<CleanResult>>,
+    session: TaskSession<GcEvent, CleanResult>,
     progress: PhaseProgress,
     summary: Option<CleanResult>,
 
@@ -83,9 +77,7 @@ impl CleanScreen {
             lock_handle,
             phase: CleanPhase::Config,
             form,
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
-            rx: None,
-            task: None,
+            session: TaskSession::new(),
             progress: PhaseProgress::new("Starting garbage collection\u{2026}"),
             summary: None,
             toasts: ToastSink::default(),
@@ -102,35 +94,29 @@ impl CleanScreen {
         let tolerance_pct = self.form.get_number_by_label("Tolerance %:").unwrap_or(0) as f32;
         let tolerance = cmd_clean::effective_tolerance(no_repack, tolerance_pct);
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        let event_sender: EventSender = {
-            let tx = tx.clone();
-            Arc::new(move |event: Event| {
-                if let Event::Gc(e) = event {
-                    let _ = tx.send(e);
-                }
-            })
-        };
+        let (event_sender, rx) = filtered_event_channel(|event| match event {
+            Event::Gc(e) => Some(e),
+            _ => None,
+        });
 
-        self.rx = Some(rx);
+        self.session.begin(rx);
         self.phase = CleanPhase::Progress;
         self.progress = PhaseProgress::new("Starting garbage collection\u{2026}");
         self.summary = None;
-        self.shutdown_signal.store(false, Ordering::SeqCst);
 
         let repo = self.repo.clone();
         let lock_handle = self.lock_handle.clone();
-        let shutdown_signal = self.shutdown_signal.clone();
+        let worker_signal = self.session.signal();
 
-        self.task = Some(BackgroundTask::spawn(
-            self.shutdown_signal.clone(),
+        self.session.set_task(BackgroundTask::spawn(
+            self.session.signal(),
             move || async move {
                 Ok(run_clean(
                     repo,
                     tolerance,
                     dry_run,
                     event_sender,
-                    shutdown_signal,
+                    worker_signal,
                     lock_handle,
                 )
                 .await)
@@ -145,27 +131,22 @@ impl CleanScreen {
 
         // Drain regular events first so the last progress update is reflected
         // before a completion is acted upon.
-        if let Some(rx) = &mut self.rx {
-            while let Ok(event) = rx.try_recv() {
-                match event {
-                    GcEvent::TaskProgress { kind, pos, total } => {
-                        self.progress.set_phase(gc_task_label(kind), pos, total)
-                    }
-                    GcEvent::Warning(message) => {
-                        self.progress.handle_event(TaskEvent::Warning(message))
-                    }
-                    GcEvent::Error(message) => {
-                        self.progress.handle_event(TaskEvent::Error(message))
-                    }
-                    GcEvent::Log(message) => self.progress.handle_event(TaskEvent::Log(message)),
-                    GcEvent::TaskFinished { .. } | GcEvent::Finished { .. } => {}
+        let result = {
+            let Self {
+                session, progress, ..
+            } = self;
+            session.poll(|event| match event {
+                GcEvent::TaskProgress { kind, pos, total } => {
+                    progress.set_phase(gc_task_label(kind), pos, total)
                 }
-            }
-        }
+                GcEvent::Warning(message) => progress.handle_event(TaskEvent::Warning(message)),
+                GcEvent::Error(message) => progress.handle_event(TaskEvent::Error(message)),
+                GcEvent::Log(message) => progress.handle_event(TaskEvent::Log(message)),
+                GcEvent::TaskFinished { .. } | GcEvent::Finished { .. } => {}
+            })
+        };
 
-        if let Some(task) = &mut self.task
-            && let Some(result) = task.poll()
-        {
+        if let Some(result) = result {
             let result = result.unwrap_or_else(CleanResult::Error);
             if let CleanResult::Error(e) = &result {
                 self.toasts.error(format!("Failed to clean: {e}"));
@@ -214,20 +195,10 @@ impl Screen for CleanScreen {
                 KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             },
-            CleanPhase::Progress => match key.code {
-                KeyCode::Esc => {
-                    self.shutdown_signal.store(true, Ordering::SeqCst);
-                    self.progress.cancelling = true;
-                    None
-                }
-                KeyCode::Char('q') => Some(Transition::Quit),
-                _ => None,
-            },
-            CleanPhase::Summary => match key.code {
-                KeyCode::Enter | KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
-                _ => None,
-            },
+            CleanPhase::Progress => self
+                .session
+                .handle_progress_key(key.code, &mut self.progress.cancelling),
+            CleanPhase::Summary => self.session.handle_summary_key(key.code),
         }
     }
 
@@ -259,28 +230,19 @@ impl Screen for CleanScreen {
     impl_attach_toasts!(toasts);
 
     fn request_shutdown(&mut self) {
-        self.shutdown_signal.store(true, Ordering::SeqCst);
+        self.session.request_shutdown();
     }
 
     async fn shutdown(&mut self) {
-        if let Some(task) = &mut self.task {
-            task.shutdown().await;
-        }
+        self.session.shutdown().await;
     }
 }
 
 impl CleanScreen {
     fn render_config(&self, frame: &mut Frame) {
         let area = frame.area();
-        let inner = area.inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(footer.len() as u16)])
-            .split(inner);
-
+        let chunks = theme::body_with_footer(frame, &self.help_hints(), &[Constraint::Min(10)]);
         self.form.render(frame, chunks[0], "Clean Configuration");
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[1]);
 
         if self.phase == CleanPhase::Confirm {
             self.render_confirm(frame, area);
@@ -304,29 +266,17 @@ impl CleanScreen {
     }
 
     fn render_progress(&mut self, frame: &mut Frame) {
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(5),
-                Constraint::Min(0),
-                Constraint::Length(footer.len() as u16),
-            ])
-            .split(inner);
-
+        let chunks = theme::body_with_footer(
+            frame,
+            &self.help_hints(),
+            &[Constraint::Length(5), Constraint::Min(0)],
+        );
         self.progress.render_bar(frame, chunks[0]);
         self.progress.render_details(frame, chunks[1]);
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[2]);
     }
 
     fn render_summary(&self, frame: &mut Frame) {
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(footer.len() as u16)])
-            .split(inner);
+        let chunks = theme::body_with_footer(frame, &self.help_hints(), &[Constraint::Min(10)]);
 
         let lines = match &self.summary {
             Some(CleanResult::Done(outcome)) => summary_lines(outcome),
@@ -346,7 +296,6 @@ impl CleanScreen {
             Paragraph::new(Text::from(lines)).block(theme::block("Clean Summary")),
             chunks[0],
         );
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[1]);
     }
 }
 
@@ -463,6 +412,8 @@ async fn run_clean(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use crate::{
         backend::{StorageBackend, WriteContents, mock::MockBackend},

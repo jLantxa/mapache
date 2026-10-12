@@ -1,5 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
+use tokio::sync::mpsc;
+
 use crate::{archiver::progress::SnapshotProcessSummary, fs::tree::NodeDiff};
 
 /// Top-level event enum dispatched to all consumers.
@@ -18,6 +20,26 @@ pub type EventSender = Arc<dyn Fn(Event) + Send + Sync>;
 /// A no-op event sender that discards all events.
 pub fn noop_sender() -> EventSender {
     Arc::new(|_| {})
+}
+
+/// Builds an [`EventSender`] that forwards only the events `extract` maps to
+/// `Some`, together with the receiver of those extracted events.
+///
+/// Screens use this to observe their own domain events (backup, restore, GC,
+/// task progress) as a typed stream instead of matching on [`Event`] and
+/// bouncing them through a channel by hand.
+pub fn filtered_event_channel<T, F>(extract: F) -> (EventSender, mpsc::UnboundedReceiver<T>)
+where
+    T: Send + 'static,
+    F: Fn(Event) -> Option<T> + Send + Sync + 'static,
+{
+    let (tx, rx) = mpsc::unbounded_channel();
+    let sender: EventSender = Arc::new(move |event: Event| {
+        if let Some(value) = extract(event) {
+            let _ = tx.send(value);
+        }
+    });
+    (sender, rx)
 }
 
 /// Helper to emit an event through the sender.

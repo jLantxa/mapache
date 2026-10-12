@@ -2,31 +2,27 @@ pub(crate) mod config;
 pub(crate) mod progress;
 pub(crate) mod summary;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::Ordering};
 
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
-use tokio::sync::mpsc;
 
 use crate::{
     commands::{self, cmd_snapshot},
     repository::{lock::LockHandle, repo::Repository},
     ui::{
-        events::{BackupEvent, Event, EventSender},
+        events::{BackupEvent, Event, filtered_event_channel},
         tui::{
             app::{Screen, Transition},
             background::BackgroundTask,
-            screens::snapshot::{
-                config::{ConfigAction, SnapshotForm, render_config},
-                progress::{
-                    ProgressAction, ProgressState, SummaryResult, handle_progress_key,
-                    render_progress,
+            screens::{
+                TaskSession,
+                snapshot::{
+                    config::{ConfigAction, SnapshotForm, render_config},
+                    progress::{ProgressState, SummaryResult, render_progress},
+                    summary::render_summary,
                 },
-                summary::{SummaryAction, handle_summary_key, render_summary},
             },
         },
     },
@@ -45,10 +41,7 @@ pub struct SnapshotCreateScreen {
     phase: SnapshotPhase,
     form: SnapshotForm,
     progress: ProgressState,
-    shutdown_signal: Arc<AtomicBool>,
-
-    rx: Option<mpsc::UnboundedReceiver<BackupEvent>>,
-    task: Option<BackgroundTask<SummaryResult>>,
+    session: TaskSession<BackupEvent, SummaryResult>,
     summary: Option<SummaryResult>,
 }
 
@@ -64,9 +57,7 @@ impl SnapshotCreateScreen {
             phase: SnapshotPhase::Config,
             form: SnapshotForm::new(config_defaults.as_ref()),
             progress: ProgressState::new(),
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
-            rx: None,
-            task: None,
+            session: TaskSession::new(),
             summary: None,
         }
     }
@@ -78,7 +69,7 @@ impl SnapshotCreateScreen {
 
         let repo = self.repo.clone();
         let lock_handle = self.lock_handle.clone();
-        let shutdown_signal = self.shutdown_signal.clone();
+        let worker_signal = self.session.signal();
         let options = self.form.to_snapshot_options();
         let dry_run = self.form.dry_run();
         let parent = match self.form.parent() {
@@ -91,24 +82,18 @@ impl SnapshotCreateScreen {
             .get_toggle_by_label("No parent:")
             .unwrap_or(false);
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        let event_sender: EventSender = {
-            let tx = tx.clone();
-            Arc::new(move |event: Event| {
-                if let Event::Backup(e) = event {
-                    let _ = tx.send(e);
-                }
-            })
-        };
+        let (event_sender, rx) = filtered_event_channel(|event| match event {
+            Event::Backup(e) => Some(e),
+            _ => None,
+        });
 
-        self.rx = Some(rx);
+        self.session.begin(rx);
         self.phase = SnapshotPhase::Progress;
         self.progress = ProgressState::new();
         self.progress.core.scanning = !options.no_scan;
-        self.shutdown_signal.store(false, Ordering::SeqCst);
 
-        self.task = Some(BackgroundTask::spawn_async(
-            self.shutdown_signal.clone(),
+        self.session.set_task(BackgroundTask::spawn_async(
+            self.session.signal(),
             async move {
                 let repo = if dry_run {
                     repo.for_dry_run()
@@ -130,7 +115,7 @@ impl SnapshotCreateScreen {
                     options,
                     event_sender,
                     parent_snapshot_pair,
-                    Some(shutdown_signal.clone()),
+                    Some(worker_signal.clone()),
                 )
                 .await;
                 let summary_result = match result {
@@ -144,7 +129,7 @@ impl SnapshotCreateScreen {
                     Ok(cmd_snapshot::SnapshotOutcome::SkippedNoChanges) => SummaryResult::NoChanges,
                     Ok(cmd_snapshot::SnapshotOutcome::Interrupted) => SummaryResult::Cancelled,
                     Err(e) => {
-                        if shutdown_signal.load(Ordering::SeqCst) {
+                        if worker_signal.load(Ordering::SeqCst) {
                             SummaryResult::Cancelled
                         } else {
                             SummaryResult::Error(e.to_string())
@@ -161,24 +146,18 @@ impl SnapshotCreateScreen {
             return;
         }
 
-        // Process regular events from mpsc first
-        if let Some(rx) = &mut self.rx {
-            while let Ok(event) = rx.try_recv() {
-                self.progress.handle_event(event);
-            }
-        }
+        let result = {
+            let Self {
+                session, progress, ..
+            } = self;
+            session.poll(|event| progress.handle_event(event))
+        };
 
-        if let Some(task) = &mut self.task
-            && let Some(result) = task.poll()
-        {
-            match result {
-                Ok(summary_result) => {
-                    self.summary = Some(summary_result);
-                }
-                Err(e) => {
-                    self.summary = Some(SummaryResult::Error(e));
-                }
-            }
+        if let Some(result) = result {
+            self.summary = Some(match result {
+                Ok(summary_result) => summary_result,
+                Err(e) => SummaryResult::Error(e),
+            });
             self.phase = SnapshotPhase::Summary;
         }
     }
@@ -208,20 +187,10 @@ impl Screen for SnapshotCreateScreen {
                 }
                 ConfigAction::None => None,
             },
-            SnapshotPhase::Progress => match handle_progress_key(key.code) {
-                ProgressAction::Quit => Some(Transition::Quit),
-                ProgressAction::Cancel => {
-                    self.shutdown_signal.store(true, Ordering::SeqCst);
-                    self.progress.core.cancelling = true;
-                    None
-                }
-                ProgressAction::None => None,
-            },
-            SnapshotPhase::Summary => match handle_summary_key(key.code) {
-                SummaryAction::Quit => Some(Transition::Quit),
-                SummaryAction::Done => Some(Transition::Pop),
-                SummaryAction::None => None,
-            },
+            SnapshotPhase::Progress => self
+                .session
+                .handle_progress_key(key.code, &mut self.progress.core.cancelling),
+            SnapshotPhase::Summary => self.session.handle_summary_key(key.code),
         }
     }
 
@@ -250,12 +219,10 @@ impl Screen for SnapshotCreateScreen {
     }
 
     fn request_shutdown(&mut self) {
-        self.shutdown_signal.store(true, Ordering::SeqCst);
+        self.session.request_shutdown();
     }
 
     async fn shutdown(&mut self) {
-        if let Some(task) = &mut self.task {
-            task.shutdown().await;
-        }
+        self.session.shutdown().await;
     }
 }

@@ -1,4 +1,3 @@
-use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -13,13 +12,6 @@ use crate::{
     ui::tui::{screens::snapshot::progress::SummaryResult, theme, widgets::Toast},
     utils,
 };
-
-#[derive(Debug)]
-pub enum SummaryAction {
-    None,
-    Quit,
-    Done,
-}
 
 pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>, dry_run: bool) {
     let area = frame.area();
@@ -249,14 +241,6 @@ fn render_footer(frame: &mut Frame, area: Rect, summary: &Option<SummaryResult>)
         _ => theme::key_hint_footer(&[("q", "back")]),
     };
     frame.render_widget(Paragraph::new(footer), area);
-}
-
-pub fn handle_summary_key(key: KeyCode) -> SummaryAction {
-    match key {
-        KeyCode::Char('q') => SummaryAction::Quit,
-        KeyCode::Enter | KeyCode::Esc => SummaryAction::Done,
-        _ => SummaryAction::None,
-    }
 }
 
 #[cfg(test)]

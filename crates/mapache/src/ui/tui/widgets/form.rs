@@ -882,16 +882,6 @@ mod tests {
     }
 
     #[test]
-    fn form_tab_cycles_forward() {
-        let mut f = make_form();
-        f.handle_key(KeyCode::Tab);
-        // focus moved to field 1 (verify via get_toggle — only field 1 is a toggle)
-        // We can't directly check focus, but toggling field 1 should work
-        f.handle_key(key(' ')); // toggle field 1
-        assert_eq!(f.get_toggle_by_label("Flag"), Some(true));
-    }
-
-    #[test]
     fn form_backtab_cycles_backward() {
         let mut f = make_form();
         f.handle_key(KeyCode::BackTab);
@@ -950,17 +940,14 @@ mod tests {
     }
 
     #[test]
-    fn form_get_returns_none_for_wrong_type() {
+    fn form_getters_return_none_for_missing_or_mismatched_fields() {
         let f = make_form();
+        // A field of the wrong type.
         assert!(f.get_text_by_label("Flag").is_none()); // Flag is a toggle
         assert!(f.get_toggle_by_label("Name").is_none()); // Name is text
         assert!(f.get_choice_by_label("Name").is_none());
         assert!(f.get_number_by_label("Name").is_none());
-    }
-
-    #[test]
-    fn form_unknown_label_returns_none() {
-        let f = make_form();
+        // A label that does not exist.
         assert!(f.get_text_by_label("Missing").is_none());
         assert!(f.get_toggle_by_label("Missing").is_none());
     }

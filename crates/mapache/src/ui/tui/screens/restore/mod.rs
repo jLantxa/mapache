@@ -2,14 +2,7 @@ pub(crate) mod config;
 pub(crate) mod progress;
 pub(crate) mod summary;
 
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
-};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -17,7 +10,6 @@ use ratatui::{
     Frame,
     text::{Line, Text},
 };
-use tokio::sync::mpsc;
 
 use crate::{
     commands::cmd_restore,
@@ -26,11 +18,14 @@ use crate::{
         snapshot::{SnapshotEntry, SnapshotPair},
     },
     ui::{
-        events::{Event, EventSender, RestoreEvent},
+        events::{Event, RestoreEvent, emit_event, filtered_event_channel},
         tui::{
             app::{Screen, Transition},
             background::BackgroundTask,
-            screens::restore::config::{ConfigAction, RestoreConfig},
+            screens::{
+                TaskSession,
+                restore::config::{ConfigAction, RestoreConfig},
+            },
             theme,
             widgets::{Dialog, TaskProgressState},
         },
@@ -50,12 +45,8 @@ pub struct RestoreScreen {
     config: RestoreConfig,
     phase: RestorePhase,
     progress: TaskProgressState,
-
-    rx: mpsc::UnboundedReceiver<RestoreEvent>,
-    tx: mpsc::UnboundedSender<RestoreEvent>,
-    task: Option<BackgroundTask<()>>,
+    session: TaskSession<RestoreEvent, ()>,
     result: Option<Result<(), String>>,
-    shutdown_signal: Arc<AtomicBool>,
 }
 
 impl RestoreScreen {
@@ -64,18 +55,13 @@ impl RestoreScreen {
         snapshot: SnapshotEntry,
         paths: Option<Vec<PathBuf>>,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
         Self {
             repo,
             config: RestoreConfig::new(snapshot, paths),
             phase: RestorePhase::Config,
             progress: TaskProgressState::new(),
-
-            rx,
-            tx,
-            task: None,
+            session: TaskSession::new(),
             result: None,
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -90,31 +76,28 @@ impl RestoreScreen {
         };
         let args = self.config.to_args();
 
-        let tx = self.tx.clone();
-        let reporter: EventSender = {
-            let tx = tx.clone();
-            Arc::new(move |event: Event| {
-                if let Event::Restore(e) = event {
-                    let _ = tx.send(e);
-                }
-            })
-        };
-        let shutdown_signal = self.shutdown_signal.clone();
-        self.shutdown_signal.store(false, Ordering::SeqCst);
+        let (event_sender, rx) = filtered_event_channel(|event| match event {
+            Event::Restore(e) => Some(e),
+            _ => None,
+        });
+        self.session.begin(rx);
 
-        self.task = Some(BackgroundTask::spawn_async(
-            self.shutdown_signal.clone(),
+        let worker_signal = self.session.signal();
+        let finished = event_sender.clone();
+
+        self.session.set_task(BackgroundTask::spawn_async(
+            self.session.signal(),
             async move {
                 let result = cmd_restore::run_with_repo(
                     repo,
                     None,
                     &args,
-                    reporter,
+                    event_sender,
                     snapshot_pair,
-                    Some(shutdown_signal),
+                    Some(worker_signal),
                 )
                 .await;
-                let _ = tx.send(RestoreEvent::Finished);
+                emit_event(&finished, Event::Restore(RestoreEvent::Finished));
                 result.map_err(|error| error.to_string())
             },
         ));
@@ -124,15 +107,16 @@ impl RestoreScreen {
 #[async_trait]
 impl Screen for RestoreScreen {
     fn render(&mut self, frame: &mut Frame) {
-        if let Some(task) = &mut self.task
-            && let Some(result) = task.poll()
-        {
+        let result = {
+            let Self {
+                session, progress, ..
+            } = self;
+            session.poll(|event| progress::handle_event(progress, event))
+        };
+
+        if let Some(result) = result {
             self.phase = RestorePhase::Summary;
             self.result = Some(result);
-        }
-
-        while let Ok(event) = self.rx.try_recv() {
-            progress::handle_event(&mut self.progress, event);
         }
 
         let area = frame.area();
@@ -190,20 +174,10 @@ impl Screen for RestoreScreen {
                 KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             },
-            RestorePhase::Progress => match key.code {
-                KeyCode::Esc => {
-                    self.shutdown_signal.store(true, Ordering::SeqCst);
-                    self.progress.cancelling = true;
-                    None
-                }
-                KeyCode::Char('q') => Some(Transition::Quit),
-                _ => None,
-            },
-            RestorePhase::Summary => match key.code {
-                KeyCode::Enter | KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
-                _ => None,
-            },
+            RestorePhase::Progress => self
+                .session
+                .handle_progress_key(key.code, &mut self.progress.cancelling),
+            RestorePhase::Summary => self.session.handle_summary_key(key.code),
         }
     }
 
@@ -232,13 +206,11 @@ impl Screen for RestoreScreen {
     }
 
     fn request_shutdown(&mut self) {
-        self.shutdown_signal.store(true, Ordering::SeqCst);
+        self.session.request_shutdown();
     }
 
     async fn shutdown(&mut self) {
-        if let Some(task) = &mut self.task {
-            task.shutdown().await;
-        }
+        self.session.shutdown().await;
     }
 }
 
@@ -300,7 +272,7 @@ mod tests {
             .await;
 
         assert_eq!(screen.phase, RestorePhase::Confirm);
-        assert!(screen.task.is_none());
+        assert!(!screen.session.is_running());
 
         let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
             screen.render(frame);

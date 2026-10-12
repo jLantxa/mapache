@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 
-use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -14,10 +13,7 @@ use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     repository::snapshot::SnapshotSummary,
     ui::events::BackupEvent,
-    ui::tui::{
-        theme,
-        widgets::{ProgressBar, TaskProgressState},
-    },
+    ui::tui::{theme, widgets::TaskProgressState},
 };
 
 const MAX_ERRORS: usize = 3;
@@ -111,13 +107,6 @@ impl ProgressState {
     }
 }
 
-#[derive(Debug)]
-pub enum ProgressAction {
-    None,
-    Quit,
-    Cancel,
-}
-
 pub fn render_progress(frame: &mut Frame, state: &ProgressState, dry_run: bool) {
     let inner = frame.area().inner(theme::CONTENT_MARGIN);
 
@@ -150,29 +139,7 @@ pub fn render_progress(frame: &mut Frame, state: &ProgressState, dry_run: bool) 
 }
 
 fn render_progress_bar(frame: &mut Frame, area: Rect, state: &ProgressState) {
-    let rate = state.core.rate_estimator.rate();
-    let eta = if !state.core.scanning
-        && state.core.expected_bytes > 0
-        && state.core.processed_bytes > 0
-    {
-        state.core.rate_estimator.eta(
-            state.core.processed_bytes as f64,
-            state.core.expected_bytes as f64,
-        )
-    } else {
-        None
-    };
-
-    let progress_bar = ProgressBar::new()
-        .bytes(state.core.processed_bytes, state.core.expected_bytes)
-        .items(state.core.processed_items, state.core.expected_items)
-        .elapsed(state.core.elapsed())
-        .scanning(state.core.scanning)
-        .cancelling(state.core.cancelling)
-        .rate(rate)
-        .eta(eta);
-
-    frame.render_widget(progress_bar.render(), area);
+    frame.render_widget(state.core.progress_bar().render(), area);
 }
 
 fn render_recent_nodes(frame: &mut Frame, area: Rect, state: &ProgressState) {
@@ -219,12 +186,4 @@ fn render_progress_footer(frame: &mut Frame, area: Rect, dry_run: bool) {
             .insert(0, Span::styled("[DRY RUN] ", theme::THEME.warning));
     }
     frame.render_widget(Paragraph::new(footer), area);
-}
-
-pub fn handle_progress_key(key: KeyCode) -> ProgressAction {
-    match key {
-        KeyCode::Char('q') => ProgressAction::Quit,
-        KeyCode::Esc => ProgressAction::Cancel,
-        _ => ProgressAction::None,
-    }
 }

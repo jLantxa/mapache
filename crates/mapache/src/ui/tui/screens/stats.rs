@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
@@ -302,15 +302,9 @@ impl Screen for StatsScreen {
             return;
         }
 
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
-        let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(footer.len() as u16)])
-            .split(inner);
+        let chunks = theme::body_with_footer(frame, &self.help_hints(), &[Constraint::Min(3)]);
 
         self.render_body(frame, chunks[0]);
-        frame.render_widget(Paragraph::new(Text::from(footer)), chunks[1]);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {

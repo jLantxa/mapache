@@ -1,8 +1,8 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
@@ -295,6 +295,31 @@ pub fn key_hint_lines(hints: &[(&str, &str)], width: u16) -> Vec<Line<'static>> 
             Line::from(spans)
         })
         .collect()
+}
+
+/// Lays out the content area (inset by [`CONTENT_MARGIN`]) as the given `body`
+/// rows followed by a footer holding the wrapped `hints`, renders that footer,
+/// and returns the body rects in order.
+///
+/// Screens share this instead of repeating the margin/layout/footer dance, so
+/// every screen's "body plus hint footer" frame looks the same.
+pub fn body_with_footer(
+    frame: &mut Frame,
+    hints: &[(&str, &str)],
+    body: &[Constraint],
+) -> Vec<Rect> {
+    let inner = frame.area().inner(CONTENT_MARGIN);
+    let footer = key_hint_lines(hints, inner.width);
+
+    let mut constraints = body.to_vec();
+    constraints.push(Constraint::Length(footer.len() as u16));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    frame.render_widget(Paragraph::new(Text::from(footer)), chunks[body.len()]);
+    chunks.iter().take(body.len()).copied().collect()
 }
 
 pub fn format_tags(tags: impl IntoIterator<Item = impl AsRef<str>>) -> String {

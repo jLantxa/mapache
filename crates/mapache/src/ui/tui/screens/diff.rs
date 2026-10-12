@@ -216,14 +216,17 @@ impl DiffScreen {
         }
     }
 
-    fn expand_filter_dirs(&mut self) {
+    /// Marks the entries matching the active filter, together with their
+    /// ancestor directories so nested hits stay reachable. Returns `None` when
+    /// no filter is active.
+    fn filter_matches(&self) -> Option<Vec<bool>> {
         let filter_text = self
             .filter
             .active_text()
             .or_else(|| self.filter.query())
             .unwrap_or("");
         if filter_text.is_empty() {
-            return;
+            return None;
         }
         let q = filter_text.to_lowercase();
 
@@ -248,6 +251,14 @@ impl DiffScreen {
             }
         }
 
+        Some(show_entry)
+    }
+
+    fn expand_filter_dirs(&mut self) {
+        let Some(show_entry) = self.filter_matches() else {
+            return;
+        };
+
         for i in 0..self.entries.len() {
             if self.entries[i].is_dir && !self.entries[i].expanded {
                 let depth = self.entries[i].depth;
@@ -262,42 +273,11 @@ impl DiffScreen {
     }
 
     fn build_visible(&mut self) {
-        let filter_text = self
-            .filter
-            .active_text()
-            .or_else(|| self.filter.query())
-            .unwrap_or("");
-        let query = if filter_text.is_empty() {
-            None
-        } else {
-            Some(filter_text.to_lowercase())
-        };
+        let matches = self.filter_matches();
 
         self.visible.clear();
 
-        if let Some(q) = query {
-            let mut show_entry = vec![false; self.entries.len()];
-
-            for (i, entry) in self.entries.iter().enumerate() {
-                if (self.show_all || entry.has_changes)
-                    && entry.path.to_string_lossy().to_lowercase().contains(&q)
-                {
-                    show_entry[i] = true;
-                }
-            }
-
-            for i in (0..self.entries.len()).rev() {
-                if show_entry[i] {
-                    let depth = self.entries[i].depth;
-                    for j in (0..i).rev() {
-                        if self.entries[j].depth < depth {
-                            show_entry[j] = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
+        if let Some(show_entry) = matches {
             let mut i = 0;
             while i < self.entries.len() {
                 if show_entry[i] {

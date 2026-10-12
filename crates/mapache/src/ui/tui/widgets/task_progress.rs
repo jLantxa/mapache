@@ -232,6 +232,28 @@ impl TaskProgressState {
             self.finish_time = Some(Instant::now());
         }
     }
+
+    /// Builds a progress bar for the current figures, folding in the derived
+    /// transfer rate and ETA so every screen renders identical numbers.
+    pub fn progress_bar(&self) -> ProgressBar {
+        let rate = self.rate_estimator.rate();
+        let eta = if !self.scanning && self.expected_bytes > 0 && self.processed_bytes > 0 {
+            self.rate_estimator
+                .eta(self.processed_bytes as f64, self.expected_bytes as f64)
+        } else {
+            None
+        };
+
+        ProgressBar::new()
+            .bytes(self.processed_bytes, self.expected_bytes)
+            .items(self.processed_items, self.expected_items)
+            .skipped(self.skipped_bytes)
+            .elapsed(self.elapsed())
+            .scanning(self.scanning)
+            .cancelling(self.cancelling)
+            .rate(rate)
+            .eta(eta)
+    }
 }
 
 pub struct TaskProgressWidget<'a> {
@@ -258,28 +280,7 @@ impl<'a> TaskProgressWidget<'a> {
             ])
             .split(area);
 
-        let rate = self.state.rate_estimator.rate();
-        let eta = if !self.state.scanning
-            && self.state.expected_bytes > 0
-            && self.state.processed_bytes > 0
-        {
-            self.state.rate_estimator.eta(
-                self.state.processed_bytes as f64,
-                self.state.expected_bytes as f64,
-            )
-        } else {
-            None
-        };
-
-        let progress_bar = ProgressBar::new()
-            .bytes(self.state.processed_bytes, self.state.expected_bytes)
-            .items(self.state.processed_items, self.state.expected_items)
-            .skipped(self.state.skipped_bytes)
-            .elapsed(self.state.elapsed())
-            .scanning(self.state.scanning)
-            .cancelling(self.state.cancelling)
-            .rate(rate)
-            .eta(eta);
+        let progress_bar = self.state.progress_bar();
 
         frame.render_widget(progress_bar.render(), chunks[0]);
 
@@ -349,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_progress_keeps_known_total_on_update_without_total() {
+    fn phase_progress_keeps_the_total_within_a_phase_but_not_across_phases() {
         let mut progress = PhaseProgress::new("Starting");
         // GC reports the total when the task starts and omits it on updates.
         progress.set_phase("Repacking blobs", 0, Some(40));
@@ -360,17 +361,13 @@ mod tests {
             "update without total must keep the determinate bar: {text:?}"
         );
         assert!(text.contains("Repacking blobs"));
-    }
 
-    #[test]
-    fn phase_progress_new_phase_does_not_inherit_previous_total() {
-        let mut progress = PhaseProgress::new("Starting");
-        progress.set_phase("First phase", 5, Some(10));
+        // A different phase without a total must not inherit the previous one.
         progress.set_phase("Second phase", 0, None);
         let text = render_bar_text(&mut progress);
         assert!(text.contains("Second phase"));
         assert!(
-            !text.contains("0/10"),
+            !text.contains("0/40"),
             "a new phase without a total must not reuse the previous one: {text:?}"
         );
     }

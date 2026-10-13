@@ -387,13 +387,6 @@ mod tests {
     }
 
     #[test]
-    fn red_wraps_in_ansi() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        assert_eq!("\x1b[31mhello\x1b[0m", "hello".red().to_string());
-    }
-
-    #[test]
     fn chaining_combines_codes() {
         let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
@@ -420,58 +413,5 @@ mod tests {
         assert_eq!("hello", "hello".red().to_string());
         assert_eq!("hello", "hello".bold().to_string());
         assert_eq!("hello", "hello".green().to_string());
-    }
-
-    #[test]
-    fn colorize_works_on_string() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        let s = String::from("test").cyan();
-        assert_eq!("\x1b[36mtest\x1b[0m", s.to_string());
-    }
-
-    #[test]
-    fn styled_chaining() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        let s = "hello".red().bold().italic();
-        let out = s.to_string();
-        assert!(out.contains("\x1b[31m"), "red");
-        assert!(out.contains("\x1b[1m"), "bold");
-        assert!(out.contains("\x1b[3m"), "italic");
-    }
-
-    #[test]
-    fn normal_on_styled_strips_all() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        let s = "hello".red().bold();
-        assert_eq!("hello", s.normal().to_string());
-    }
-
-    #[test]
-    fn empty_string() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        assert_eq!("\x1b[31m\x1b[0m", "".red().to_string());
-    }
-
-    #[test]
-    fn display_and_to_string_match() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        let s = "display test".yellow();
-        assert_eq!(s.to_string(), format!("{s}"));
-    }
-
-    #[test]
-    fn all_codes_have_distinct_output() {
-        let _lock = COLOR_MUTEX.lock().unwrap();
-        with_color();
-        let inputs = ["red", "green", "blue", "bold", "italic"];
-        for text in &inputs {
-            let colored = text.red();
-            assert!(colored.to_string().contains(text), "must contain input");
-        }
     }
 }

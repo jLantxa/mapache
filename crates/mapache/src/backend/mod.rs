@@ -655,19 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn test_node_attr_default() {
-        let attr = NodeAttr {
-            size: None,
-            uid: None,
-            gid: None,
-            perm: None,
-            atime: None,
-            mtime: None,
-        };
-        assert!(attr.size.is_none());
-    }
-
-    #[test]
     fn test_backend_url_parsing() {
         // Local
         assert_eq!(

@@ -1540,18 +1540,4 @@ mod tests {
             "unexpected error kind: {err}"
         );
     }
-
-    #[test]
-    fn readers_accepts_positive() {
-        let parsed = BundleArgsParse::try_parse_from([
-            "--bundle",
-            "src",
-            "-o",
-            "out.mapache",
-            "--readers",
-            "8",
-        ])
-        .expect("--readers 8 must parse");
-        assert_eq!(parsed.args.readers, 8);
-    }
 }

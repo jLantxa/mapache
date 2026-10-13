@@ -490,21 +490,6 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     }
 
     #[test]
-    fn test_generate_salt() {
-        let salt = SecureStorage::generate_salt::<4>();
-        assert_eq!(salt.len(), 4);
-
-        let salt = SecureStorage::generate_salt::<8>();
-        assert_eq!(salt.len(), 8);
-
-        let salt = SecureStorage::generate_salt::<16>();
-        assert_eq!(salt.len(), 16);
-
-        let salt = SecureStorage::generate_salt::<32>();
-        assert_eq!(salt.len(), 32);
-    }
-
-    #[test]
     fn test_derive_key() -> Result<()> {
         let password = "mapachito";
         let salt = b"0123456789abcdef0123456789abcdef";

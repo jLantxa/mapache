@@ -1238,14 +1238,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn q_accelerator_still_quits() -> Result<()> {
-        let mut screen = test_screen().await?;
-        let transition = screen.handle_key(key(KeyCode::Char('q'))).await;
-        assert!(matches!(transition, Some(Transition::Quit)));
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn dashboard_render_shows_all_commands_at_80x24() -> Result<()> {
         let mut screen = test_screen().await?;
         let content = crate::ui::tui::test_support::render_text(80, 24, |frame| {

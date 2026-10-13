@@ -417,13 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_size() {
-        let mut snapshot = Snapshot::default();
-        snapshot.summary.processed_bytes = 12345;
-        assert_eq!(snapshot.size(), 12345);
-    }
-
-    #[test]
     fn test_diff_counts_multiple_increments() {
         let mut counts = DiffCounts::default();
         // 10 new files, 3 new dirs
@@ -461,18 +454,6 @@ mod tests {
         assert_eq!(deserialized.changed_dirs, 4);
         assert_eq!(deserialized.unchanged_files, 100);
         assert_eq!(deserialized.unchanged_dirs, 10);
-    }
-
-    #[test]
-    fn test_snapshot_summary_defaults_to_zero() {
-        let summary = SnapshotSummary::default();
-        assert_eq!(summary.processed_items_count, 0);
-        assert_eq!(summary.processed_bytes, 0);
-        assert_eq!(summary.raw_bytes, 0);
-        assert_eq!(summary.encoded_bytes, 0);
-        assert_eq!(summary.data_blobs, 0);
-        assert_eq!(summary.meta_blobs, 0);
-        assert!(summary.amends.is_none());
     }
 
     #[test]

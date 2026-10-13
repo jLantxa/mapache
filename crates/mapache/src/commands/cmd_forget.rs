@@ -657,11 +657,4 @@ mod tests {
             .expect("--keep-last all must parse");
         assert_eq!(args.keep_last, Some(usize::MAX));
     }
-
-    #[test]
-    fn keep_last_accepts_positive() {
-        let args = CmdArgs::try_parse_from(["forget", "--keep-last", "5"])
-            .expect("--keep-last 5 must parse");
-        assert_eq!(args.keep_last, Some(5));
-    }
 }

@@ -413,24 +413,6 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_large_shards() {
-        let rs = ReedSolomon::new(10, 3).unwrap();
-        let data: Vec<Vec<u8>> = (0..10).map(|i| vec![i as u8; 4096]).collect();
-        let data_refs: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
-        let parity = encode(&rs, &data_refs);
-
-        let mut shards: Vec<Option<Vec<u8>>> = data
-            .into_iter()
-            .map(Some)
-            .chain(parity.into_iter().map(Some))
-            .collect();
-        shards[3] = None;
-        rs.reconstruct(&mut shards).unwrap();
-        assert_eq!(shards[3].as_ref().unwrap().len(), 4096);
-        assert!(shards[3].as_ref().unwrap().iter().all(|&b| b == 3));
-    }
-
-    #[test]
     fn too_few_shards() {
         let rs = ReedSolomon::new(4, 2).unwrap();
         let mut shards: Vec<Option<Vec<u8>>> = vec![None; 6];

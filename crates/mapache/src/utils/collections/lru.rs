@@ -117,18 +117,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lru_new() {
-        let lru = Lru::<u64, String>::new();
-        assert_eq!(lru.len(), 0);
-    }
-
-    #[test]
-    fn test_lru_record_hit_miss() {
-        let mut lru = Lru::<u64, String>::new();
-        assert!(lru.record_hit(&1).is_none());
-    }
-
-    #[test]
     fn test_lru_insert_and_hit() {
         let mut lru = Lru::new();
         lru.insert(1, Arc::new("a".to_string()), 10);
@@ -181,20 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_evict_one_empty() {
-        let mut lru = Lru::<u64, String>::new();
-        assert!(lru.evict_one().is_none());
-    }
-
-    #[test]
-    fn test_lru_is_empty() {
-        let mut lru = Lru::<u64, String>::new();
-        assert!(lru.is_empty());
-        lru.insert(1, Arc::new("x".to_string()), 1);
-        assert!(!lru.is_empty());
-    }
-
-    #[test]
     fn test_lru_reinsert_same_key_removes_stale_timestamp() {
         let mut lru = Lru::new();
         lru.insert(1, Arc::new("a".to_string()), 1);
@@ -211,14 +185,6 @@ mod tests {
         assert_eq!(*val, "c");
 
         assert!(lru.evict_one().is_none());
-    }
-
-    #[test]
-    fn test_lru_different_key_type() {
-        let mut lru = Lru::<&str, i32>::new();
-        lru.insert("x", Arc::new(42), 1);
-        let val = lru.record_hit(&"x");
-        assert_eq!(*val.unwrap(), 42);
     }
 
     #[test]

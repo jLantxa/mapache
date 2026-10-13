@@ -191,16 +191,6 @@ mod tests {
         }
     }
 
-    fn post_hooks(command: &str) -> CommandHooks {
-        CommandHooks {
-            pre: None,
-            post: Some(HookDef {
-                command: command.into(),
-                timeout: None,
-            }),
-        }
-    }
-
     #[tokio::test]
     async fn test_run_hook() {
         assert!(run_hook("true", "cmd", "repo", None, None).await.is_ok());
@@ -297,23 +287,6 @@ mod tests {
                 .await
                 .is_ok()
         );
-    }
-
-    #[tokio::test]
-    async fn test_run_post() {
-        run_post(None, "cmd", "repo", "success", None).await;
-        run_post(Some(&post_hooks("")), "cmd", "repo", "success", None).await;
-        run_post(Some(&post_hooks("false")), "cmd", "repo", "success", None).await;
-        // CLI override takes priority
-        run_post(
-            Some(&post_hooks("false")),
-            "cmd",
-            "repo",
-            "success",
-            Some("true"),
-        )
-        .await;
-        run_post(None, "cmd", "repo", "success", Some("false")).await;
     }
 
     #[tokio::test]

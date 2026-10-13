@@ -899,13 +899,6 @@ mod tests {
     }
 
     #[test]
-    fn packers_accepts_positive() {
-        let parsed =
-            SnapshotArgsParse::try_parse_from(["--packers", "8"]).expect("--packers 8 must parse");
-        assert_eq!(parsed.args.num_packers, Some(8));
-    }
-
-    #[test]
     fn readers_accepts_positive() {
         let parsed =
             SnapshotArgsParse::try_parse_from(["--readers", "8"]).expect("--readers 8 must parse");

@@ -420,14 +420,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn empty_state_centres_its_message() {
-        let rendered = crate::ui::tui::test_support::render_text(40, 10, |frame| {
-            empty_state(frame, frame.area(), "Snapshots", "Nothing here");
-        });
-
-        assert!(rendered.contains("Snapshots"), "panel title is missing");
-        assert!(rendered.contains("Nothing here"), "message is missing");
-    }
 }

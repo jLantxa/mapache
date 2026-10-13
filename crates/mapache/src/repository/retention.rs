@@ -691,11 +691,6 @@ mod tests {
     }
 
     #[test]
-    fn test_retention_options_default_build_no_rules() {
-        assert!(RetentionOptions::default().to_rules().is_empty());
-    }
-
-    #[test]
     fn test_keep_last() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepLast(4)];

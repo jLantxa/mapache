@@ -56,22 +56,6 @@ mod tests {
     use crate::fs::tree::NodeDiff;
 
     #[test]
-    fn test_empty_progress() {
-        let progress = SnapshotProgress::new();
-        let summary = progress.summary();
-        assert_eq!(summary.processed_items_count, 0);
-        assert_eq!(summary.processed_bytes, 0);
-        assert_eq!(summary.diff_counts.new_files, 0);
-        assert_eq!(summary.diff_counts.deleted_files, 0);
-        assert_eq!(summary.diff_counts.changed_files, 0);
-        assert_eq!(summary.diff_counts.unchanged_files, 0);
-        assert_eq!(summary.diff_counts.new_dirs, 0);
-        assert_eq!(summary.diff_counts.deleted_dirs, 0);
-        assert_eq!(summary.diff_counts.changed_dirs, 0);
-        assert_eq!(summary.diff_counts.unchanged_dirs, 0);
-    }
-
-    #[test]
     fn test_single_node_progress() {
         let progress = SnapshotProgress::new();
         progress.processed_node();

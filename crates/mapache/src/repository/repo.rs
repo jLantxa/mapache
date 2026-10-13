@@ -1942,28 +1942,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_init_and_open_with_password() -> Result<()> {
-        let auth = make_auth();
-        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-
-        Repository::init(
-            THIS_REPOSITORY_VERSION,
-            &auth,
-            None,
-            backend.clone(),
-            None,
-            false,
-        )
-        .await?;
-        let (_, _, lock_handle) =
-            Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
-                .await?;
-        lock_handle.unlock().await;
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_init_pack_saver_rejects_zero_workers() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());

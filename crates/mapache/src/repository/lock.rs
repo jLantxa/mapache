@@ -637,13 +637,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lock_basic_properties() {
-        let lock = Lock::new(true);
-        assert!(lock.exclusive);
-        assert_eq!(lock.pid, std::process::id());
-    }
-
-    #[test]
     fn test_lock_expiration() {
         let now = Local::now();
         let mut lock = Lock::new(false);

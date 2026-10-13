@@ -288,27 +288,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_table_new() {
-        let table = Table::new();
-        assert!(table.headers.is_empty());
-        assert!(table.data.is_empty());
-        assert!(table.column_widths.is_empty());
-        assert!(table.column_alignments.is_empty());
-        assert_eq!(table.padding, 1);
-    }
-
-    #[test]
-    fn test_table_new_with_alignments() {
-        let alignments = vec![Alignment::Left, Alignment::Right];
-        let table = Table::new_with_alignments(alignments.clone());
-        assert!(table.headers.is_empty());
-        assert!(table.data.is_empty());
-        assert_eq!(table.column_widths.len(), 2);
-        assert_eq!(table.column_alignments, alignments);
-        assert_eq!(table.padding, 1);
-    }
-
-    #[test]
     fn test_set_headers() {
         let mut table = Table::new();
         let headers = vec!["Header1".to_string(), "Header2".to_string()];

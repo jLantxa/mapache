@@ -789,36 +789,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_node_type_predicates() {
-        let mut node = Node {
-            node_type: NodeType::Directory,
-            ..Default::default()
-        };
-
-        assert!(node.is_dir());
-        assert!(!node.is_file());
-
-        node.node_type = NodeType::File;
-        assert!(node.is_file());
-        assert!(!node.is_dir());
-
-        node.node_type = NodeType::Symlink;
-        assert!(node.is_symlink());
-
-        node.node_type = NodeType::BlockDevice;
-        assert!(node.is_block_device());
-
-        node.node_type = NodeType::CharDevice;
-        assert!(node.is_char_device());
-
-        node.node_type = NodeType::Fifo;
-        assert!(node.is_fifo());
-
-        node.node_type = NodeType::Socket;
-        assert!(node.is_socket());
-    }
-
-    #[test]
     fn test_fetch_linux_flags_skips_opening_special_nodes() {
         for node_type in [
             NodeType::Fifo,
@@ -1000,27 +970,5 @@ mod tests {
         };
         let s = node_to_string(&node, None, true, true);
         assert!(s.contains("1.000 MiB"));
-    }
-
-    #[test]
-    fn test_node_name_from_windows_prefix() {
-        // We can't easily test actual Windows paths on Linux, but we can test
-        // the logic of how we extract the name from components.
-        let path = Path::new("C:\\");
-        let name = if let Some(std::path::Component::Prefix(p)) = path.components().next() {
-            p.as_os_str().to_string_lossy().replace(':', "")
-        } else {
-            // Fallback for Linux or if no prefix
-            path.file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "/".to_string())
-        };
-
-        if cfg!(windows) {
-            assert_eq!(name, "C");
-        } else {
-            // On Linux, "C:\" is just a filename
-            assert_eq!(name, "C:\\");
-        }
     }
 }

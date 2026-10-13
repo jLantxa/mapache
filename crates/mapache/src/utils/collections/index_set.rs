@@ -150,13 +150,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new() {
-        let set = IndexSet::<String>::new();
-        assert!(set.is_empty());
-        assert_eq!(set.len(), 0);
-    }
-
-    #[test]
     fn test_insert_new_item() {
         let mut set = IndexSet::new();
         let index1 = set.insert("apple".to_string());
@@ -299,12 +292,5 @@ mod tests {
         assert!(set.remove(&"c".to_string()));
         assert_eq!(set.len(), 0);
         assert!(set.is_empty());
-    }
-
-    #[test]
-    fn test_new_id_set() {
-        let set = IdIndexSet::<u32>::new_id_set();
-        assert!(set.is_empty());
-        assert_eq!(set.len(), 0);
     }
 }

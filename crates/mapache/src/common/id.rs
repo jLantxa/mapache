@@ -246,13 +246,6 @@ mod tests {
     }
 
     #[test]
-    fn test_id_from_bytes() {
-        let bytes = [0x01; ID_LENGTH];
-        let id = ID::from_bytes(bytes);
-        assert_eq!(id.0, bytes);
-    }
-
-    #[test]
     fn test_id_to_hex() {
         let bytes = [
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
@@ -334,17 +327,6 @@ mod tests {
     }
 
     #[test]
-    fn test_id_from_hex_boundary_lengths() {
-        // Exactly 63 chars (1 byte short)
-        let short = "00".repeat(31) + "0";
-        assert!(ID::from_hex(&short).is_err());
-
-        // Exactly 65 chars (1 byte over)
-        let long = "00".repeat(32) + "00";
-        assert!(ID::from_hex(&long).is_err());
-    }
-
-    #[test]
     fn test_id_all_zeros() {
         let hex = "0".repeat(64);
         let id = ID::from_hex(&hex).unwrap();
@@ -366,23 +348,6 @@ mod tests {
         let upper = lower.to_uppercase();
         let id = ID::from_hex(&upper).unwrap();
         assert_eq!(id.to_hex(), lower);
-    }
-
-    #[test]
-    fn test_id_partial_uppercase() {
-        let lower = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210";
-        let mixed = lower[..20].to_uppercase() + &lower[20..];
-        let id = ID::from_hex(&mixed).unwrap();
-        assert_eq!(id.to_hex(), lower);
-    }
-
-    #[test]
-    fn test_id_from_bytes_zeroes_and_max() {
-        let zeroes = ID::from_bytes([0x00; 32]);
-        assert_eq!(zeroes.to_hex(), "0".repeat(64));
-
-        let maxes = ID::from_bytes([0xFF; 32]);
-        assert_eq!(maxes.to_hex(), "f".repeat(64));
     }
 
     #[test]

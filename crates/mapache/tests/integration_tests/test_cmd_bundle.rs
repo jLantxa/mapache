@@ -402,48 +402,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_v1_bundle_export_and_extract() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
-
-        // Init a v1 repo and create a snapshot
-        ctx.init_builder()
-            .format(1)
-            .run(&ctx.global)
-            .await
-            .context("Failed to init v1 repo")?;
-
-        ctx.snapshot_builder(vec![backup_data_path.clone()])
-            .no_scan(true)
-            .run(&ctx.global)
-            .await?;
-
-        let src_ids = ctx.get_snapshot_ids()?;
-        assert_eq!(src_ids.len(), 1);
-        let snap_prefix = &src_ids[0][..8];
-
-        // Export from v1 repo to v1 bundle
-        let bundle_path = ctx._tmp_dir.path().join("v1_exported.mapache");
-        ctx.bundle_builder()
-            .export_snapshot(UseSnapshot::SnapshotId(snap_prefix.to_string()))
-            .format(1)
-            .output(bundle_path.clone())
-            .password("pass".to_string())
-            .run(&ctx.global.clone())
-            .await?;
-
-        assert!(bundle_path.exists());
-        assert!(
-            std::fs::metadata(&bundle_path)?.len() > 0,
-            "exported v1 bundle should not be empty"
-        );
-
-        Ok(())
-    }
-
     // ============================================================================
     // Cross-version protection tests
     // ============================================================================

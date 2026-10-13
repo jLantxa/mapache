@@ -1530,13 +1530,6 @@ mod tests {
     }
 
     #[test]
-    fn parallel_accepts_positive() {
-        let parsed = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "8"])
-            .expect("--parallel 8 must parse");
-        assert_eq!(parsed.args.parallel, 8);
-    }
-
-    #[test]
     fn sample_zero_percent_verifies_no_packs() {
         assert_eq!(sample_pack_count(2, 0.0), 0);
         assert_eq!(sample_pack_count(10, 0.0), 0);

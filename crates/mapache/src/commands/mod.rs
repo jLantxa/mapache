@@ -48,6 +48,7 @@ use crate::{
     commands::error::CmdError,
     common::{
         ContentIdType, ID,
+        compression_policy::CompressionPolicy,
         config::{MapacheConfig, load_config},
         defaults::{
             DEFAULT_COMPRESSION, DEFAULT_INDEX_MODE, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
@@ -142,6 +143,16 @@ fn merge_opt<T>(dst: &mut Option<T>, src: Option<T>) {
     }
 }
 
+/// Merges a presence-only boolean flag with its config value.
+///
+/// Flags declared with `ArgAction::SetTrue` are always `Some(..)` because clap
+/// inserts a default `false` when the flag is absent, so the usual "CLI wins
+/// only when set" rule would let that default shadow the config. Fold them
+/// instead: the flag can force the value on, otherwise the config decides.
+fn merge_flag(dst: &mut Option<bool>, src: Option<bool>) {
+    *dst = Some(dst.unwrap_or(false) || src.unwrap_or(false));
+}
+
 #[derive(Parser, Debug)]
 pub struct WithGlobal<T: clap::Args> {
     #[clap(flatten)]
@@ -160,7 +171,7 @@ pub struct CliGlobalArgs {
     pub repo: Option<String>,
 
     /// Disable cache
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub no_cache: Option<bool>,
 
     /// SSH private key
@@ -192,18 +203,18 @@ pub struct CliGlobalArgs {
     pub key: Option<PathBuf>,
 
     /// Disable logging (verbosity = 0)
-    #[clap(long, group = "verbosity_group", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, group = "verbosity_group", action = clap::ArgAction::SetTrue)]
     pub quiet: Option<bool>,
 
     /// Enable json output
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub json: Option<bool>,
 
     /// Set the verbosity level [0-3]
     #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,
 
-    /// Compression level [none|fastest|fast|balanced|better|best|level:val]
+    /// Compression level [auto|none|fastest|fast|balanced|better|best|level:val]
     #[clap(long = "compression", value_parser = parse_compression_level)]
     #[serde(
         rename = "compression",
@@ -211,6 +222,27 @@ pub struct CliGlobalArgs {
         deserialize_with = "deserialize_compression_opt"
     )]
     pub compression_level: Option<Compression>,
+
+    /// Skip compression for files matching these glob patterns (repeatable).
+    /// Intended for already-compressed data (e.g. `*.mp4`, `*.zip`).
+    #[clap(long = "skip-compression")]
+    pub skip_compression: Option<Vec<String>>,
+
+    /// Force compression for files matching these glob patterns (repeatable),
+    /// overriding `--skip-compression` and content skipping.
+    #[clap(long = "force-compression")]
+    pub force_compression: Option<Vec<String>>,
+
+    /// Whether to skip compressing data that does not benefit from it.
+    /// Config-file only (`skip-incompressible`); use `--no-skip-incompressible`
+    /// on the command line.
+    #[clap(skip)]
+    pub skip_incompressible: Option<bool>,
+
+    /// Compress everything, even incompressible data, instead of skipping it.
+    #[clap(long)]
+    #[serde(skip)]
+    pub no_skip_incompressible: bool,
 
     /// Retry acquiring a lock if the repository is already locked. Takes a duration
     /// string like 5m, 30s or 5m30s.
@@ -246,7 +278,7 @@ pub struct CliGlobalArgs {
     pub index_mode: Option<IndexMode>,
 
     /// Disable repository locking (read-only operations)
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub no_lock: Option<bool>,
 }
 
@@ -264,6 +296,10 @@ impl CliGlobalArgs {
             json: Some(false),
             verbosity: Some(DEFAULT_VERBOSITY),
             compression_level: Some(DEFAULT_COMPRESSION),
+            skip_compression: Some(vec!["*.mp4".to_string(), "*.zip".to_string()]),
+            force_compression: Some(vec!["*.json".to_string()]),
+            skip_incompressible: Some(true),
+            no_skip_incompressible: false,
             retry_lock_duration: Some(Duration::minutes(5)),
             limit_upload: Some(10 * 1024 * 1024),
             limit_download: Some(50 * 1024 * 1024),
@@ -290,21 +326,24 @@ pub struct HookArgs {
 impl Merge for CliGlobalArgs {
     fn merge(&mut self, other: Self) {
         merge_opt(&mut self.repo, other.repo);
-        merge_opt(&mut self.no_cache, other.no_cache);
+        merge_flag(&mut self.no_cache, other.no_cache);
         merge_opt(&mut self.ssh_privatekey, other.ssh_privatekey);
         merge_opt(&mut self.ssh_known_hosts, other.ssh_known_hosts);
         merge_opt(&mut self.auth_file, other.auth_file);
         merge_opt(&mut self.pack_size_mib, other.pack_size_mib);
         merge_opt(&mut self.key, other.key);
-        merge_opt(&mut self.quiet, other.quiet);
-        merge_opt(&mut self.json, other.json);
+        merge_flag(&mut self.quiet, other.quiet);
+        merge_flag(&mut self.json, other.json);
         merge_opt(&mut self.verbosity, other.verbosity);
         merge_opt(&mut self.compression_level, other.compression_level);
+        merge_opt(&mut self.skip_compression, other.skip_compression);
+        merge_opt(&mut self.force_compression, other.force_compression);
+        merge_opt(&mut self.skip_incompressible, other.skip_incompressible);
         merge_opt(&mut self.retry_lock_duration, other.retry_lock_duration);
         merge_opt(&mut self.limit_upload, other.limit_upload);
         merge_opt(&mut self.limit_download, other.limit_download);
         merge_opt(&mut self.index_mode, other.index_mode);
-        merge_opt(&mut self.no_lock, other.no_lock);
+        merge_flag(&mut self.no_lock, other.no_lock);
     }
 }
 
@@ -398,9 +437,22 @@ pub struct GlobalArgs {
     pub limit_download: Option<u64>,
     pub index_mode: IndexMode,
     pub no_lock: bool,
+    pub skip_compression: Vec<String>,
+    pub force_compression: Vec<String>,
+    pub skip_incompressible: bool,
 }
 
 impl GlobalArgs {
+    /// Builds the compression policy from resolved globals.
+    pub fn compress_policy(&self) -> CompressionPolicy {
+        CompressionPolicy {
+            skip_compression: self.skip_compression.clone(),
+            force_compression: self.force_compression.clone(),
+            // Skipping is pointless when compression is disabled entirely.
+            probe: self.skip_incompressible && !matches!(self.compression_level, Compression::None),
+        }
+    }
+
     pub fn backend_options(&self, dry: bool) -> BackendOptions {
         BackendOptions {
             repo_path: self.repo.clone(),
@@ -423,6 +475,7 @@ impl GlobalArgs {
             use_cache: !self.no_cache,
             compression: self.compression_level,
             index_mode,
+            compress_policy: self.compress_policy(),
         }
     }
 }
@@ -456,7 +509,21 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
         limit_download: cli.limit_download,
         index_mode: cli.index_mode.unwrap_or(DEFAULT_INDEX_MODE),
         no_lock: cli.no_lock.unwrap_or(false),
+        skip_compression: cli.skip_compression.clone().unwrap_or_default(),
+        force_compression: cli.force_compression.clone().unwrap_or_default(),
+        skip_incompressible: resolve_skip_incompressible(cli),
     })
+}
+
+/// Resolves whether incompressible data is skipped, honouring the CLI
+/// `--no-skip-incompressible` override, then the config `skip-incompressible`
+/// key, then the on-by-default value.
+fn resolve_skip_incompressible(cli: &CliGlobalArgs) -> bool {
+    if cli.no_skip_incompressible {
+        false
+    } else {
+        cli.skip_incompressible.unwrap_or(true)
+    }
 }
 
 fn parse_bandwidth(s: &str) -> std::result::Result<u64, String> {
@@ -482,27 +549,35 @@ fn pack_size_parser(s: &str) -> std::result::Result<f32, String> {
 #[derive(Debug, Copy, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Compression {
-    Manual(i32),
     None,
+    Auto,
     Fastest,
     Fast,
     Balanced,
     Better,
     Best,
+    Manual(i32),
 }
 
 impl Compression {
     pub fn to_level(&self) -> i32 {
         match self {
-            Self::Manual(level) => *level,
             // `None` disables blob compression; metadata is still compressed
             // with the default level.
             Self::None => DEFAULT_COMPRESSION.to_level(),
+
+            // `auto` currently resolves to the `fast` preset. It exists as a
+            // distinct value so the level can be chosen automatically in the
+            // future without changing the CLI.
+            Self::Auto => Self::Fast.to_level(),
+
             Self::Fastest => 1,
             Self::Fast => 3,
             Self::Balanced => 5,
             Self::Better => 10,
             Self::Best => 19,
+
+            Self::Manual(level) => *level,
         }
     }
 }
@@ -512,6 +587,7 @@ impl FromStr for Compression {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let result = match s.to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
             "none" => Some(Self::None),
             "fastest" => Some(Self::Fastest),
             "fast" => Some(Self::Fast),
@@ -538,6 +614,7 @@ impl FromStr for Compression {
 impl std::fmt::Display for Compression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Auto => write!(f, "auto"),
             Self::None => write!(f, "none"),
             Self::Fastest => write!(f, "fastest"),
             Self::Fast => write!(f, "fast"),
@@ -886,6 +963,9 @@ impl GlobalArgs {
             limit_download: None,
             index_mode: DEFAULT_INDEX_MODE,
             no_lock: false,
+            skip_compression: Vec::new(),
+            force_compression: Vec::new(),
+            skip_incompressible: true,
         }
     }
 }
@@ -944,6 +1024,7 @@ pub async fn open_repository(
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
     open_with_retry(auth_file, |password, username| {
         let backend = backend.clone();
+        let config = config.clone();
         async move {
             let auth = Auth { username, password };
             Repository::try_open_unlocked(&auth, key_file_path, backend, config).await
@@ -1011,6 +1092,7 @@ pub async fn open_repository_with_lock(
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
     open_with_retry(auth_file, |password, username| {
         let backend = backend.clone();
+        let config = config.clone();
         async move {
             let auth = Auth { username, password };
             Repository::try_open_with_lock(
@@ -1109,5 +1191,106 @@ mod tests {
         };
         cli_unset.merge(config);
         assert_eq!(cli_unset.repo.as_deref(), Some("/repo/config"));
+    }
+
+    #[test]
+    fn test_compression_pattern_flags_repeat_and_keep_positionals() {
+        #[derive(clap::Parser, Debug)]
+        #[command(no_binary_name = true)]
+        struct Parse {
+            #[command(flatten)]
+            global: CliGlobalArgs,
+            paths: Vec<String>,
+        }
+
+        let parsed = Parse::try_parse_from([
+            "--skip-compression",
+            "*.mp4",
+            "--skip-compression",
+            "*.zip",
+            "--force-compression",
+            "*.json",
+            "/data/one",
+            "/data/two",
+        ])
+        .expect("compression flags plus positionals must parse");
+
+        assert_eq!(
+            parsed.global.skip_compression.as_deref(),
+            Some(&["*.mp4".to_string(), "*.zip".to_string()][..])
+        );
+        assert_eq!(
+            parsed.global.force_compression.as_deref(),
+            Some(&["*.json".to_string()][..])
+        );
+        assert_eq!(
+            parsed.paths,
+            vec!["/data/one", "/data/two"],
+            "pattern flags must not swallow positional paths"
+        );
+    }
+
+    #[test]
+    fn test_skip_incompressible_resolution() {
+        // Default: enabled.
+        let cli = CliGlobalArgs::default();
+        assert!(resolve_skip_incompressible(&cli));
+
+        // Config key can disable it.
+        let cli = CliGlobalArgs {
+            skip_incompressible: Some(false),
+            ..Default::default()
+        };
+        assert!(!resolve_skip_incompressible(&cli));
+
+        // CLI `--no-skip-incompressible` overrides the config.
+        let cli = CliGlobalArgs::try_parse_from(["mapache", "--no-skip-incompressible"])
+            .expect("--no-skip-incompressible must parse");
+        assert!(!resolve_skip_incompressible(&cli));
+
+        let cli = CliGlobalArgs {
+            skip_incompressible: Some(true),
+            no_skip_incompressible: true,
+            ..Default::default()
+        };
+        assert!(!resolve_skip_incompressible(&cli));
+    }
+
+    #[test]
+    fn compression_auto_uses_default_level() {
+        assert_eq!(Compression::Auto.to_level(), Compression::Fast.to_level());
+        assert_eq!(
+            "auto".parse::<Compression>().unwrap().to_level(),
+            Compression::Fast.to_level()
+        );
+        assert_eq!(Compression::Auto.to_string(), "auto");
+    }
+
+    #[test]
+    fn test_compress_policy_built_from_globals() {
+        let cli = CliGlobalArgs {
+            skip_compression: Some(vec!["*.mp4".into()]),
+            force_compression: Some(vec!["*.json".into()]),
+            skip_incompressible: None,
+            ..Default::default()
+        };
+        let globals = cli_to_global_args(&cli).expect("globals must resolve");
+        let policy = globals.compress_policy();
+        assert_eq!(policy.skip_compression, vec!["*.mp4".to_string()]);
+        assert_eq!(policy.force_compression, vec!["*.json".to_string()]);
+        assert!(policy.probe, "content skipping must default to enabled");
+    }
+
+    #[test]
+    fn test_compress_policy_probe_disabled_without_compression() {
+        let cli = CliGlobalArgs {
+            compression_level: Some(Compression::None),
+            ..Default::default()
+        };
+        let globals = cli_to_global_args(&cli).expect("globals must resolve");
+        assert!(
+            !globals.compress_policy().probe,
+            "content skipping is pointless when compression is disabled"
+        );
     }
 }

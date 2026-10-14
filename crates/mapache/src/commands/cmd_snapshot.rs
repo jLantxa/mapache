@@ -15,8 +15,8 @@ use crate::{
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot,
-        cleanup::CleanupHandler, find_use_snapshot, merge_opt, parse_positive_usize, parse_tags,
-        with_repository_lock,
+        cleanup::CleanupHandler, find_use_snapshot, merge_flag, merge_opt, parse_positive_usize,
+        parse_tags, with_repository_lock,
     },
     common::{
         self, ContentIdType, ID,
@@ -102,7 +102,7 @@ pub struct CmdArgs {
     pub paths: Vec<PathBuf>,
 
     /// Use a single directory path as the snapshot root
-    #[clap(long = "as-root", value_parser, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long = "as-root", action = clap::ArgAction::SetTrue)]
     pub as_root: Option<bool>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
@@ -129,19 +129,19 @@ pub struct CmdArgs {
     pub no_parent: bool,
 
     /// Don't scan the file system
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub no_scan: Option<bool>,
 
     /// Do not descend into a different filesystem
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub one_file_system: Option<bool>,
 
     /// Fail instead of saving a snapshot when source items are skipped
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub fail_on_skipped: Option<bool>,
 
     /// Don't create a snapshot if there are no changes since the parent snapshot
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub skip_if_unchanged: Option<bool>,
 
     /// Use a snapshot as parent (ID or 'latest'). This snapshot will be the base when analyzing differences.
@@ -165,7 +165,7 @@ pub struct CmdArgs {
 
     /// Store the access time for all files and directories.
     /// Enabling this may result in significantly more metadata, so it's off by default.
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub with_atime: Option<bool>,
 
     /// Read backup data from stdin as a single file at /stdin.
@@ -209,7 +209,7 @@ impl Merge for CmdArgs {
             self.paths = other.paths;
         }
 
-        merge_opt(&mut self.as_root, other.as_root);
+        merge_flag(&mut self.as_root, other.as_root);
 
         config::merge_option_vec(&mut self.exclude, other.exclude);
 
@@ -219,17 +219,17 @@ impl Merge for CmdArgs {
 
         // skip: no_parent
 
-        merge_opt(&mut self.no_scan, other.no_scan);
-        merge_opt(&mut self.one_file_system, other.one_file_system);
-        merge_opt(&mut self.fail_on_skipped, other.fail_on_skipped);
-        merge_opt(&mut self.skip_if_unchanged, other.skip_if_unchanged);
+        merge_flag(&mut self.no_scan, other.no_scan);
+        merge_flag(&mut self.one_file_system, other.one_file_system);
+        merge_flag(&mut self.fail_on_skipped, other.fail_on_skipped);
+        merge_flag(&mut self.skip_if_unchanged, other.skip_if_unchanged);
         merge_opt(&mut self.parent, other.parent);
         merge_opt(&mut self.num_readers, other.num_readers);
         merge_opt(&mut self.num_packers, other.num_packers);
 
         // skip: dry_run
 
-        merge_opt(&mut self.with_atime, other.with_atime);
+        merge_flag(&mut self.with_atime, other.with_atime);
 
         // skip: stdin
     }

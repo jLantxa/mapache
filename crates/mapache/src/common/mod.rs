@@ -1,3 +1,4 @@
+pub(crate) mod compression_policy;
 pub(crate) mod config;
 pub mod defaults;
 pub mod error;

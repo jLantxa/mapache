@@ -15,7 +15,9 @@ use crate::{
     },
     common::{
         ID,
+        compression_policy::CompressionHint,
         error::{MapacheError, Result},
+        traits::BlobSaver,
     },
     fs::{
         filter::PathFilter,
@@ -179,11 +181,19 @@ async fn run_rechunk_task(
     let reader = SerializedNodeDataReader::new(repo.clone(), &node).await?;
     let sync_reader = BlockingBridge { inner: reader };
 
+    // Preserve the original file name so compression patterns still apply when
+    // re-chunking existing data.
+    let node_path = PathBuf::from(&node.name);
+    let hint = repo
+        .compression_policy()
+        .decide_by_path(&node_path)
+        .unwrap_or(CompressionHint::Auto);
     let res = tokio::task::spawn_blocking(move || {
         chunk_and_store_file(
             repo.as_ref(),
             sync_reader,
             node.metadata.size,
+            hint,
             progress.as_ref(),
             &event_sender,
             shutdown_signal.as_ref(),

@@ -631,6 +631,26 @@ mod tests {
     }
 
     #[test]
+    fn compression_heuristic_keys_are_accepted() {
+        let path = write_global_compression(
+            "heuristic",
+            "skip-compression = [\"*.mp4\", \"*.zip\"]\nforce-compression = [\"*.json\"]\nskip-incompressible = false",
+        );
+        let cfg = load_config(&path).expect("compression heuristic keys must load");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let global = cfg.global.expect("global section present");
+        assert_eq!(
+            global.skip_compression.as_deref(),
+            Some(&["*.mp4".to_string(), "*.zip".to_string()][..])
+        );
+        assert_eq!(
+            global.force_compression.as_deref(),
+            Some(&["*.json".to_string()][..])
+        );
+        assert_eq!(global.skip_incompressible, Some(false));
+    }
+
+    #[test]
     fn cli_flag_names_are_accepted_in_config() {
         let dir = std::env::temp_dir().join(format!("mapache-cli-names-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

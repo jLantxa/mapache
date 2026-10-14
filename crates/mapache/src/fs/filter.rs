@@ -183,7 +183,7 @@ impl CompMatcher {
 }
 
 #[inline]
-fn wildmatch_bytes(pat: &[u8], text: &[u8]) -> bool {
+pub(crate) fn wildmatch_bytes(pat: &[u8], text: &[u8]) -> bool {
     let mut pi = 0usize;
     let mut ti = 0usize;
 

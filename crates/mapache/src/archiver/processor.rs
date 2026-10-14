@@ -16,6 +16,7 @@ use mapache_chunker::Chunker;
 use crate::{
     archiver::SnapshotProgress,
     backend::WriteContents,
+    common::compression_policy::CompressionHint,
     common::error::{MapacheError, Result},
     common::{self, BlobType, ID, SaveID, traits::BlobSaver},
     fs::{
@@ -164,6 +165,11 @@ pub(crate) fn process_item_sync(
 
             if next.node.is_file() {
                 let file_size = next.node.metadata.size;
+                let hint = ctx
+                    .blob_saver
+                    .compression_policy()
+                    .decide_by_path(path)
+                    .unwrap_or(CompressionHint::Auto);
                 let blob_saver = ctx.blob_saver.clone();
                 let progress = ctx.progress;
                 let event_sender = ctx.event_sender.clone();
@@ -198,6 +204,7 @@ pub(crate) fn process_item_sync(
                             blob_saver.as_ref(),
                             file,
                             current_size,
+                            hint,
                             progress,
                             &event_sender,
                             small_buf,
@@ -207,6 +214,7 @@ pub(crate) fn process_item_sync(
                             blob_saver.as_ref(),
                             file,
                             current_size,
+                            hint,
                             progress,
                             &event_sender,
                             shutdown_signal,
@@ -308,10 +316,12 @@ pub(crate) fn process_stdin_sync(
         .clone();
 
     if next.node.is_file() {
+        let hint = CompressionHint::Auto;
         let chunk_result = chunk_and_store_file(
             blob_saver.as_ref(),
             &mut reader,
             common::defaults::NORMAL_CHUNK_SIZE,
+            hint,
             progress,
             event_sender,
             shutdown_signal,
@@ -362,6 +372,39 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
     progress.increment_diff(is_dir, &diff_type);
 }
 
+/// Resolves the compression hint for one chunk of a file.
+///
+/// A path-based hint is returned unchanged. For `Auto`, the first blob of the
+/// file is probed and, when it looks compressible, that verdict is cached for
+/// the remaining blobs so they are not probed again.
+///
+/// Only a `Compress` verdict is cached. Caching `Store` could deprive later
+/// chunks of compression and hurt the archive ratio, while caching `Compress`
+/// can at worst waste some CPU: the encoder still stores any chunk raw when it
+/// does not actually shrink.
+fn resolve_chunk_hint(
+    blob_saver: &dyn BlobSaver,
+    file_hint: CompressionHint,
+    cached: &mut Option<CompressionHint>,
+    chunk: &[u8],
+) -> CompressionHint {
+    if let Some(hint) = *cached {
+        return hint;
+    }
+    if file_hint != CompressionHint::Auto {
+        return file_hint;
+    }
+    let Some(hint) = blob_saver.probe_compression_hint(chunk) else {
+        // This saver cannot (or is configured not to) probe: leave the hint
+        // `Auto` so the encoder decides per blob.
+        return file_hint;
+    };
+    if hint == CompressionHint::Compress {
+        *cached = Some(hint);
+    }
+    hint
+}
+
 /// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
 ///
 /// For files up to 2 MiB,
@@ -377,10 +420,12 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 ///
 /// Returns the stored blob IDs and the number of bytes actually read from the
 /// file.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn chunk_and_store_file<R: Read + Send>(
     blob_saver: &dyn BlobSaver,
     reader: R,
     file_size: u64,
+    hint: CompressionHint,
     progress: &SnapshotProgress,
     event_sender: &EventSender,
     shutdown_signal: &AtomicBool,
@@ -389,7 +434,14 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
     const INLINE_THRESHOLD: u64 = 2 * common::defaults::NORMAL_CHUNK_SIZE;
 
     if file_size <= INLINE_THRESHOLD {
-        return chunk_and_store_inline(blob_saver, reader, progress, event_sender, shutdown_signal);
+        return chunk_and_store_inline(
+            blob_saver,
+            reader,
+            hint,
+            progress,
+            event_sender,
+            shutdown_signal,
+        );
     }
 
     let (chunk_tx, chunk_rx) = crossbeam_channel::bounded::<Result<Vec<u8>>>(2);
@@ -417,6 +469,8 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
         let mut ids = Vec::new();
         let mut total_bytes = 0u64;
 
+        let mut cached_hint: Option<CompressionHint> = None;
+
         for msg in chunk_rx {
             let chunk_data = msg?;
 
@@ -433,11 +487,20 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
                 BlobType::Data
             };
 
-            let id = blob_saver.save_blob(
-                blob_type,
-                WriteContents::Borrowed(&chunk_data),
-                SaveID::CalculateID,
-            )?;
+            let id = if blob_type == BlobType::Zero {
+                blob_saver.save_blob(
+                    blob_type,
+                    WriteContents::Borrowed(&chunk_data),
+                    SaveID::CalculateID,
+                )?
+            } else {
+                blob_saver.save_blob_with_hint(
+                    resolve_chunk_hint(blob_saver, hint, &mut cached_hint, &chunk_data),
+                    blob_type,
+                    WriteContents::Borrowed(&chunk_data),
+                    SaveID::CalculateID,
+                )?
+            };
 
             ids.push(id);
 
@@ -456,6 +519,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
 fn chunk_and_store_inline<R: Read>(
     blob_saver: &dyn BlobSaver,
     reader: R,
+    hint: CompressionHint,
     progress: &SnapshotProgress,
     event_sender: &EventSender,
     shutdown_signal: &AtomicBool,
@@ -464,6 +528,8 @@ fn chunk_and_store_inline<R: Read>(
         let stream = mapache_chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, 0);
         let mut ids = Vec::new();
         let mut total_bytes = 0u64;
+
+        let mut cached_hint: Option<CompressionHint> = None;
 
         for chunk_result in stream {
             let chunk = chunk_result.map_err(|e| MapacheError::Chunking(format!("{e}")))?;
@@ -481,11 +547,20 @@ fn chunk_and_store_inline<R: Read>(
                 BlobType::Data
             };
 
-            let id = blob_saver.save_blob(
-                blob_type,
-                WriteContents::Borrowed(&chunk.data),
-                SaveID::CalculateID,
-            )?;
+            let id = if blob_type == BlobType::Zero {
+                blob_saver.save_blob(
+                    blob_type,
+                    WriteContents::Borrowed(&chunk.data),
+                    SaveID::CalculateID,
+                )?
+            } else {
+                blob_saver.save_blob_with_hint(
+                    resolve_chunk_hint(blob_saver, hint, &mut cached_hint, &chunk.data),
+                    blob_type,
+                    WriteContents::Borrowed(&chunk.data),
+                    SaveID::CalculateID,
+                )?
+            };
 
             ids.push(id);
 
@@ -505,10 +580,12 @@ fn chunk_and_store_inline<R: Read>(
 ///
 /// Returns the stored blob IDs and the number of bytes actually read from the
 /// file (which may differ from the scanned `file_size`).
+#[allow(clippy::too_many_arguments)]
 fn store_small_file<R: Read>(
     blob_saver: &dyn BlobSaver,
     mut reader: R,
     file_size: u64,
+    hint: CompressionHint,
     progress: &SnapshotProgress,
     event_sender: &EventSender,
     buf: &mut Vec<u8>,
@@ -536,7 +613,16 @@ fn store_small_file<R: Read>(
         BlobType::Data
     };
 
-    let id = blob_saver.save_blob(blob_type, WriteContents::Borrowed(buf), SaveID::CalculateID)?;
+    let id = if blob_type == BlobType::Zero {
+        blob_saver.save_blob(blob_type, WriteContents::Borrowed(buf), SaveID::CalculateID)?
+    } else {
+        blob_saver.save_blob_with_hint(
+            hint,
+            blob_type,
+            WriteContents::Borrowed(buf),
+            SaveID::CalculateID,
+        )?
+    };
 
     progress.processed_bytes(bytes);
     emit_event(
@@ -549,7 +635,7 @@ fn store_small_file<R: Read>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::AtomicUsize};
 
     use zeroize::Zeroizing;
 
@@ -600,9 +686,16 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let data: &[u8] = &[];
-        let (ids, bytes) =
-            chunk_and_store_file(repo.as_ref(), data, 0, &progress, &sender, &shutdown)
-                .expect("chunk_and_store_file should succeed for empty data");
+        let (ids, bytes) = chunk_and_store_file(
+            repo.as_ref(),
+            data,
+            0,
+            CompressionHint::Auto,
+            &progress,
+            &sender,
+            &shutdown,
+        )
+        .expect("chunk_and_store_file should succeed for empty data");
 
         // Empty input produces no blobs (the chunker yields no chunks for empty input).
         assert!(ids.is_empty(), "empty data should produce no blobs");
@@ -619,6 +712,7 @@ mod tests {
             repo.as_ref(),
             std::io::empty(),
             0,
+            CompressionHint::Auto,
             &progress,
             &sender,
             &mut buf,
@@ -644,6 +738,7 @@ mod tests {
             repo.as_ref(),
             data.as_slice(),
             data.len() as u64,
+            CompressionHint::Auto,
             &progress,
             &sender,
             &shutdown,
@@ -678,6 +773,7 @@ mod tests {
             repo.as_ref(),
             data.as_slice(),
             data.len() as u64,
+            CompressionHint::Auto,
             &progress,
             &sender,
             &shutdown,
@@ -700,5 +796,89 @@ mod tests {
             "4 MiB should produce multiple chunks, got {}",
             ids.len()
         );
+    }
+
+    /// A [`BlobSaver`] with a fixed probe verdict that counts probe calls, for
+    /// exercising the per-file hint cache in [`resolve_chunk_hint`].
+    struct ProbeSaver {
+        verdict: Option<CompressionHint>,
+        probes: AtomicUsize,
+    }
+
+    impl ProbeSaver {
+        fn new(verdict: Option<CompressionHint>) -> Self {
+            Self {
+                verdict,
+                probes: AtomicUsize::new(0),
+            }
+        }
+
+        fn probes(&self) -> usize {
+            self.probes.load(Ordering::Relaxed)
+        }
+    }
+
+    impl BlobSaver for ProbeSaver {
+        fn save_blob(
+            &self,
+            _blob_type: BlobType,
+            _data: WriteContents<'_>,
+            _save_id: SaveID,
+        ) -> Result<ID> {
+            unreachable!("resolve_chunk_hint tests never save blobs")
+        }
+
+        fn probe_compression_hint(&self, _sample: &[u8]) -> Option<CompressionHint> {
+            self.probes.fetch_add(1, Ordering::Relaxed);
+            self.verdict
+        }
+    }
+
+    #[test]
+    fn resolve_chunk_hint_caches_only_compress() {
+        // A `Compress` verdict is probed once and reused for the whole file.
+        let saver = ProbeSaver::new(Some(CompressionHint::Compress));
+        let mut cached = None;
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"a"),
+            CompressionHint::Compress
+        );
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"b"),
+            CompressionHint::Compress
+        );
+        assert_eq!(saver.probes(), 1);
+
+        // A `Store` verdict is never cached, so later chunks keep probing and a
+        // chunk that does compress is not deprived of it.
+        let saver = ProbeSaver::new(Some(CompressionHint::Store));
+        let mut cached = None;
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"a"),
+            CompressionHint::Store
+        );
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"b"),
+            CompressionHint::Store
+        );
+        assert_eq!(saver.probes(), 2);
+
+        // A saver that cannot probe leaves the hint for the encoder to resolve.
+        let saver = ProbeSaver::new(None);
+        let mut cached = None;
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"a"),
+            CompressionHint::Auto
+        );
+        assert_eq!(saver.probes(), 1);
+
+        // A path-based hint is used verbatim and never probed.
+        let saver = ProbeSaver::new(Some(CompressionHint::Store));
+        let mut cached = None;
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Compress, &mut cached, b"a"),
+            CompressionHint::Compress
+        );
+        assert_eq!(saver.probes(), 0);
     }
 }

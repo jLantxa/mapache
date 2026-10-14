@@ -843,6 +843,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_skip_compression_pattern_and_probe_roundtrip() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let data_dir = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&data_dir)?;
+
+        // Incompressible pseudo-random payload larger than MIN_CHUNK_SIZE, so
+        // both the skip pattern (by extension) and the content probe apply.
+        let mut x: u32 = 0x1234_5678;
+        let mut random = Vec::with_capacity(4 * 1024 * 1024);
+        while random.len() < 4 * 1024 * 1024 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            random.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(data_dir.join("movie.mp4"), &random)?;
+        std::fs::write(data_dir.join("random.bin"), &random)?;
+        std::fs::write(
+            data_dir.join("notes.txt"),
+            b"compressible text ".repeat(4096),
+        )?;
+
+        ctx.init_repo().await?;
+
+        let mut global = ctx.global.clone();
+        global.skip_compression = vec!["*.mp4".to_string()];
+
+        ctx.snapshot_builder(vec![
+            data_dir.join("movie.mp4"),
+            data_dir.join("random.bin"),
+            data_dir.join("notes.txt"),
+        ])
+        .run(&global)
+        .await
+        .context("snapshot with skip-compression pattern failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&global)
+            .await
+            .context("restore after skip-compression snapshot failed")?;
+
+        // The skipped/incompressible/compressible files must all round-trip.
+        assert_eq!(std::fs::read(restore_path.join("movie.mp4"))?, random);
+        assert_eq!(std::fs::read(restore_path.join("random.bin"))?, random);
+        assert_eq!(
+            std::fs::read(restore_path.join("notes.txt"))?,
+            b"compressible text ".repeat(4096)
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_compression_none_large_file() -> Result<()> {
         let ctx = TestContext::new().await?;
 

@@ -163,6 +163,9 @@ impl TestContext {
             limit_download: None,
             index_mode: IndexMode::Eager,
             no_lock: false,
+            skip_compression: Vec::new(),
+            force_compression: Vec::new(),
+            skip_incompressible: true,
         };
         set_global_opts_with_args(&global);
 

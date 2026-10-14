@@ -343,7 +343,10 @@ auth-file = "~/.mapache/auth"
 pack-size = 16.0
 key-file = "~/.mapache/repo.key"
 quiet = false
-compression = "fast"
+compression = "auto"
+skip-incompressible = true
+skip-compression = ["*.mp4", "*.zip"]
+force-compression = []
 retry-lock = "5m"
 limit-upload = "10 MiB/s"
 limit-download = "50 MiB/s"
@@ -1705,7 +1708,10 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `-k, --key-file <PATH>` | Path to an external key file |
 | `--quiet` | Suppress all logging output (verbosity = 0) |
 | `-v, --verbosity <0-3>` | Verbosity level (0 = quiet, 3 = most verbose) |
-| `--compression <LEVEL>` | Compression: `none`, `fastest`, `fast` (default), `balanced`, `better`, `best`, or `level:N` (N = 1–19) |
+| `--compression <LEVEL>` | Compression: `auto` (default), `none`, `fastest`, `fast`, `balanced`, `better`, `best`, or `level:N` (N = 1–19) |
+| `--skip-compression <GLOB>` | Never compress files whose name matches this glob (repeatable) |
+| `--force-compression <GLOB>` | Always compress files whose name matches this glob (repeatable), overriding `--skip-compression` and content skipping |
+| `--no-skip-incompressible` | Compress everything instead of skipping data that does not benefit from it |
 | `--retry-lock <DUR>` | Retry acquiring a lock for a duration (e.g., `5m`, `30s`, `5m30s`) |
 | `--limit-upload <SPEED>` | Upload bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
 | `--limit-download <SPEED>` | Download bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
@@ -1717,9 +1723,10 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 
 | Preset | zstd Level | Use Case |
 |---|---|---|
+| `auto` (default) | 3 | Pick the level automatically (currently the `fast` preset) |
 | `none` | — | No compression; store blobs as-is (still encrypted). Use for already-compressed content (video, photos, archives) |
 | `fastest` | 1 | Maximum speed, minimum CPU |
-| `fast` (default) | 3 | Good balance |
+| `fast` | 3 | Good balance |
 | `balanced` | 5 | Balanced speed/ratio |
 | `better` | 10 | Better compression, slower |
 | `best` | 19 | Maximum compression, slowest |
@@ -1736,6 +1743,48 @@ available in the TOML config as `compression = "none"`.
 > blobs zstd-compressed and has no per-blob compression marker, so using
 > `--compression none` (or `compression = "none"`) against a v1
 > repository fails — migrate it to v2 first (`mapache migrate -r <URL>`).
+
+### Skipping Compression for Incompressible Files
+
+Applying zstd to data that is already compressed (video, photos, archives,
+encrypted files) wastes CPU and can even grow a blob slightly. Mapache decides
+**per blob** whether to compress it, in this order of precedence:
+
+1. A blob whose file name matches a `force-compression` pattern is always
+   compressed.
+2. A blob whose file name matches a `skip-compression` pattern is never
+   compressed.
+3. Otherwise, if content skipping is enabled, up to ~128 KiB of the blob are
+   sampled as several evenly spaced windows and compressed at the repository's
+   own compression level. Data that does not shrink is stored uncompressed.
+4. Once a file's first blob is judged compressible, the remaining blobs of that
+   file are compressed without being sampled again, so a whole file costs at
+   most one probe. A blob judged incompressible only skips its own compression:
+   the next blob is sampled again, so a file that mixes compressible and
+   incompressible regions still compresses what it can.
+
+As a final safety net, a blob is stored uncompressed whenever compression does
+not make it smaller, so compression never expands the repository.
+
+Content skipping is **enabled by default** and requires repository format v2
+(v1 has no per-blob compression marker and always compresses).
+
+Patterns match the file name (not the full path), e.g. `*.mp4`, `*.zip`,
+`cache-*`. They can be given on the command line or in the TOML config:
+
+```toml
+[global]
+skip-compression = ["*.mp4", "*.zip", "*.7z"]
+force-compression = ["*.json"]   # always compress, even if it looks compressed
+skip-incompressible = true       # set to false to compress everything
+```
+
+On the command line, `--skip-compression` and `--force-compression` are
+repeatable, and `--no-skip-incompressible` disables content skipping.
+
+> **Note:** the same heuristic applies to bundles (`mapache bundle`), where each
+> entry records whether it is compressed. Bundle import has no file names, so it
+> applies content skipping but not the name patterns.
 
 ### Bandwidth Limit Format
 

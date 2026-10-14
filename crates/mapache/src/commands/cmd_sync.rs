@@ -159,7 +159,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
             &auth,
             global_args.key.as_ref(),
             src_backend.clone(),
-            repo_config,
+            repo_config.clone(),
         )
         .await
         .map_err(|e| SyncError::RepoOpenFail(e.to_string()))?;
@@ -174,7 +174,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
             &auth,
             global_args.key.as_ref(),
             src_backend.clone(),
-            repo_config,
+            repo_config.clone(),
             false, // Source lock
             global_args.retry_lock_duration,
         )
@@ -202,7 +202,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
             &auth,
             global_args.key.as_ref(),
             dst_backend.clone(),
-            repo_config,
+            repo_config.clone(),
         )
         .await
         {
@@ -221,7 +221,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
             &auth,
             global_args.key.as_ref(),
             dst_backend.clone(),
-            repo_config,
+            repo_config.clone(),
             args.delete, // Exclusive lock if we are going to delete
             global_args.retry_lock_duration,
         )

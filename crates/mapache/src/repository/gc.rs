@@ -12,6 +12,7 @@ use crate::{
     backend::WriteContents,
     common::{
         self, BlobType, ContentIdType, ID, SaveID,
+        compression_policy::CompressionHint,
         defaults::{self, DEFAULT_SNAPSHOT_READERS},
         error::{MapacheError, Result},
     },
@@ -682,10 +683,11 @@ impl Plan {
                     // thread pool (default 512), which would deadlock when
                     // LocalBackend::write calls spawn_blocking for file I/O.
                     tokio::task::spawn_blocking(move || {
-                        let result = repo.encode_and_save_blob(
+                        let result = repo.encode_and_save_blob_with_hint(
                             blob_type,
                             WriteContents::Owned(data),
                             SaveID::WithID(id),
+                            CompressionHint::Auto,
                         );
                         let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         r.update_task(GcTaskKind::RepackingBlobs, current);

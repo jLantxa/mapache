@@ -22,6 +22,7 @@ use crate::{
     },
     common::{
         BlobType, ContentIdType, ID, SaveID,
+        compression_policy::CompressionHint,
         defaults::{SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
     },
@@ -152,7 +153,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         src_backend.clone(),
-        repo_config,
+        repo_config.clone(),
     )
     .await
     .map_err(|e| CopyError::RepoOpenFail(e.to_string()))?;
@@ -177,7 +178,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
             global_args.auth_file.as_ref(),
             global_args.key.as_ref(),
             dst_backend.clone(),
-            repo_config,
+            repo_config.clone(),
         )
         .await
         .map_err(|e| CopyError::RepoOpenFail(e.to_string()))?;
@@ -601,10 +602,11 @@ async fn copy_snapshots(
                 let size = data.len() as u64;
 
                 tokio::task::spawn_blocking(move || {
-                    dst_repo.encode_and_save_blob(
+                    dst_repo.encode_and_save_blob_with_hint(
                         blob_type,
                         WriteContents::Owned(data),
                         SaveID::WithID(id),
+                        CompressionHint::Auto,
                     )
                 })
                 .await

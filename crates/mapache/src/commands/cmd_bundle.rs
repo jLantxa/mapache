@@ -207,7 +207,7 @@ pub struct CmdArgs {
     pub exclude: Vec<PathBuf>,
 
     /// Use a single directory path as the bundle root (bundle mode only)
-    #[clap(long = "as-root", value_parser, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long = "as-root", action = clap::ArgAction::SetTrue)]
     pub as_root: Option<bool>,
 
     /// Number of parallel readers. Must be greater than 0.
@@ -316,7 +316,7 @@ pub async fn run(global: &crate::commands::GlobalArgs, args: &CmdArgs) -> Result
         ));
     }
 
-    if args.as_root.is_some() && !args.bundle {
+    if args.as_root == Some(true) && !args.bundle {
         return Err(BundleError::Config(
             "--as-root can only be used with bundle mode".to_string(),
         ));
@@ -498,6 +498,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             &password,
             global.compression_level.to_level(),
             !matches!(global.compression_level, Compression::None),
+            global.compress_policy(),
             args.format as u16,
             ecc_config,
             args.calibrate_kdf,
@@ -723,6 +724,7 @@ async fn export_snapshot_impl(
             password,
             global.compression_level.to_level(),
             !matches!(global.compression_level, Compression::None),
+            global.compress_policy(),
             args.format as u16,
             ecc_config,
             args.calibrate_kdf,
@@ -1074,10 +1076,11 @@ async fn run_import_bundle(
                 let blob_size = data.len() as u64;
 
                 tokio::task::spawn_blocking(move || {
-                    repo_clone.encode_and_save_blob(
+                    repo_clone.encode_and_save_blob_with_hint(
                         entry.blob_type,
                         WriteContents::Owned(data),
                         SaveID::WithID(entry.id),
+                        crate::common::compression_policy::CompressionHint::Auto,
                     )
                 })
                 .await

@@ -4,6 +4,22 @@
 
 ### Added
 
+- Per-blob compression skipping. Already-compressed content is stored
+  uncompressed, saving CPU on snapshots. Controlled by:
+  - `skip-compression` / `--skip-compression <GLOB>`: never compress matching
+    file names.
+  - `force-compression` / `--force-compression <GLOB>`: always compress
+    matching file names.
+  - `skip-incompressible` / `--no-skip-incompressible`: sample a blob and skip
+    compression when it does not shrink at the configured level. Sampling uses
+    several evenly spaced windows, not just the leading bytes, and a file is
+    probed at most once: after its first blob looks compressible, the rest of
+    the file is compressed without being re-sampled. Enabled by default.
+  - Compression never expands a blob: blobs whose compressed form is not
+    smaller are stored raw.
+  - All of the above require repository format v2, and apply to bundles too.
+- `--compression auto` (now the default) selects the compression level
+  automatically; it currently resolves to the `fast` preset.
 - `snapshot --one-file-system` prevents traversal into child entries on a
   different filesystem (Unix device IDs and Windows volume serial numbers).
 - `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
@@ -27,6 +43,15 @@
 
 ### Changed
 
+- Boolean command-line flags no longer accept a `true`/`false` value; they are
+  now plain presence flags: `--no-scan`, `--one-file-system`,
+  `--fail-on-skipped`, `--skip-if-unchanged`, `--with-atime`, `--as-root`,
+  `--delete`, `--no-preserve-root`, `--quit-on-error`, `--sparse`, `--verify`,
+  `--strip-prefix`, `--no-cache`, `--quiet`, `--json`, `--no-lock` and
+  `--no-skip-incompressible`. This fixes a path argument being consumed as the
+  flag's value (for example `snapshot --no-scan /backup`). Their TOML
+  equivalents still accept `true`/`false`, and passing the flag still overrides
+  the configured value.
 - Snapshot progress scanning now reads only node type, size, and filesystem
   device metadata, avoiding extended attribute, file flag, and symlink target
   queries. Snapshots continue to capture full metadata.

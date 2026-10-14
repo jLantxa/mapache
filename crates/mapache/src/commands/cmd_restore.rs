@@ -16,7 +16,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{
         GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
-        find_use_snapshot, merge_opt, with_repository_lock,
+        find_use_snapshot, merge_flag, merge_opt, with_repository_lock,
     },
     common::{config::CommandHooks, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, hooks},
     fs::{
@@ -132,7 +132,7 @@ pub struct CmdArgs {
     pub exclude_file: Option<PathBuf>,
 
     /// Strip the longest common prefix from all restored routes.
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub strip_prefix: Option<bool>,
 
     /// Method for conflict resolution in case a file or directory already exists in the target location.
@@ -147,23 +147,23 @@ pub struct CmdArgs {
 
     /// Delete files in the target directory that are not present in the snapshot.
     /// Use with caution.
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub delete: Option<bool>,
 
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", requires = "delete")]
+    #[clap(long, action = clap::ArgAction::SetTrue, requires = "delete")]
     pub no_preserve_root: Option<bool>,
 
     /// Quit immediately if a restore error occurs
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub quit_on_error: Option<bool>,
 
     /// Create sparse files instead of preallocating them.
     /// This is faster on some filesystems but may cause higher disk fragmentation.
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub sparse: Option<bool>,
 
     /// Force verification of existing files by content (hashing) even if mtime matches.
-    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     pub verify: Option<bool>,
 
     /// Maximum number of files per batch. Limits peak memory when restoring many
@@ -209,13 +209,13 @@ impl Merge for CmdArgs {
         merge_opt(&mut self.include_file, other.include_file);
         merge_opt(&mut self.exclude, other.exclude);
         merge_opt(&mut self.exclude_file, other.exclude_file);
-        merge_opt(&mut self.strip_prefix, other.strip_prefix);
+        merge_flag(&mut self.strip_prefix, other.strip_prefix);
         merge_opt(&mut self.strategy, other.strategy);
-        merge_opt(&mut self.delete, other.delete);
-        merge_opt(&mut self.no_preserve_root, other.no_preserve_root);
-        merge_opt(&mut self.quit_on_error, other.quit_on_error);
-        merge_opt(&mut self.sparse, other.sparse);
-        merge_opt(&mut self.verify, other.verify);
+        merge_flag(&mut self.delete, other.delete);
+        merge_flag(&mut self.no_preserve_root, other.no_preserve_root);
+        merge_flag(&mut self.quit_on_error, other.quit_on_error);
+        merge_flag(&mut self.sparse, other.sparse);
+        merge_flag(&mut self.verify, other.verify);
         merge_opt(&mut self.batch_size, other.batch_size);
     }
 }

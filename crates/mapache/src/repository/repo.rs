@@ -19,6 +19,7 @@ use crate::{
     commands::Compression,
     common::{
         self, BlobType, ContentIdType, ID, SaveID,
+        compression_policy::{CompressionHint, CompressionPolicy},
         error::{MapacheError, Result},
         traits::{BlobLoader, BlobSaver},
     },
@@ -110,7 +111,7 @@ pub struct Auth {
 }
 
 /// Configuration options for a repository.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RepoConfig {
     /// Maximum size of a pack file in bytes.
     pub pack_size: u64,
@@ -120,6 +121,8 @@ pub struct RepoConfig {
     pub(crate) compression: Compression,
     /// Index loading mode: eager (all in RAM) or lazy (hot + cold).
     pub index_mode: IndexMode,
+    /// Per-file compression heuristic for new data (skip/force patterns, probe).
+    pub(crate) compress_policy: CompressionPolicy,
 }
 
 /// Thread-safe statistics for a repository.
@@ -208,6 +211,9 @@ pub struct Repository {
     /// Compression preset for new blobs (None = store blobs uncompressed).
     compression: Compression,
 
+    /// Per-file compression heuristic for new blobs.
+    compress_policy: CompressionPolicy,
+
     // Paths
     objects_path: PathBuf,
     snapshot_path: PathBuf,
@@ -234,6 +240,38 @@ impl BlobSaver for Repository {
         save_id: SaveID,
     ) -> Result<ID> {
         self.encode_and_save_blob(blob_type, data, save_id)
+    }
+
+    fn compression_policy(&self) -> &CompressionPolicy {
+        &self.compress_policy
+    }
+
+    fn is_compressible(&self, sample: &[u8]) -> bool {
+        self.secure_storage.is_compressible(sample)
+    }
+
+    fn probe_compression_hint(&self, sample: &[u8]) -> Option<CompressionHint> {
+        if !self.has_compression_marker()
+            || matches!(self.compression, Compression::None)
+            || !self.compress_policy.probe
+        {
+            return None;
+        }
+        Some(if self.is_compressible(sample) {
+            CompressionHint::Compress
+        } else {
+            CompressionHint::Store
+        })
+    }
+
+    fn save_blob_with_hint(
+        &self,
+        hint: CompressionHint,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        save_id: SaveID,
+    ) -> Result<ID> {
+        self.encode_and_save_blob_with_hint(blob_type, data, save_id, hint)
     }
 }
 
@@ -419,7 +457,7 @@ impl Repository {
                 .with_key(&master_key)?,
         );
 
-        let repo = Repository::open(backend, secure_storage.clone(), config).await?;
+        let repo = Repository::open(backend, secure_storage.clone(), config.clone()).await?;
         tracing::info!(target: "repo", "Repository opened");
 
         let version = repo.manifest().version();
@@ -488,6 +526,7 @@ impl Repository {
             secure_storage,
             max_packer_size: config.pack_size,
             compression: config.compression,
+            compress_policy: config.compress_policy,
             master_index,
             pack_saver_tx: parking_lot::RwLock::new(None),
             pack_saver_handle: parking_lot::RwLock::new(None),
@@ -568,6 +607,7 @@ impl Repository {
                 use_cache: false,
                 compression: self.compression,
                 index_mode: self.master_index.index_mode(),
+                compress_policy: self.compress_policy.clone(),
             },
         )
         .await
@@ -576,6 +616,22 @@ impl Repository {
     /// Get the secure storage
     pub fn secure_storage(&self) -> Arc<SecureStorage> {
         self.secure_storage.clone()
+    }
+
+    /// Decides whether a blob should be compressed.
+    ///
+    /// v1 has no per-blob compression marker, so it always compresses.
+    /// Otherwise a `Store` hint and a `--compression none` preset disable
+    /// compression, and `Auto`/`Compress` fall back to the content probe.
+    fn should_compress_blob(&self, hint: CompressionHint, data: &[u8]) -> bool {
+        if !self.has_compression_marker() {
+            return true;
+        }
+        if matches!(self.compression, Compression::None) {
+            return false;
+        }
+        self.compress_policy
+            .should_compress(hint, data, |s| self.is_compressible(s))
     }
 
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in a pack file.
@@ -588,6 +644,19 @@ impl Repository {
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
+    ) -> Result<ID> {
+        self.encode_and_save_blob_with_hint(blob_type, data, save_id, CompressionHint::Compress)
+    }
+
+    /// Like [`Self::encode_and_save_blob`], but honours a per-blob compression
+    /// hint (used to skip zstd on already-compressed data and to store raw when
+    /// compression does not pay off).
+    pub fn encode_and_save_blob_with_hint(
+        &self,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        save_id: SaveID,
+        hint: CompressionHint,
     ) -> Result<ID> {
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
@@ -659,12 +728,27 @@ impl Repository {
         }
 
         let raw_length = data.len() as u64;
-        let compressed = !matches!(self.compression, Compression::None);
-        let encoded_data = if compressed {
+
+        // Decide per blob whether to run zstd. A `--compression none` preset and
+        // a `Store` hint win outright; `Auto`/`Compress` fall back to the content
+        // heuristic. v1 has no per-blob marker, so it always compresses.
+        let has_marker = self.has_compression_marker();
+        let want_compress = self.should_compress_blob(hint, data.as_ref());
+
+        let mut encoded_data = if want_compress {
             self.secure_storage.encode(&data)?
         } else {
             self.secure_storage.encrypt(&data)?
         };
+
+        // Raw-store fallback: if compression did not pay off, store the plain
+        // (encrypted) bytes instead of a larger zstd frame. Only meaningful for
+        // formats with a per-blob compression marker.
+        let mut compressed = want_compress;
+        if has_marker && want_compress && encoded_data.len() >= data.len() {
+            encoded_data = self.secure_storage.encrypt(&data)?;
+            compressed = false;
+        }
 
         let tx = {
             let tx_guard = self.pack_saver_tx.read();
@@ -2074,6 +2158,93 @@ mod tests {
 
         let loaded_tree = repo.load_blob(&tree_id).await?;
         assert_eq!(loaded_tree, tree_data);
+
+        Ok(())
+    }
+
+    /// A `Store` hint must keep the blob's payload uncompressed even when the
+    /// global compression preset would compress it.
+    #[tokio::test]
+    async fn test_store_hint_keeps_blob_uncompressed() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let mut config = TEST_REPO_CONFIG;
+        config.compression = Compression::Best;
+        let (repo, _ss) = Repository::try_open_unlocked(&auth, None, backend, config).await?;
+        repo.init_pack_saver(1)?;
+
+        // Highly compressible: only the `Store` hint prevents zstd here.
+        let data = vec![b'A'; 256 * 1024];
+        let id = repo.encode_and_save_blob_with_hint(
+            BlobType::Data,
+            WriteContents::Borrowed(&data),
+            SaveID::CalculateID,
+            CompressionHint::Store,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        let loc = repo.index().get_data(&id).expect("blob must be indexed");
+        assert!(!loc.compressed, "Store hint must skip zstd");
+        assert_eq!(loc.raw_length as usize, data.len());
+        assert_eq!(repo.load_blob(&id).await?, data);
+
+        Ok(())
+    }
+
+    /// Incompressible data must not grow: when zstd would expand a blob the
+    /// repository stores the raw bytes instead.
+    #[tokio::test]
+    async fn test_raw_store_fallback_for_incompressible_data() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+
+        let mut config = TEST_REPO_CONFIG;
+        config.compression = Compression::Best;
+        let (repo, _ss) = Repository::try_open_unlocked(&auth, None, backend, config).await?;
+        repo.init_pack_saver(1)?;
+
+        // Pseudo-random, incompressible data.
+        let mut x: u32 = 0x9e37_79b9;
+        let mut data = Vec::with_capacity(256 * 1024);
+        while data.len() < 256 * 1024 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            data.extend_from_slice(&x.to_le_bytes());
+        }
+
+        let id = repo.encode_and_save_blob_with_hint(
+            BlobType::Data,
+            WriteContents::Borrowed(&data),
+            SaveID::CalculateID,
+            CompressionHint::Compress,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        let loc = repo.index().get_data(&id).expect("blob must be indexed");
+        assert!(
+            !loc.compressed,
+            "raw-store fallback must trigger when zstd expands the data"
+        );
+        assert_eq!(repo.load_blob(&id).await?, data);
 
         Ok(())
     }

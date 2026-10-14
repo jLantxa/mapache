@@ -4,7 +4,7 @@ use mapache_chunker::Normalization;
 
 use crate::{
     commands::Compression,
-    common::config,
+    common::{compression_policy::CompressionPolicy, config},
     repository::{index::IndexMode, repo::RepoConfig},
     utils::size,
 };
@@ -63,7 +63,8 @@ pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::L2;
 pub(crate) const MAX_ZERO_BLOB_RAW_LENGTH: u64 = MAX_CHUNK_SIZE;
 
 // --- Encoding ---
-pub(crate) const DEFAULT_COMPRESSION: Compression = Compression::Fast;
+/// Default compression level. `auto` currently resolves to the `fast` preset.
+pub(crate) const DEFAULT_COMPRESSION: Compression = Compression::Auto;
 
 /// Maximum number of zstd compressor contexts to keep in the pool.
 pub(crate) const DEFAULT_COMPRESSOR_POOL_SIZE: usize = 16;
@@ -118,6 +119,7 @@ pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
     use_cache: false,
     compression: Compression::Fastest,
     index_mode: IndexMode::Eager,
+    compress_policy: CompressionPolicy::with_probe(),
 };
 
 // --- Runtime defaults (configurable via TOML) ---

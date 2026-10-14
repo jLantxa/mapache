@@ -10,8 +10,11 @@ use zeroize::Zeroizing;
 
 use crate::{
     backend::WriteContents,
-    common::error::{MapacheError, Result},
-    common::{self, defaults},
+    common::{
+        self, defaults,
+        error::{MapacheError, Result},
+    },
+    utils::size,
 };
 
 const AES_GCM_NONCE_LEN: usize = 12;
@@ -44,7 +47,15 @@ fn compress_to_zstd_buffer(
     Ok(out)
 }
 
-/// Secure storage is an abstraction for file IO that handles compression and encryption.
+/// Total number of bytes sampled from a blob when probing compressibility.
+const PROBE_SAMPLE_SIZE: usize = 128 * size::KiB as usize;
+/// Number of windows the sample is split into. The windows are evenly spaced
+/// across the blob so a single unrepresentative region (e.g. a fixed-size
+/// header) cannot decide for the whole blob on its own.
+const PROBE_WINDOWS: usize = 4;
+
+/// Encodes repository data at rest: compress with zstd, then encrypt with
+/// AES-256-GCM-SIV (encryption is skipped when no key is set).
 pub struct SecureStorage {
     compression_level: i32,
     cipher: Option<Aes256GcmSiv>,
@@ -186,6 +197,50 @@ impl SecureStorage {
     ) -> Result<Vec<u8>> {
         let bound = zstd::zstd_safe::compress_bound(data.len());
         compress_to_zstd_buffer(ctx, data, bound)
+    }
+
+    /// Heuristically decides whether `data` is worth compressing.
+    ///
+    /// Samples up to [`PROBE_SAMPLE_SIZE`] bytes taken from [`PROBE_WINDOWS`]
+    /// evenly spaced windows and reports whether they shrink when compressed at
+    /// the repository's own compression level. Matching the real level keeps the
+    /// estimate close to what the actual pass will achieve, which is what limits
+    /// false negatives.
+    ///
+    /// Blobs no larger than the sample are assumed compressible: probing them
+    /// would cost about as much as compressing them outright, and the raw-store
+    /// fallback already discards a compressed form that failed to shrink.
+    ///
+    /// The check deliberately errs toward "compressible": a false positive only
+    /// wastes CPU, because the raw-store fallback still discards a compressed
+    /// form that failed to shrink, while a false negative would give up ratio
+    /// permanently.
+    pub(crate) fn is_compressible(&self, data: &[u8]) -> bool {
+        if data.len() <= PROBE_SAMPLE_SIZE {
+            return true;
+        }
+
+        let window = PROBE_SAMPLE_SIZE / PROBE_WINDOWS;
+        let span = data.len() - window;
+        let mut sample = Vec::with_capacity(PROBE_SAMPLE_SIZE);
+        for i in 0..PROBE_WINDOWS {
+            // Evenly spaced: the first window starts at the beginning and the
+            // last one ends at the end.
+            let start = span * i / (PROBE_WINDOWS - 1);
+            sample.extend_from_slice(&data[start..start + window]);
+        }
+
+        let Ok(mut ctx) = self.take_encoding_context() else {
+            // If zstd cannot be initialized, assume compressible and let the
+            // raw-store fallback handle expansion.
+            return true;
+        };
+        let shrinks = match self.compress_managed(&mut ctx, &sample) {
+            Ok(compressed) => compressed.len() < sample.len(),
+            Err(_) => true,
+        };
+        self.return_encoding_context(ctx);
+        shrinks
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
@@ -695,5 +750,47 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
             defaults::DEFAULT_COMPRESSOR_POOL_SIZE
         );
         Ok(())
+    }
+
+    /// Deterministic incompressible bytes (xorshift).
+    fn noise(len: usize) -> Vec<u8> {
+        let mut x: u32 = 0x1234_5678;
+        let mut out = Vec::with_capacity(len);
+        while out.len() < len {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+        out.truncate(len);
+        out
+    }
+
+    #[test]
+    fn probe_classifies_samples() {
+        let ss = SecureStorage::new();
+
+        // Random data does not compress; repetitive data does.
+        assert!(!ss.is_compressible(&noise(2 * PROBE_SAMPLE_SIZE)));
+        assert!(ss.is_compressible(&vec![0u8; 2 * PROBE_SAMPLE_SIZE]));
+
+        // Blobs no larger than the sample are assumed compressible.
+        assert!(ss.is_compressible(&noise(16)));
+        assert!(ss.is_compressible(&noise(PROBE_SAMPLE_SIZE)));
+    }
+
+    #[test]
+    fn probe_samples_windows_beyond_the_leading_region() {
+        let ss = SecureStorage::new();
+
+        // An incompressible header followed by compressible content is judged
+        // compressible: the sampled windows reach past the header, which a
+        // leading-only sample would have missed.
+        let mut blob = noise(128 * 1024);
+        blob.resize(640 * 1024, 0);
+        assert!(ss.is_compressible(&blob));
+
+        // The same blob made entirely incompressible is rejected.
+        assert!(!ss.is_compressible(&noise(640 * 1024)));
     }
 }

@@ -17,6 +17,7 @@ use crate::{
     },
     common::{
         BlobType, ID, SaveID,
+        compression_policy::{CompressionHint, CompressionPolicy},
         error::{MapacheError, Result},
         kdf,
         traits::BlobSaver,
@@ -34,6 +35,7 @@ struct EncodedBlob {
     id: ID,
     blob_type: BlobType,
     raw_length: u32,
+    compressed: bool,
 }
 
 /// State owned by the background writer thread.
@@ -45,6 +47,7 @@ struct WriterInner {
 pub struct BundleWriter {
     storage: SecureStorage,
     compress: bool,
+    compress_policy: CompressionPolicy,
     format_version: u16,
     ecc_config: Option<EccConfig>,
     /// Concurrent dedup set — checked in `save_blob` before sending to channel.
@@ -60,16 +63,47 @@ impl BlobSaver for BundleWriter {
         data: WriteContents<'_>,
         save_id: SaveID,
     ) -> Result<ID> {
-        self.save_blob_internal(blob_type, data, save_id)
+        self.save_blob_internal(CompressionHint::Compress, blob_type, data, save_id)
+    }
+
+    fn compression_policy(&self) -> &CompressionPolicy {
+        &self.compress_policy
+    }
+
+    fn is_compressible(&self, sample: &[u8]) -> bool {
+        self.storage.is_compressible(sample)
+    }
+
+    fn probe_compression_hint(&self, sample: &[u8]) -> Option<CompressionHint> {
+        if !self.compress || !self.compress_policy.probe {
+            return None;
+        }
+        Some(if self.storage.is_compressible(sample) {
+            CompressionHint::Compress
+        } else {
+            CompressionHint::Store
+        })
+    }
+
+    fn save_blob_with_hint(
+        &self,
+        hint: CompressionHint,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        save_id: SaveID,
+    ) -> Result<ID> {
+        self.save_blob_internal(hint, blob_type, data, save_id)
     }
 }
 
 impl BundleWriter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<P: AsRef<Path>>(
         path: P,
         password: &str,
         compression_level: i32,
         compress: bool,
+        compress_policy: CompressionPolicy,
         format_version: u16,
         ecc_config: Option<EccConfig>,
         calibrate_kdf: bool,
@@ -135,7 +169,7 @@ impl BundleWriter {
                 inner.index.entries.push(BundleIndexEntry {
                     id: blob.id,
                     blob_type: blob.blob_type,
-                    compressed: compress,
+                    compressed: blob.compressed,
                     offset,
                     length,
                     raw_length: blob.raw_length,
@@ -148,6 +182,7 @@ impl BundleWriter {
         Ok(Self {
             storage,
             compress,
+            compress_policy,
             format_version,
             ecc_config,
             seen: ParkMutex::new(HashSet::new()),
@@ -158,6 +193,7 @@ impl BundleWriter {
 
     fn save_blob_internal(
         &self,
+        hint: CompressionHint,
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
@@ -179,7 +215,15 @@ impl BundleWriter {
                 u32::MAX
             ))
         })?;
-        let encoded_data = if self.compress {
+
+        // `Store` skips zstd, `Compress` always runs it and `Auto` probes the
+        // leading bytes; the `compress` flag disables compression outright.
+        let want_compress = self.compress
+            && self
+                .compress_policy
+                .should_compress(hint, data.as_ref(), |s| self.is_compressible(s));
+
+        let mut encoded_data = if want_compress {
             self.storage
                 .encode(data.as_ref())
                 .map_err(|e| MapacheError::Crypto(format!("failed to encode blob data: {e}")))?
@@ -188,6 +232,16 @@ impl BundleWriter {
                 .encrypt(data.as_ref())
                 .map_err(|e| MapacheError::Crypto(format!("failed to encrypt blob data: {e}")))?
         };
+
+        // Raw-store fallback: never let compression expand a blob.
+        let mut compressed = want_compress;
+        if want_compress && encoded_data.len() >= data.len() {
+            encoded_data = self
+                .storage
+                .encrypt(data.as_ref())
+                .map_err(|e| MapacheError::Crypto(format!("failed to encrypt blob data: {e}")))?;
+            compressed = false;
+        }
 
         if !self.seen.lock().insert(id) {
             return Ok(id);
@@ -203,6 +257,7 @@ impl BundleWriter {
             id,
             blob_type,
             raw_length,
+            compressed,
         })
         .map_err(|_| MapacheError::Internal("bundle writer channel closed".into()))?;
 

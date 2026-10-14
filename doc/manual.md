@@ -1755,13 +1755,15 @@ encrypted files) wastes CPU and can even grow a blob slightly. Mapache decides
 2. A blob whose file name matches a `skip-compression` pattern is never
    compressed.
 3. Otherwise, if content skipping is enabled, up to ~128 KiB of the blob are
-   sampled as several evenly spaced windows and compressed at the repository's
-   own compression level. Data that does not shrink is stored uncompressed.
-4. Once a file's first blob is judged compressible, the remaining blobs of that
-   file are compressed without being sampled again, so a whole file costs at
-   most one probe. A blob judged incompressible only skips its own compression:
-   the next blob is sampled again, so a file that mixes compressible and
-   incompressible regions still compresses what it can.
+   sampled as several evenly spaced windows, each compressed at the repository's
+   own compression level, and the blob is stored uncompressed unless a majority
+   of those windows shrink. Judging the windows independently (rather than as one
+   buffer) stops a single compressible region — such as a media file's container
+   header — from deciding for an otherwise incompressible blob.
+4. Each blob is probed on its own. A media file's first blob is often a
+   container header that really does compress, but later payload blobs do not;
+   probing per blob compresses only the parts that benefit instead of
+   extrapolating a header's verdict to the whole file.
 
 As a final safety net, a blob is stored uncompressed whenever compression does
 not make it smaller, so compression never expands the repository.

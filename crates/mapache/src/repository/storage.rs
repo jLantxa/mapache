@@ -50,8 +50,9 @@ fn compress_to_zstd_buffer(
 /// Total number of bytes sampled from a blob when probing compressibility.
 const PROBE_SAMPLE_SIZE: usize = 128 * size::KiB as usize;
 /// Number of windows the sample is split into. The windows are evenly spaced
-/// across the blob so a single unrepresentative region (e.g. a fixed-size
-/// header) cannot decide for the whole blob on its own.
+/// across the blob and judged independently, so a single unrepresentative
+/// region (e.g. a fixed-size header) cannot decide for the whole blob on its
+/// own.
 const PROBE_WINDOWS: usize = 4;
 
 /// Encodes repository data at rest: compress with zstd, then encrypt with
@@ -202,18 +203,24 @@ impl SecureStorage {
     /// Heuristically decides whether `data` is worth compressing.
     ///
     /// Samples up to [`PROBE_SAMPLE_SIZE`] bytes taken from [`PROBE_WINDOWS`]
-    /// evenly spaced windows and reports whether they shrink when compressed at
-    /// the repository's own compression level. Matching the real level keeps the
-    /// estimate close to what the actual pass will achieve, which is what limits
-    /// false negatives.
+    /// evenly spaced windows, compresses each window at the repository's own
+    /// compression level, and reports whether a majority of them shrink.
+    /// Matching the real level keeps the estimate close to what the actual pass
+    /// will achieve, which is what limits false negatives.
+    ///
+    /// The windows are judged independently rather than concatenated into one
+    /// buffer. Concatenating lets a single highly compressible window (for
+    /// example the container header at the start of a media file) pay for the
+    /// expansion of the incompressible windows and mark the whole blob
+    /// compressible, which is precisely what the sampling is meant to avoid.
     ///
     /// Blobs no larger than the sample are assumed compressible: probing them
     /// would cost about as much as compressing them outright, and the raw-store
     /// fallback already discards a compressed form that failed to shrink.
     ///
-    /// The check deliberately errs toward "compressible": a false positive only
-    /// wastes CPU, because the raw-store fallback still discards a compressed
-    /// form that failed to shrink, while a false negative would give up ratio
+    /// The check deliberately errs toward "compressible": on a tie the blob is
+    /// compressed, and the raw-store fallback still discards a compressed form
+    /// that failed to shrink, while a false negative would give up ratio
     /// permanently.
     pub(crate) fn is_compressible(&self, data: &[u8]) -> bool {
         if data.len() <= PROBE_SAMPLE_SIZE {
@@ -222,25 +229,32 @@ impl SecureStorage {
 
         let window = PROBE_SAMPLE_SIZE / PROBE_WINDOWS;
         let span = data.len() - window;
-        let mut sample = Vec::with_capacity(PROBE_SAMPLE_SIZE);
-        for i in 0..PROBE_WINDOWS {
-            // Evenly spaced: the first window starts at the beginning and the
-            // last one ends at the end.
-            let start = span * i / (PROBE_WINDOWS - 1);
-            sample.extend_from_slice(&data[start..start + window]);
-        }
 
         let Ok(mut ctx) = self.take_encoding_context() else {
             // If zstd cannot be initialized, assume compressible and let the
             // raw-store fallback handle expansion.
             return true;
         };
-        let shrinks = match self.compress_managed(&mut ctx, &sample) {
-            Ok(compressed) => compressed.len() < sample.len(),
-            Err(_) => true,
-        };
+
+        let mut shrinking = 0usize;
+        for i in 0..PROBE_WINDOWS {
+            // Evenly spaced: the first window starts at the beginning and the
+            // last one ends at the end.
+            let start = span * i / (PROBE_WINDOWS - 1);
+            let sample = &data[start..start + window];
+            let shrinks = match self.compress_managed(&mut ctx, sample) {
+                Ok(compressed) => compressed.len() < sample.len(),
+                Err(_) => true,
+            };
+            if shrinks {
+                shrinking += 1;
+            }
+        }
         self.return_encoding_context(ctx);
-        shrinks
+
+        // At least half of the windows must shrink. A tie counts as
+        // compressible so the heuristic errs toward compressing.
+        shrinking * 2 >= PROBE_WINDOWS
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
@@ -792,5 +806,19 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
         // The same blob made entirely incompressible is rejected.
         assert!(!ss.is_compressible(&noise(640 * 1024)));
+    }
+
+    #[test]
+    fn compressible_region_does_not_decide_for_incompressible_blob() {
+        let ss = SecureStorage::new();
+
+        // A compressible header followed by incompressible content must not be
+        // judged compressible: otherwise the header alone would force zstd over
+        // the whole (otherwise incompressible) blob. This mirrors the real case
+        // of a media file whose container header compresses while its payload
+        // does not.
+        let mut blob = vec![0u8; 128 * 1024];
+        blob.extend_from_slice(&noise(512 * 1024));
+        assert!(!ss.is_compressible(&blob));
     }
 }

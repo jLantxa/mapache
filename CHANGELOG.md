@@ -12,9 +12,10 @@
     matching file names.
   - `skip-incompressible` / `--no-skip-incompressible`: sample a blob and skip
     compression when it does not shrink at the configured level. Sampling uses
-    several evenly spaced windows, not just the leading bytes, and a file is
-    probed at most once: after its first blob looks compressible, the rest of
-    the file is compressed without being re-sampled. Enabled by default.
+    several evenly spaced windows, each judged on its own, and the blob is
+    skipped unless a majority of the windows shrink. Every blob is probed on its
+    own: a media file's compressible container header no longer forces the whole
+    file to be compressed. Enabled by default.
   - Compression never expands a blob: blobs whose compressed form is not
     smaller are stored raw.
   - All of the above require repository format v2, and apply to bundles too.

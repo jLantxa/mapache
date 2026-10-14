@@ -372,37 +372,32 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
     progress.increment_diff(is_dir, &diff_type);
 }
 
-/// Resolves the compression hint for one chunk of a file.
+/// Resolves the compression hint for one blob of a file.
 ///
-/// A path-based hint is returned unchanged. For `Auto`, the first blob of the
-/// file is probed and, when it looks compressible, that verdict is cached for
-/// the remaining blobs so they are not probed again.
+/// A path-based hint is returned unchanged. For `Auto`, the blob's own content
+/// is probed; when the saver cannot (or is configured not to) probe, the hint is
+/// left `Auto` so the encoder decides per blob.
 ///
-/// Only a `Compress` verdict is cached. Caching `Store` could deprive later
-/// chunks of compression and hurt the archive ratio, while caching `Compress`
-/// can at worst waste some CPU: the encoder still stores any chunk raw when it
-/// does not actually shrink.
+/// The verdict is deliberately **not** cached across the blobs of a file. A
+/// file's first blob is frequently a container header or metadata region that
+/// really does compress (a media file's `mov`/EBML header), and letting that
+/// one verdict stand for the whole file marks a multi-gigabyte, otherwise
+/// incompressible file as compressible and runs zstd over all of it. Judging
+/// each blob on its own costs at most one `PROBE_SAMPLE_SIZE` probe per blob,
+/// which is far cheaper than compressing content that does not shrink.
 fn resolve_chunk_hint(
     blob_saver: &dyn BlobSaver,
     file_hint: CompressionHint,
-    cached: &mut Option<CompressionHint>,
     chunk: &[u8],
 ) -> CompressionHint {
-    if let Some(hint) = *cached {
-        return hint;
-    }
     if file_hint != CompressionHint::Auto {
         return file_hint;
     }
-    let Some(hint) = blob_saver.probe_compression_hint(chunk) else {
-        // This saver cannot (or is configured not to) probe: leave the hint
-        // `Auto` so the encoder decides per blob.
-        return file_hint;
-    };
-    if hint == CompressionHint::Compress {
-        *cached = Some(hint);
-    }
-    hint
+    // This saver cannot (or is configured not to) probe: leave the hint `Auto`
+    // so the encoder decides per blob.
+    blob_saver
+        .probe_compression_hint(chunk)
+        .unwrap_or(CompressionHint::Auto)
 }
 
 /// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
@@ -469,8 +464,6 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
         let mut ids = Vec::new();
         let mut total_bytes = 0u64;
 
-        let mut cached_hint: Option<CompressionHint> = None;
-
         for msg in chunk_rx {
             let chunk_data = msg?;
 
@@ -495,7 +488,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
                 )?
             } else {
                 blob_saver.save_blob_with_hint(
-                    resolve_chunk_hint(blob_saver, hint, &mut cached_hint, &chunk_data),
+                    resolve_chunk_hint(blob_saver, hint, &chunk_data),
                     blob_type,
                     WriteContents::Borrowed(&chunk_data),
                     SaveID::CalculateID,
@@ -529,8 +522,6 @@ fn chunk_and_store_inline<R: Read>(
         let mut ids = Vec::new();
         let mut total_bytes = 0u64;
 
-        let mut cached_hint: Option<CompressionHint> = None;
-
         for chunk_result in stream {
             let chunk = chunk_result.map_err(|e| MapacheError::Chunking(format!("{e}")))?;
 
@@ -555,7 +546,7 @@ fn chunk_and_store_inline<R: Read>(
                 )?
             } else {
                 blob_saver.save_blob_with_hint(
-                    resolve_chunk_hint(blob_saver, hint, &mut cached_hint, &chunk.data),
+                    resolve_chunk_hint(blob_saver, hint, &chunk.data),
                     blob_type,
                     WriteContents::Borrowed(&chunk.data),
                     SaveID::CalculateID,
@@ -798,17 +789,17 @@ mod tests {
         );
     }
 
-    /// A [`BlobSaver`] with a fixed probe verdict that counts probe calls, for
-    /// exercising the per-file hint cache in [`resolve_chunk_hint`].
+    /// A [`BlobSaver`] whose probe verdict depends on the sampled bytes and
+    /// counts how many times it was asked, for exercising
+    /// [`resolve_chunk_hint`]. `b"compress"`/`b"store"` yield a concrete
+    /// verdict; anything else cannot be decided (`None`).
     struct ProbeSaver {
-        verdict: Option<CompressionHint>,
         probes: AtomicUsize,
     }
 
     impl ProbeSaver {
-        fn new(verdict: Option<CompressionHint>) -> Self {
+        fn new() -> Self {
             Self {
-                verdict,
                 probes: AtomicUsize::new(0),
             }
         }
@@ -828,56 +819,60 @@ mod tests {
             unreachable!("resolve_chunk_hint tests never save blobs")
         }
 
-        fn probe_compression_hint(&self, _sample: &[u8]) -> Option<CompressionHint> {
+        fn probe_compression_hint(&self, sample: &[u8]) -> Option<CompressionHint> {
             self.probes.fetch_add(1, Ordering::Relaxed);
-            self.verdict
+            match sample {
+                b"compress" => Some(CompressionHint::Compress),
+                b"store" => Some(CompressionHint::Store),
+                _ => None,
+            }
         }
     }
 
     #[test]
-    fn resolve_chunk_hint_caches_only_compress() {
-        // A `Compress` verdict is probed once and reused for the whole file.
-        let saver = ProbeSaver::new(Some(CompressionHint::Compress));
-        let mut cached = None;
+    fn resolve_chunk_hint_probes_each_blob_independently() {
+        let saver = ProbeSaver::new();
+
+        // Each blob gets its own verdict: a compressible first blob (e.g. a
+        // media container header) must not force the rest of a file to be
+        // compressed.
         assert_eq!(
-            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"a"),
+            resolve_chunk_hint(&saver, CompressionHint::Auto, b"compress"),
             CompressionHint::Compress
         );
         assert_eq!(
-            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"b"),
-            CompressionHint::Compress
-        );
-        assert_eq!(saver.probes(), 1);
-
-        // A `Store` verdict is never cached, so later chunks keep probing and a
-        // chunk that does compress is not deprived of it.
-        let saver = ProbeSaver::new(Some(CompressionHint::Store));
-        let mut cached = None;
-        assert_eq!(
-            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"a"),
+            resolve_chunk_hint(&saver, CompressionHint::Auto, b"store"),
             CompressionHint::Store
         );
         assert_eq!(
-            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"b"),
+            resolve_chunk_hint(&saver, CompressionHint::Auto, b"store"),
             CompressionHint::Store
         );
-        assert_eq!(saver.probes(), 2);
+        assert_eq!(saver.probes(), 3);
+    }
 
+    #[test]
+    fn resolve_chunk_hint_without_probe_leaves_auto() {
         // A saver that cannot probe leaves the hint for the encoder to resolve.
-        let saver = ProbeSaver::new(None);
-        let mut cached = None;
+        let saver = ProbeSaver::new();
         assert_eq!(
-            resolve_chunk_hint(&saver, CompressionHint::Auto, &mut cached, b"a"),
+            resolve_chunk_hint(&saver, CompressionHint::Auto, b"whatever"),
             CompressionHint::Auto
         );
         assert_eq!(saver.probes(), 1);
+    }
 
+    #[test]
+    fn resolve_chunk_hint_uses_path_hint_verbatim() {
         // A path-based hint is used verbatim and never probed.
-        let saver = ProbeSaver::new(Some(CompressionHint::Store));
-        let mut cached = None;
+        let saver = ProbeSaver::new();
         assert_eq!(
-            resolve_chunk_hint(&saver, CompressionHint::Compress, &mut cached, b"a"),
+            resolve_chunk_hint(&saver, CompressionHint::Compress, b"store"),
             CompressionHint::Compress
+        );
+        assert_eq!(
+            resolve_chunk_hint(&saver, CompressionHint::Store, b"compress"),
+            CompressionHint::Store
         );
         assert_eq!(saver.probes(), 0);
     }

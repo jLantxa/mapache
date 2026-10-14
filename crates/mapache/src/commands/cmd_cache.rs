@@ -73,10 +73,12 @@ pub fn run(args: &CmdArgs) -> Result<(), CacheError> {
     }
 }
 
-/// Counts the number of regular files stored under `path`, recursively.
-fn count_files_in_dir(path: &Path) -> u64 {
-    let mut count = 0;
+/// Recursively counts regular files and finds the latest modification time under `path`.
+fn inspect_dir(path: &Path) -> (u64, Option<SystemTime>) {
+    let mut file_count = 0;
+    let mut latest = path.metadata().ok().and_then(|m| m.modified().ok());
     let mut pending = vec![path.to_path_buf()];
+
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -85,14 +87,23 @@ fn count_files_in_dir(path: &Path) -> u64 {
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
+
+            // Track the most recent modification time
+            if let Ok(mod_time) = metadata.modified() {
+                latest = Some(match latest {
+                    Some(current) => std::cmp::max(current, mod_time),
+                    None => mod_time,
+                });
+            }
+
             if metadata.is_dir() {
                 pending.push(entry.path());
             } else if metadata.is_file() {
-                count += 1;
+                file_count += 1;
             }
         }
     }
-    count
+    (file_count, latest)
 }
 
 /// List all cache folders.
@@ -105,24 +116,27 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
         return Ok(());
     }
 
-    let mut folders: Vec<(String, PathBuf, Option<SystemTime>)> = std::fs::read_dir(cache_base)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if !path.is_dir() {
-                return None;
-            }
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let modified = path.metadata().ok().and_then(|m| m.modified().ok());
-            Some((name, path, modified))
-        })
-        .collect();
+    let mut folders: Vec<(String, PathBuf, u64, Option<SystemTime>)> =
+        std::fs::read_dir(cache_base)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if !path.is_dir() {
+                    return None;
+                }
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
 
-    folders.sort_by_key(|a| std::cmp::Reverse(a.2));
+                let (file_count, modified) = inspect_dir(&path);
+                Some((name, path, file_count, modified))
+            })
+            .collect();
+
+    // Sort by the recursive modification time (index 3)
+    folders.sort_by_key(|a| std::cmp::Reverse(a.3));
 
     if folders.is_empty() {
         ui::cli::log!(
@@ -157,7 +171,7 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
     let mut num_directories = 0;
     let mut total_cache_size = 0;
 
-    for (name, path, modified) in &folders {
+    for (name, path, file_count, modified) in &folders {
         let size = match utils::dir_size(path) {
             Ok(size) => size,
             Err(e) => {
@@ -166,7 +180,7 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
             }
         };
 
-        let modified = modified
+        let modified_str = modified
             .map(|t| utils::pretty_print_system_time(t, Some("%Y-%m-%d %H:%M")).unwrap_or_default())
             .unwrap_or_default();
 
@@ -176,9 +190,9 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
                 .bold()
                 .yellow()
                 .to_string(),
-            count_files_in_dir(path).to_string(),
+            file_count.to_string(),
             utils::format_size_binary(size, 3),
-            modified.dimmed().to_string(),
+            modified_str.dimmed().to_string(),
         ]);
         num_directories += 1;
         total_cache_size += size;

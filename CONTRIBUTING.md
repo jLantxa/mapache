@@ -75,6 +75,8 @@ A Docker image with all cross-compilation toolchains is provided for
 contributors. Build the image once:
 
 ```bash
+tools/docker/build-image.sh          # docker build --pull --no-cache
+# or, equivalently:
 docker build -t mapache-builder tools/docker
 ```
 
@@ -93,12 +95,28 @@ the helper script, which packs the results under `build/`:
 ```bash
 python3 tools/docker/build.py --ref <label>                  # all targets
 python3 tools/docker/build.py --ref <label> --target linux   # subset
+python3 tools/docker/build.py --ref <label> --parallel 4     # build in parallel
+python3 tools/docker/build.py --ref <label> --dry-run        # print commands only
 ```
 
 Useful to verify your changes compile on all platforms without setting up
 cross-compilation toolchains. Note that `--ref` only names the output
 directory — the build always compiles your current working tree, not a git
 tag.
+
+Builds run as your host user (the container entry point drops privileges to
+the owner of the mounted `mapache` directory), so files under `build/` are
+owned by you and can be deleted without `sudo` even if a build is
+interrupted.
+
+With `--parallel N`, each target builds in its own container and writes its
+full compiler output to `build/<ref>_<timestamp>/logs/<target>.log`; the
+terminal only shows one start/finish line per target, and the tail of any
+failed build is printed when the run finishes.
+
+The list of targets, their Rust flags, features, and build tool lives in
+`tools/docker/targets`, which is the single source of truth for both this
+workflow and the CI build in `.github/workflows/build.yaml`.
 
 ### Feature Flags
 

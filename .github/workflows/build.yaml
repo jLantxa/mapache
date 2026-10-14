@@ -1,16 +1,19 @@
 name: build
 
+# Manual release build.
+#
+# The ref (branch or tag) to build is selected when dispatching the workflow
+# (the GitHub UI's "Use workflow from" selector, or `gh workflow run --ref`).
+# The run uses this file from that ref and checks out the same ref. There is
+# deliberately no `ref` input: an arbitrary, attacker-influenced checkout ref
+# would allow untrusted code to run in this default-branch workflow.
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: Git ref (tag, branch, or commit SHA)
-        required: true
-        type: string
       create_release:
         description: Create a GitHub Release
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -22,268 +25,211 @@ env:
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
   MAPACHE_BUILD_TYPE: release
   ZIG_VERSION: "0.16.0"
+  ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+  NDK_VERSION: "r26d"
+  # Google only publishes a SHA1 for NDK artifacts.
+  NDK_SHA1: "fcdad75a765a46a9cf6560353f480db251d14765"
+  CARGO_ZIGBUILD_VERSION: "0.23.0"
+  CARGO_XWIN_VERSION: "0.23.1"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || inputs.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      ref: ${{ steps.ref.outputs.value }}
-      safe_ref: ${{ steps.ref.outputs.safe }}
-    steps:
-      - id: ref
-        run: |
-          ref="${{ inputs.ref || github.ref_name }}"
-          echo "value=$ref" >> "$GITHUB_OUTPUT"
-          safe="${ref//\//-}"
-          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+  # ── Build ──────────────────────────────────────────
+  #
+  # Every target is built through tools/docker/build-target.sh, the same entry
+  # point used by the canonical Docker build (tools/docker/build.py). The target
+  # definitions below mirror tools/docker/targets 1:1 — keep them in sync.
+  #
+  # Intentional difference from the Docker build: linux-amd64 is compiled with
+  # zigbuild here (no musl-gcc on the runner) instead of the Docker image's
+  # system musl-gcc. Both produce a static musl binary; the toolchain differs.
 
-  # ── Linux (uses fuse) ──────────────────────────────
-
-  build-linux-amd64:
-    needs: setup
-    runs-on: ubuntu-latest
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "10.12"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+            rustflags: "-C target-feature=+crt-static"
+            feat_args: ""
+            tool: zigbuild
+            exe: ""
+          - name: linux-arm64
+            os: ubuntu-latest
+            triple: aarch64-unknown-linux-musl
+            rustflags: "-C target-feature=+crt-static"
+            feat_args: ""
+            tool: zigbuild
+            exe: ""
+          - name: linux-armv7
+            os: ubuntu-latest
+            triple: armv7-unknown-linux-musleabihf
+            rustflags: "-C target-feature=+crt-static"
+            feat_args: ""
+            tool: zigbuild
+            exe: ""
+          - name: android-arm64
+            os: ubuntu-latest
+            triple: aarch64-linux-android
+            rustflags: ""
+            feat_args: "--no-default-features"
+            tool: build
+            exe: ""
+          - name: windows-amd64
+            os: ubuntu-latest
+            triple: x86_64-pc-windows-msvc
+            rustflags: "-C target-feature=+crt-static"
+            feat_args: ""
+            tool: xwin
+            exe: ".exe"
+          - name: darwin-arm64
+            os: macos-latest
+            triple: aarch64-apple-darwin
+            rustflags: ""
+            feat_args: ""
+            tool: build
+            exe: ""
+          - name: darwin-amd64
+            os: macos-latest
+            triple: x86_64-apple-darwin
+            rustflags: ""
+            feat_args: ""
+            tool: build
+            exe: ""
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.triple }}
+
       - name: Install system dependencies
+        if: matrix.tool == 'zigbuild'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq pkg-config
-      - name: Install zig
-        run: |
-          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sudo tar -xJ -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --version "=0.23.0"
-      - name: Build
-        run: |
-          sh tools/docker/build-target.sh x86_64-unknown-linux-musl \
-            "-C target-feature=+crt-static" \
-            "" zigbuild
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mapache-linux-amd64
-          path: target/x86_64-unknown-linux-musl/release/mapache
 
-  build-linux-arm64:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq pkg-config
-      - name: Install zig
-        run: |
-          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sudo tar -xJ -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --version "=0.23.0"
-      - name: Build
-        run: |
-          sh tools/docker/build-target.sh aarch64-unknown-linux-musl \
-            "-C target-feature=+crt-static" \
-            "" zigbuild
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mapache-linux-arm64
-          path: target/aarch64-unknown-linux-musl/release/mapache
-
-  build-linux-armv7:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: armv7-unknown-linux-musleabihf
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq pkg-config
-      - name: Install zig
-        run: |
-          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sudo tar -xJ -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --version "=0.23.0"
-      - name: Build
-        run: |
-          sh tools/docker/build-target.sh armv7-unknown-linux-musleabihf \
-            "-C target-feature=+crt-static" \
-            "" zigbuild
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mapache-linux-armv7
-          path: target/armv7-unknown-linux-musleabihf/release/mapache
-
-  # ── Android (no fuse) ────────────────────────────
-
-  build-android-arm64:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-      - name: Install Android NDK
-        run: |
-          curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o /tmp/ndk.zip
-          unzip -q /tmp/ndk.zip -d /opt
-          rm /tmp/ndk.zip
-          echo "ANDROID_NDK_HOME=/opt/android-ndk-r26d" >> "$GITHUB_ENV"
-          echo "CC_aarch64_linux_android=/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
-          echo "AR_aarch64_linux_android=/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
-      - name: Build
-        run: |
-          sh tools/docker/build-target.sh aarch64-linux-android "" \
-            "--no-default-features" build
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mapache-android-arm64
-          path: target/aarch64-linux-android/release/mapache
-
-  # ── Windows (no fuse) ────────────────────────────
-
-  build-windows-amd64:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-      - name: Install LLVM + cargo-xwin
+      - name: Install LLVM (cargo-xwin)
+        if: matrix.tool == 'xwin'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq clang llvm-dev
           rustup component add llvm-tools
-          cargo install cargo-xwin
-      - name: Build
+
+      # -- Zig / cargo-zigbuild (linux musl targets) --
+
+      - name: Install zig
+        if: matrix.tool == 'zigbuild'
         run: |
-          sh tools/docker/build-target.sh x86_64-pc-windows-msvc \
-            "-C target-feature=+crt-static" \
-            "--features default" xwin
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mapache-windows-amd64
-          path: target/x86_64-pc-windows-msvc/release/mapache.exe
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$HOME/zig-${ZIG_VERSION}"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig-${ZIG_VERSION}" --strip-components=1
+          rm /tmp/zig.tar.xz
 
-  # ── macOS ──────────────────────────────────────────
+      - name: Add zig to PATH
+        if: matrix.tool == 'zigbuild'
+        run: echo "$HOME/zig-${ZIG_VERSION}" >> "$GITHUB_PATH"
 
-  # NOTE: macOS binaries are NOT fully self-contained — Apple's system libraries
-  # cannot be statically linked (system policy). These will depend on system dylibs.
+      - name: Install cargo-zigbuild
+        if: matrix.tool == 'zigbuild'
+        run: cargo install cargo-zigbuild --version "=${CARGO_ZIGBUILD_VERSION}"
 
-  build-darwin-arm64:
-    needs: setup
-    runs-on: macos-latest
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "10.12"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
+      # -- cargo-xwin (windows target) --
+
+      - name: Install cargo-xwin
+        if: matrix.tool == 'xwin'
+        run: cargo install cargo-xwin --version "=${CARGO_XWIN_VERSION}"
+
+      # -- Android NDK --
+
+      - name: Install Android NDK
+        if: matrix.name == 'android-arm64'
+        run: |
+          curl -L "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" -o /tmp/ndk.zip
+          echo "${NDK_SHA1}  /tmp/ndk.zip" | sha1sum -c -
+          unzip -q /tmp/ndk.zip -d "$HOME"
+          rm /tmp/ndk.zip
+
+      - name: Configure Android NDK
+        if: matrix.name == 'android-arm64'
+        run: |
+          ndk="$HOME/android-ndk-${NDK_VERSION}"
+          toolchain="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "ANDROID_NDK_HOME=${ndk}"
+            echo "CC_aarch64_linux_android=${toolchain}/aarch64-linux-android21-clang"
+            echo "AR_aarch64_linux_android=${toolchain}/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${toolchain}/aarch64-linux-android21-clang"
+          } >> "$GITHUB_ENV"
+
+      # -- macFUSE (macOS targets) --
+
       - name: Install macFUSE
+        if: runner.os == 'macOS'
         run: |
           brew tap homebrew/cask
           brew install --cask macfuse
-          pkg-config --exists osxfuse && echo "osxfuse found" || echo "osxfuse not found"
-      - name: Build
-        run: |
-          sh tools/docker/build-target.sh aarch64-apple-darwin "" \
-            "" build
-      - uses: actions/upload-artifact@v7
-        with:
-          name: mapache-darwin-arm64
-          path: target/aarch64-apple-darwin/release/mapache
 
-  build-darwin-amd64:
-    needs: setup
-    runs-on: macos-latest
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "10.12"
-      PKG_CONFIG_ALLOW_CROSS: "1"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-      - name: Install macFUSE
-        run: |
-          brew tap homebrew/cask
-          brew install --cask macfuse
-          pkg-config --exists osxfuse && echo "osxfuse found" || echo "osxfuse not found"
+      - name: Configure darwin-amd64 cross build
+        if: matrix.name == 'darwin-amd64'
+        run: echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+
+      # -- Build --
+
       - name: Build
+        env:
+          BUILD_TARGET: ${{ matrix.triple }}
+          BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
+          BUILD_FEAT_ARGS: ${{ matrix.feat_args }}
+          BUILD_TOOL: ${{ matrix.tool }}
         run: |
-          sh tools/docker/build-target.sh x86_64-apple-darwin "" \
-            "" build
-      - name: Verify binary
-        run: |
-          echo "=== Looking for binary ==="
-          find target -name 'mapache' -type f 2>/dev/null
-          echo "=== target dir ==="
-          ls -la target/x86_64-apple-darwin/release/mapache 2>/dev/null || echo "NOT FOUND at expected path"
+          sh tools/docker/build-target.sh \
+            "$BUILD_TARGET" "$BUILD_RUSTFLAGS" "$BUILD_FEAT_ARGS" "$BUILD_TOOL"
+
       - uses: actions/upload-artifact@v7
         with:
-          name: mapache-darwin-amd64
-          path: target/x86_64-apple-darwin/release/mapache
+          name: mapache-${{ matrix.name }}
+          path: target/${{ matrix.triple }}/release/mapache${{ matrix.exe }}
+          if-no-files-found: error
 
   # ── Package ────────────────────────────────────────
+  #
+  # This job only consumes the artifacts produced by the build job. It never
+  # checks out the repository, so the privileged (contents: write) job cannot
+  # execute any code from the built revision.
 
   package:
     needs:
-      - setup
-      - build-linux-amd64
-      - build-linux-arm64
-      - build-linux-armv7
-      - build-android-arm64
-      - build-windows-amd64
-      - build-darwin-amd64
-      - build-darwin-arm64
+      - build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-
       - uses: actions/download-artifact@v8
         with:
           path: dist
 
       - name: Package artifacts
         shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           cd dist
-          safe_ref="${{ needs.setup.outputs.safe_ref }}"
+          # Sanitize the ref for use in file names (the ref is not interpolated
+          # into the script; it is passed through the environment).
+          safe_ref="${REF_NAME//\//-}"
 
           # Collect raw binaries and compute checksums before compressing
           : > checksums.txt
@@ -305,6 +251,9 @@ jobs:
             sha256sum "$name" >> checksums.txt
             rm -rf "$dir"
           done
+
+          # Deterministic ordering (matches the Docker build's sorted output)
+          LC_ALL=C sort -k2 checksums.txt -o checksums.txt
 
           echo "Checksums:"
           cat checksums.txt
@@ -333,6 +282,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           draft: true
-          tag_name: ${{ needs.setup.outputs.ref }}
-          name: ${{ needs.setup.outputs.ref }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           files: dist/*

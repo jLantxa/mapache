@@ -52,6 +52,21 @@ impl SnapshotForm {
                         .and_then(|cfg| cfg.exclude_file.as_ref())
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default()).help("Read exclude patterns from this file, one per line."),
+            FormField::list("Exclude if present:",
+                    config_defaults
+                        .and_then(|cfg| cfg.exclude_if_present.clone())
+                        .unwrap_or_default()).help("When a directory contains any of these markers, keep the markers and drop the directory's other contents. Press Enter to add a marker."),
+            FormField::toggle("Exclude caches:",
+                    config_defaults.and_then(|cfg| cfg.exclude_caches).unwrap_or(false)).help("Shorthand for an 'Exclude if present' entry of CACHEDIR.TAG."),
+            FormField::text("Exclude larger than:",
+                    config_defaults
+                        .and_then(|cfg| cfg.exclude_larger_than)
+                        .map(|bytes| bytes.to_string())
+                        .unwrap_or_default()).help("Skip regular files larger than this size (e.g. 10MB, 1GiB). Empty disables the limit."),
+            FormField::text("Host:",
+                    config_defaults
+                        .and_then(|cfg| cfg.hostname.clone())
+                        .unwrap_or_default()).help("Hostname recorded in the snapshot; empty uses the system hostname."),
 
             FormField::toggle("As root:",
                     config_defaults.and_then(|cfg| cfg.as_root).unwrap_or(false)).help("Store paths relative to the filesystem root."),
@@ -92,7 +107,7 @@ impl SnapshotForm {
 
             FormField::action("Start Snapshot"),
         ];
-        let form = Form::new(fields, 17);
+        let form = Form::new(fields, 21);
 
         Self { form }
     }
@@ -127,6 +142,13 @@ impl SnapshotForm {
             self.form.reveal_errors();
             return false;
         }
+
+        if let Err(error) = self.exclude_larger_than() {
+            self.form.set_error("Exclude larger than:", error);
+            self.form.focus_field("Exclude larger than:");
+            self.form.reveal_errors();
+            return false;
+        }
         true
     }
 
@@ -139,6 +161,23 @@ impl SnapshotForm {
                 .parse()
                 .map(Some)
                 .map_err(|error| format!("Invalid parent: {error}"))
+        }
+    }
+
+    /// Parses the "Exclude larger than:" field into a byte count.
+    pub fn exclude_larger_than(&self) -> Result<Option<u64>, String> {
+        let value = self
+            .form
+            .get_text_by_label("Exclude larger than:")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if value.is_empty() {
+            Ok(None)
+        } else {
+            commands::cmd_snapshot::parse_size(&value)
+                .map(Some)
+                .map_err(|error| format!("Invalid size: {error}"))
         }
     }
 
@@ -189,6 +228,19 @@ impl SnapshotForm {
             .map(|items| items.to_vec())
             .unwrap_or_default();
 
+        let mut exclude_if_present: Vec<String> = self
+            .form
+            .get_multi_by_label("Exclude if present:")
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        if self
+            .form
+            .get_toggle_by_label("Exclude caches:")
+            .unwrap_or(false)
+        {
+            exclude_if_present.push("CACHEDIR.TAG".to_string());
+        }
+
         SnapshotRunOptions {
             paths,
             as_root: self.form.get_toggle_by_label("As root:").unwrap_or(false),
@@ -202,9 +254,13 @@ impl SnapshotForm {
                 .get_text_by_label("Exclude file:")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
-            exclude_if_present: Vec::new(),
-            exclude_larger_than: None,
-            hostname: None,
+            exclude_if_present,
+            exclude_larger_than: self.exclude_larger_than().unwrap_or(None),
+            hostname: self
+                .form
+                .get_text_by_label("Host:")
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
             tags,
             description,
             no_scan: self.form.get_toggle_by_label("No scan:").unwrap_or(false),
@@ -424,5 +480,99 @@ mod tests {
         form.form.focus_field("No parent:");
         form.form.handle_key(KeyCode::Enter);
         assert!(!form.validate());
+    }
+
+    /// Types `text` into the currently focused text field.
+    fn type_into_focused(form: &mut SnapshotForm, text: &str) {
+        form.handle_key(KeyCode::Enter);
+        for character in text.chars() {
+            form.handle_key(KeyCode::Char(character));
+        }
+        form.handle_key(KeyCode::Enter);
+    }
+
+    #[test]
+    fn configured_exclusions_and_host_reach_run_options() {
+        let defaults = commands::cmd_snapshot::CmdArgs {
+            paths: vec![PathBuf::from("data")],
+            exclude_if_present: Some(vec!["MARKER".to_string()]),
+            exclude_caches: Some(true),
+            exclude_larger_than: Some(10 * 1024 * 1024),
+            hostname: Some("tui-host".to_string()),
+            ..Default::default()
+        };
+        let mut form = SnapshotForm::new(Some(&defaults));
+        assert!(form.validate());
+
+        let options = form.to_snapshot_options();
+        assert_eq!(
+            options.exclude_if_present,
+            vec!["MARKER".to_string(), "CACHEDIR.TAG".to_string()]
+        );
+        assert_eq!(options.exclude_larger_than, Some(10 * 1024 * 1024));
+        assert_eq!(options.hostname.as_deref(), Some("tui-host"));
+    }
+
+    #[test]
+    fn exclude_caches_toggle_adds_cachedir_marker() {
+        let mut form = make_form_with_paths(&["data"]);
+        let fields = form.form.fields_mut();
+        let field = fields
+            .iter_mut()
+            .find(|field| field.label == "Exclude caches:")
+            .unwrap();
+        if let FormFieldType::Toggle(value) = &mut field.field_type {
+            *value = true;
+        }
+
+        let options = form.to_snapshot_options();
+        assert_eq!(options.exclude_if_present, vec!["CACHEDIR.TAG".to_string()]);
+    }
+
+    #[test]
+    fn exclude_if_present_chips_reach_run_options() {
+        let mut form = make_form_with_paths(&["data"]);
+        let fields = form.form.fields_mut();
+        let field = fields
+            .iter_mut()
+            .find(|field| field.label == "Exclude if present:")
+            .unwrap();
+        if let FormFieldType::MultiSelect(items) = &mut field.field_type {
+            *items = vec![".nobackup".to_string()];
+        }
+
+        let options = form.to_snapshot_options();
+        assert_eq!(options.exclude_if_present, vec![".nobackup".to_string()]);
+    }
+
+    #[test]
+    fn exclude_larger_than_field_parses_and_validates() {
+        let mut form = make_form_with_paths(&["data"]);
+        form.form.focus_field("Exclude larger than:");
+        type_into_focused(&mut form, "10M");
+        assert_eq!(form.exclude_larger_than().unwrap(), Some(10 * 1024 * 1024));
+        assert!(form.validate());
+        assert_eq!(
+            form.to_snapshot_options().exclude_larger_than,
+            Some(10 * 1024 * 1024)
+        );
+
+        let mut form = make_form_with_paths(&["data"]);
+        form.form.focus_field("Exclude larger than:");
+        type_into_focused(&mut form, "notbytes");
+        assert!(form.exclude_larger_than().is_err());
+        assert!(!form.validate());
+    }
+
+    #[test]
+    fn new_filter_fields_render() {
+        let form = SnapshotForm::new(None);
+        let text = crate::ui::tui::test_support::render_text(120, 30, |frame| {
+            render_config(frame, &form);
+        });
+        assert!(text.contains("Exclude if present:"));
+        assert!(text.contains("Exclude caches:"));
+        assert!(text.contains("Exclude larger than:"));
+        assert!(text.contains("Host:"));
     }
 }

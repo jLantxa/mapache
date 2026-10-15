@@ -943,7 +943,7 @@ fn parse_readers(s: &str) -> Result<usize, String> {
 }
 
 /// Parses a human-readable size (e.g. `10MB`, `1GiB`) into bytes.
-fn parse_size(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_size(s: &str) -> Result<u64, String> {
     utils::parse_bandwidth(s).map_err(|e| e.to_string())
 }
 

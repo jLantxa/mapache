@@ -10,7 +10,7 @@ use futures::StreamExt;
 use crate::{
     common::ID,
     common::error::{MapacheError, Result},
-    fs::{self, tree::SerializedNodeStream},
+    fs::{self, node::Node, tree::SerializedNodeStream},
     repository::repo::Repository,
     utils::collections::FxHashMap,
 };
@@ -593,6 +593,79 @@ impl PathFilter {
 
 pub(crate) fn is_glob(path_str: &str) -> bool {
     path_str.contains('*') || path_str.contains('?')
+}
+
+/// Filters applied during a filesystem walk, on top of the path-based
+/// [`PathFilter`].
+///
+/// These mirror the restic-style `--exclude-if-present`, `--exclude-caches`
+/// and `--exclude-larger-than` options.
+#[derive(Debug, Clone, Default)]
+pub struct WalkOptions {
+    /// Marker file names. When a directory directly contains any of these
+    /// files, only the marker files themselves are kept and the directory's
+    /// other contents are pruned.
+    pub exclude_if_present: Vec<OsString>,
+
+    /// Regular files strictly larger than this many bytes are skipped.
+    pub exclude_larger_than: Option<u64>,
+}
+
+impl WalkOptions {
+    /// Returns true when no walk-level filter is active.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.exclude_if_present.is_empty() && self.exclude_larger_than.is_none()
+    }
+
+    /// Returns true when `name` is one of the configured marker file names.
+    #[inline]
+    fn is_marker(&self, name: &OsStr) -> bool {
+        self.exclude_if_present
+            .iter()
+            .any(|marker| marker.as_os_str() == name)
+    }
+
+    /// Returns true when `node` is a regular file larger than the size limit.
+    #[inline]
+    pub fn exceeds_size_limit(&self, node: &Node) -> bool {
+        self.exclude_larger_than
+            .is_some_and(|max| node.is_file() && node.metadata.size > max)
+    }
+
+    /// Applies the directory-content filters to a directory's direct
+    /// `children` (already collected and path-filtered).
+    ///
+    /// If a marker file is present, the directory is pruned to the marker
+    /// files only. Otherwise, regular files larger than the size limit are
+    /// removed. Returns the number of entries dropped by the size limit so the
+    /// caller can record them as skipped.
+    pub(crate) fn filter_children(&self, children: &mut Vec<(OsString, Result<Node>)>) -> u64 {
+        if self.is_empty() {
+            return 0;
+        }
+
+        if !self.exclude_if_present.is_empty()
+            && children.iter().any(|(name, _)| self.is_marker(name))
+        {
+            children.retain(|(name, _)| self.is_marker(name));
+            return 0;
+        }
+
+        let Some(max) = self.exclude_larger_than else {
+            return 0;
+        };
+
+        let mut skipped = 0u64;
+        children.retain(|(_, node_res)| match node_res {
+            Ok(node) if node.is_file() && node.metadata.size > max => {
+                skipped += 1;
+                false
+            }
+            _ => true,
+        });
+        skipped
+    }
 }
 
 // Normalize the exclude paths

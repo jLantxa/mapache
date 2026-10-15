@@ -459,6 +459,11 @@ impl SnapshotBuilder {
                 as_root: Some(false),
                 exclude: None,
                 exclude_file: None,
+                exclude_if_present: None,
+                exclude_caches: Some(false),
+                exclude_larger_than: None,
+                files_from: None,
+                hostname: None,
                 tags_str: Some(String::new()),
                 description: None,
                 no_parent: false,
@@ -484,6 +489,31 @@ impl SnapshotBuilder {
 
     pub fn exclude(mut self, exclude: Vec<String>) -> Self {
         self.args.exclude = Some(exclude);
+        self
+    }
+
+    pub fn exclude_if_present(mut self, markers: Vec<String>) -> Self {
+        self.args.exclude_if_present = Some(markers);
+        self
+    }
+
+    pub fn exclude_caches(mut self, exclude_caches: bool) -> Self {
+        self.args.exclude_caches = Some(exclude_caches);
+        self
+    }
+
+    pub fn exclude_larger_than(mut self, bytes: u64) -> Self {
+        self.args.exclude_larger_than = Some(bytes);
+        self
+    }
+
+    pub fn files_from(mut self, files_from: PathBuf) -> Self {
+        self.args.files_from = Some(files_from);
+        self
+    }
+
+    pub fn hostname(mut self, hostname: String) -> Self {
+        self.args.hostname = Some(hostname);
         self
     }
 

@@ -1225,4 +1225,192 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_snapshot_exclude_if_present() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let src = ctx._tmp_dir.path().join("ifp_src");
+        std::fs::create_dir_all(src.join("cache/sub"))?;
+        std::fs::write(src.join("cache/MARKER"), b"marker")?;
+        std::fs::write(src.join("cache/ignored.bin"), b"ignored")?;
+        std::fs::write(src.join("cache/sub/deep.txt"), b"deep")?;
+        std::fs::write(src.join("keep.txt"), b"keep")?;
+
+        ctx.snapshot_builder(vec![src.clone()])
+            .root(true)
+            .exclude_if_present(vec!["MARKER".to_string()])
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("ifp_restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert!(restore_path.join("keep.txt").is_file());
+        assert!(restore_path.join("cache").is_dir());
+        assert!(
+            restore_path.join("cache/MARKER").is_file(),
+            "the marker file must be kept"
+        );
+        assert!(
+            !restore_path.join("cache/ignored.bin").exists(),
+            "regular files next to a marker must be excluded"
+        );
+        assert!(
+            !restore_path.join("cache/sub").exists(),
+            "subdirectories next to a marker must be excluded"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_exclude_caches() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let src = ctx._tmp_dir.path().join("caches_src");
+        std::fs::create_dir_all(src.join("cache"))?;
+        std::fs::write(
+            src.join("cache/CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55",
+        )?;
+        std::fs::write(src.join("cache/blob.bin"), b"cached")?;
+        std::fs::write(src.join("data.txt"), b"data")?;
+
+        ctx.snapshot_builder(vec![src.clone()])
+            .root(true)
+            .exclude_caches(true)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("caches_restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert!(restore_path.join("data.txt").is_file());
+        assert!(
+            restore_path.join("cache/CACHEDIR.TAG").is_file(),
+            "CACHEDIR.TAG must be kept"
+        );
+        assert!(
+            !restore_path.join("cache/blob.bin").exists(),
+            "cache payload must be excluded"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_exclude_larger_than() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let src = ctx._tmp_dir.path().join("sizes_src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("small.txt"), b"small")?;
+        std::fs::write(src.join("large.bin"), vec![0u8; 4096])?;
+
+        ctx.snapshot_builder(vec![src.clone()])
+            .root(true)
+            .exclude_larger_than(100)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("sizes_restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert!(restore_path.join("small.txt").is_file());
+        assert!(
+            !restore_path.join("large.bin").exists(),
+            "files larger than the limit must be skipped"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_exclude_larger_than_counts_as_skipped() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let src = ctx._tmp_dir.path().join("sizes_fail_src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("large.bin"), vec![0u8; 4096])?;
+
+        let result = ctx
+            .snapshot_builder(vec![src.clone()])
+            .root(true)
+            .exclude_larger_than(100)
+            .fail_on_skipped(true)
+            .run(&ctx.global)
+            .await;
+        assert!(
+            result.is_err(),
+            "a size-skipped file must make --fail-on-skipped fail"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_files_from() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let src = ctx._tmp_dir.path().join("files_from_src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("from_file.txt"), b"from-file")?;
+
+        let list_path = ctx._tmp_dir.path().join("sources.txt");
+        std::fs::write(&list_path, format!("{}\n", src.display()))?;
+
+        ctx.snapshot_builder(Vec::new())
+            .root(true)
+            .files_from(list_path)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("files_from_restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert_eq!(
+            std::fs::read(restore_path.join("from_file.txt"))?,
+            b"from-file"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_host_override() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let src = ctx._tmp_dir.path().join("host_src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("file.txt"), b"content")?;
+
+        ctx.snapshot_builder(vec![src.clone()])
+            .root(true)
+            .hostname("mapache-test-host".to_string())
+            .run(&ctx.global)
+            .await?;
+
+        let out = ctx.run_mapache_ok(&["log", "--all"])?;
+        assert!(
+            out.contains("mapache-test-host"),
+            "the snapshot log must show the overridden hostname; got:\n{out}"
+        );
+
+        Ok(())
+    }
 }

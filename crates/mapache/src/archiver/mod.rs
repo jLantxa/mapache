@@ -35,6 +35,7 @@ use crate::{
         traits::BlobSaver,
     },
     fs::{
+        filter::WalkOptions,
         node::{Metadata, Node, NodeType},
         scanner::spawn_background_scanner,
         tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
@@ -82,6 +83,10 @@ pub struct SnapshotOptions<'a> {
     pub with_atime: bool,
     /// If true, read backup data from stdin as a single file at /stdin.
     pub stdin: bool,
+    /// Walk-level filters applied on top of `exclude_paths`.
+    pub walk_options: WalkOptions,
+    /// Hostname to record in the snapshot. Defaults to the system hostname.
+    pub hostname: Option<String>,
 }
 
 /// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
@@ -403,6 +408,7 @@ pub(crate) fn spawn_scanner_task(
     no_scan: bool,
     absolute_source_paths: Vec<PathBuf>,
     exclude_paths: Vec<PathBuf>,
+    walk_options: WalkOptions,
     one_file_system: bool,
     status: Arc<PipelineStatus>,
     event_sender: EventSender,
@@ -417,6 +423,7 @@ pub(crate) fn spawn_scanner_task(
         let handle = spawn_background_scanner(
             absolute_source_paths,
             exclude_paths,
+            walk_options,
             one_file_system,
             event_sender,
             move || status_clone.is_failed() || status_clone.is_finished(),
@@ -467,6 +474,7 @@ pub(crate) async fn snapshot(
             snapshot_options.no_scan,
             snapshot_options.absolute_source_paths.clone(),
             snapshot_options.exclude_paths.clone(),
+            snapshot_options.walk_options.clone(),
             snapshot_options.one_file_system,
             status.clone(),
             event_sender.clone(),
@@ -527,6 +535,7 @@ pub(crate) async fn snapshot(
             snapshot_options.with_atime,
             snapshot_options.one_file_system,
             status.skipped_items.clone(),
+            snapshot_options.walk_options.clone(),
         )
         .await?;
 
@@ -618,7 +627,8 @@ pub(crate) async fn snapshot(
         Event::Backup(BackupEvent::Finished(summary.clone())),
     );
     tracing::info!(target: "archiver", "Snapshot tree finalized: {}", result.root_tree_id);
-    let (hostname, username) = utils::get_system_info();
+    let (system_hostname, username) = utils::get_system_info();
+    let hostname = snapshot_options.hostname.clone().or(system_hostname);
 
     Ok(Snapshot {
         timestamp: Local::now(),
@@ -719,6 +729,8 @@ mod tests {
                 fail_on_skipped: false,
                 with_atime: false,
                 stdin: false,
+                walk_options: Default::default(),
+                hostname: None,
             },
             1,
             noop_sender(),
@@ -753,6 +765,8 @@ mod tests {
                 fail_on_skipped: false,
                 with_atime: false,
                 stdin: false,
+                walk_options: Default::default(),
+                hostname: None,
             },
             1,
             noop_sender(),
@@ -832,6 +846,8 @@ mod tests {
             fail_on_skipped: false,
             with_atime: false,
             stdin: false,
+            walk_options: Default::default(),
+            hostname: None,
         };
 
         let new_snapshot = snapshot(
@@ -940,6 +956,8 @@ mod tests {
             fail_on_skipped: false,
             with_atime: false,
             stdin: false,
+            walk_options: Default::default(),
+            hostname: None,
         };
 
         let res = snapshot(
@@ -1165,6 +1183,8 @@ mod tests {
                 fail_on_skipped: false,
                 with_atime: false,
                 stdin: true,
+                walk_options: Default::default(),
+                hostname: None,
             },
             1,
             noop_sender(),

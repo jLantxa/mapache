@@ -29,7 +29,7 @@ use crate::{
     fs::{
         self, calculate_lcp,
         filter::{
-            PathFilter, merge_filtered_paths, normalized_exclude_paths,
+            PathFilter, WalkOptions, merge_filtered_paths, normalized_exclude_paths,
             read_filtered_paths_from_file,
         },
     },
@@ -115,6 +115,32 @@ pub struct CmdArgs {
     #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
+    /// Exclude the contents of directories that contain one of these marker
+    /// files. The directory and the marker files themselves are kept.
+    #[clap(long = "exclude-if-present", value_parser)]
+    pub exclude_if_present: Option<Vec<String>>,
+
+    /// Exclude the contents of directories that contain a CACHEDIR.TAG file.
+    /// Shorthand for `--exclude-if-present CACHEDIR.TAG`.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    pub exclude_caches: Option<bool>,
+
+    /// Exclude regular files larger than this size (e.g. `10MB`, `1GiB`).
+    /// Excluded files are counted as skipped, so `--fail-on-skipped` can
+    /// report them.
+    #[clap(long, value_parser = parse_size)]
+    pub exclude_larger_than: Option<u64>,
+
+    /// Read the list of source paths to back up from this file, one per line.
+    #[clap(long, value_parser)]
+    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    pub files_from: Option<PathBuf>,
+
+    /// Hostname to record in the snapshot (defaults to the system hostname).
+    #[clap(long = "host")]
+    #[serde(alias = "host")]
+    pub hostname: Option<String>,
+
     /// Tags
     #[clap(long = "tags", value_parser)]
     #[serde(rename = "tags", alias = "tags-str")]
@@ -171,7 +197,7 @@ pub struct CmdArgs {
     /// Read backup data from stdin as a single file at /stdin.
     /// Mutually exclusive with paths, excludes, and parent snapshot.
     /// Requires --auth-file or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
-    #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "parent", "as_root"])]
+    #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "exclude_if_present", "exclude_caches", "exclude_larger_than", "files_from", "parent", "as_root"])]
     pub stdin: bool,
 
     #[clap(flatten)]
@@ -185,6 +211,11 @@ impl CmdArgs {
             as_root: Some(false),
             exclude: Some(vec!["**/node_modules".to_string(), "**/.git".to_string()]),
             exclude_file: None,
+            exclude_if_present: None,
+            exclude_caches: Some(false),
+            exclude_larger_than: None,
+            files_from: None,
+            hostname: None,
             tags_str: Some("work,important".to_string()),
             description: Some("Daily backup".to_string()),
             no_parent: false,
@@ -214,6 +245,11 @@ impl Merge for CmdArgs {
         config::merge_option_vec(&mut self.exclude, other.exclude);
 
         merge_opt(&mut self.exclude_file, other.exclude_file);
+        config::merge_option_vec(&mut self.exclude_if_present, other.exclude_if_present);
+        merge_flag(&mut self.exclude_caches, other.exclude_caches);
+        merge_opt(&mut self.exclude_larger_than, other.exclude_larger_than);
+        merge_opt(&mut self.files_from, other.files_from);
+        merge_opt(&mut self.hostname, other.hostname);
         merge_opt(&mut self.tags_str, other.tags_str);
         merge_opt(&mut self.description, other.description);
 
@@ -251,6 +287,8 @@ pub struct SnapshotRunOptions {
     pub as_root: bool,
     pub exclude: Option<Vec<String>>,
     pub exclude_file: Option<PathBuf>,
+    pub exclude_if_present: Vec<String>,
+    pub exclude_larger_than: Option<u64>,
     pub tags: Option<String>,
     pub description: Option<String>,
     pub no_scan: bool,
@@ -261,15 +299,23 @@ pub struct SnapshotRunOptions {
     pub num_readers: usize,
     pub num_packers: usize,
     pub stdin: bool,
+    pub hostname: Option<String>,
 }
 
 impl From<&CmdArgs> for SnapshotRunOptions {
     fn from(args: &CmdArgs) -> Self {
+        let mut exclude_if_present = args.exclude_if_present.clone().unwrap_or_default();
+        if args.exclude_caches.unwrap_or(false) {
+            exclude_if_present.push("CACHEDIR.TAG".to_string());
+        }
+
         Self {
             paths: args.paths.clone(),
             as_root: args.as_root.unwrap_or(false),
             exclude: args.exclude.clone(),
             exclude_file: args.exclude_file.clone(),
+            exclude_if_present,
+            exclude_larger_than: args.exclude_larger_than,
             tags: args.tags_str.clone(),
             description: args.description.clone(),
             no_scan: args.no_scan.unwrap_or(false),
@@ -282,6 +328,7 @@ impl From<&CmdArgs> for SnapshotRunOptions {
                 .num_packers
                 .unwrap_or(common::defaults::DEFAULT_SNAPSHOT_PACKERS),
             stdin: args.stdin,
+            hostname: args.hostname.clone(),
         }
     }
 }
@@ -305,7 +352,23 @@ pub async fn run(
         ));
     }
 
-    if args.paths.is_empty() && !args.stdin {
+    let mut options = SnapshotRunOptions::from(args);
+
+    // Merge `--files-from` entries into the source path list.
+    if !args.stdin
+        && let Some(files_from) = &args.files_from
+    {
+        let entries = read_filtered_paths_from_file(files_from).map_err(|e| {
+            SnapshotError::SourcePathError(format!(
+                "error reading files-from {}: {}",
+                files_from.display(),
+                e.inner()
+            ))
+        })?;
+        options.paths.extend(entries.into_iter().map(PathBuf::from));
+    }
+
+    if options.paths.is_empty() && !args.stdin {
         return Err(SnapshotError::SourcePathError(
             "no source paths provided.".to_string(),
         ));
@@ -313,7 +376,7 @@ pub async fn run(
 
     // Verify source paths exist before acquiring the repository lock
     if !args.stdin {
-        for path in &args.paths {
+        for path in &options.paths {
             let normalized = fs::get_absolute_normalized_path(path).map_err(|e| {
                 SnapshotError::SourcePathError(format!(
                     "error processing path {}: {}",
@@ -398,7 +461,7 @@ pub async fn run(
             let result = run_with_repo(
                 repo,
                 lock_handle,
-                SnapshotRunOptions::from(args),
+                options,
                 event_sender,
                 parent_snapshot_pair,
                 None,
@@ -634,6 +697,14 @@ pub(crate) async fn run_with_repo(
 
     // Process and save new snapshot
     tracing::info!(target: "snapshot", "Starting archival process");
+    let walk_options = WalkOptions {
+        exclude_if_present: options
+            .exclude_if_present
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect(),
+        exclude_larger_than: options.exclude_larger_than,
+    };
     let snapshot_result = archiver::snapshot(
         repo.clone(),
         SnapshotOptions {
@@ -648,6 +719,8 @@ pub(crate) async fn run_with_repo(
             fail_on_skipped: options.fail_on_skipped,
             with_atime,
             stdin,
+            walk_options,
+            hostname: options.hostname.clone(),
         },
         num_readers,
         event_sender,
@@ -864,6 +937,11 @@ fn parse_readers(s: &str) -> Result<usize, String> {
     parse_positive_usize(s).map_err(|e| e.replace("value", "readers"))
 }
 
+/// Parses a human-readable size (e.g. `10MB`, `1GiB`) into bytes.
+fn parse_size(s: &str) -> Result<u64, String> {
+    utils::parse_bandwidth(s).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,5 +981,56 @@ mod tests {
         let parsed =
             SnapshotArgsParse::try_parse_from(["--readers", "8"]).expect("--readers 8 must parse");
         assert_eq!(parsed.args.num_readers, Some(8));
+    }
+
+    #[test]
+    fn exclude_larger_than_parses_sizes() {
+        let parsed = SnapshotArgsParse::try_parse_from(["--exclude-larger-than", "10MB"])
+            .expect("--exclude-larger-than 10MB must parse");
+        assert_eq!(parsed.args.exclude_larger_than, Some(10_000_000));
+
+        let parsed = SnapshotArgsParse::try_parse_from(["--exclude-larger-than", "2M"])
+            .expect("--exclude-larger-than 2M must parse");
+        assert_eq!(parsed.args.exclude_larger_than, Some(2 * 1024 * 1024));
+    }
+
+    #[test]
+    fn exclude_larger_than_rejects_garbage() {
+        let err = SnapshotArgsParse::try_parse_from(["--exclude-larger-than", "notbytes"])
+            .expect_err("invalid size must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn exclude_if_present_is_repeatable() {
+        let parsed = SnapshotArgsParse::try_parse_from([
+            "--exclude-if-present",
+            "CACHEDIR.TAG",
+            "--exclude-if-present",
+            ".nobackup",
+        ])
+        .expect("repeated --exclude-if-present must parse");
+        assert_eq!(
+            parsed.args.exclude_if_present,
+            Some(vec!["CACHEDIR.TAG".to_string(), ".nobackup".to_string()])
+        );
+    }
+
+    #[test]
+    fn host_flag_overrides_hostname() {
+        let parsed = SnapshotArgsParse::try_parse_from(["--host", "my-host"])
+            .expect("--host my-host must parse");
+        assert_eq!(parsed.args.hostname, Some("my-host".to_string()));
+
+        let options = SnapshotRunOptions::from(&parsed.args);
+        assert_eq!(options.hostname, Some("my-host".to_string()));
+    }
+
+    #[test]
+    fn exclude_caches_maps_to_cachedir_marker() {
+        let parsed = SnapshotArgsParse::try_parse_from(["--exclude-caches"])
+            .expect("--exclude-caches must parse");
+        let options = SnapshotRunOptions::from(&parsed.args);
+        assert_eq!(options.exclude_if_present, vec!["CACHEDIR.TAG".to_string()]);
     }
 }

@@ -20,8 +20,11 @@ use crate::{
     common::error::{MapacheError, Result},
     common::{BlobType, ID, SaveID, traits::BlobSaver},
     fs::{
-        calculate_lcp, filesystem::fill_device_id, filter::PathFilter,
-        get_absolute_normalized_path, get_intermediate_paths, node::Node,
+        calculate_lcp,
+        filesystem::fill_device_id,
+        filter::{PathFilter, WalkOptions},
+        get_absolute_normalized_path, get_intermediate_paths,
+        node::Node,
     },
     repository::repo::Repository,
 };
@@ -88,6 +91,7 @@ struct FSNodeState {
     stack: Vec<(Arc<PathBuf>, std::ffi::OsString, Option<Result<Node>>)>,
     intermediate_paths: Vec<(PathBuf, usize, Option<Node>)>,
     filter: Arc<PathFilter>,
+    walk_options: WalkOptions,
     with_atime: bool,
     one_file_system: bool,
     skipped_items: Option<Arc<AtomicU64>>,
@@ -107,7 +111,15 @@ impl FSNodeStream {
         exclude_paths: Vec<PathBuf>,
         with_atime: bool,
     ) -> Result<Self> {
-        Self::from_paths_inner(paths, exclude_paths, with_atime, false, None).await
+        Self::from_paths_inner(
+            paths,
+            exclude_paths,
+            with_atime,
+            false,
+            None,
+            WalkOptions::default(),
+        )
+        .await
     }
 
     pub(crate) async fn from_paths_tracking_skips(
@@ -116,6 +128,7 @@ impl FSNodeStream {
         with_atime: bool,
         one_file_system: bool,
         skipped_items: Arc<AtomicU64>,
+        walk_options: WalkOptions,
     ) -> Result<Self> {
         Self::from_paths_inner(
             paths,
@@ -123,6 +136,7 @@ impl FSNodeStream {
             with_atime,
             one_file_system,
             Some(skipped_items),
+            walk_options,
         )
         .await
     }
@@ -133,6 +147,7 @@ impl FSNodeStream {
         with_atime: bool,
         one_file_system: bool,
         skipped_items: Option<Arc<AtomicU64>>,
+        walk_options: WalkOptions,
     ) -> Result<Self> {
         tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?}, with_atime: {})", paths, exclude_paths, with_atime);
         let mut exclude_paths = exclude_paths;
@@ -175,6 +190,26 @@ impl FSNodeStream {
 
         let mut allowed_paths = allowed_paths;
 
+        // Drop oversized source entries (regular files larger than the
+        // configured limit) and record them so `--fail-on-skipped` can report
+        // the omission.
+        if walk_options.exclude_larger_than.is_some() {
+            let mut dropped = 0u64;
+            allowed_paths.retain(|(_, node)| {
+                if walk_options.exceeds_size_limit(node) {
+                    dropped += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            if dropped > 0
+                && let Some(skipped) = &skipped_items
+            {
+                skipped.fetch_add(dropped, AtomicOrdering::Relaxed);
+            }
+        }
+
         let raw_paths: Vec<PathBuf> = allowed_paths.iter().map(|(p, _)| p.clone()).collect();
         let common_root = calculate_lcp(&raw_paths, false);
         let (_, intermediate_map) = get_intermediate_paths(&common_root, &raw_paths);
@@ -200,6 +235,7 @@ impl FSNodeStream {
             stack,
             intermediate_paths,
             filter,
+            walk_options,
             with_atime,
             one_file_system,
             skipped_items,
@@ -294,6 +330,7 @@ impl FSNodeStream {
 
                 if node.is_dir() {
                     let filter = state.filter.clone();
+                    let walk_options = state.walk_options.clone();
                     let path_clone = path.clone();
                     let with_atime = state.with_atime;
                     let one_file_system = state.one_file_system;
@@ -343,14 +380,22 @@ impl FSNodeStream {
                             });
                         }
 
+                        // Apply `--exclude-if-present` / `--exclude-larger-than`.
+                        let skipped = walk_options.filter_children(&mut children);
+
                         children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
-                        Ok::<_, MapacheError>(children)
+                        Ok::<_, MapacheError>((children, skipped))
                     })
                     .await
                     .map_err(|e| MapacheError::Internal(format!("directory scanning panicked: {}", e)))?;
 
                     match children_res {
-                        Ok(children) => {
+                        Ok((children, skipped)) => {
+                            if skipped > 0
+                                && let Some(skipped_items) = &state.skipped_items
+                            {
+                                skipped_items.fetch_add(skipped, AtomicOrdering::Relaxed);
+                            }
                             // Only successfully stated children count towards the
                             // tree's expected size; failed ones are yielded as
                             // per-path errors and skipped by the consumer, so they
@@ -986,6 +1031,7 @@ mod tests {
                 let stats = crate::fs::scanner::scan_directories(
                     &[root.to_path_buf()],
                     Arc::new(PathFilter::new(None, Some(excluded_paths))),
+                    &WalkOptions::default(),
                     one_file_system,
                     &crate::ui::events::noop_sender(),
                     || false,

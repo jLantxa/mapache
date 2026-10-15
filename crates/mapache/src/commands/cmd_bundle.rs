@@ -450,6 +450,8 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         fail_on_skipped: false,
         with_atime: false,
         stdin: false,
+        walk_options: Default::default(),
+        hostname: None,
     };
 
     let fs_stream = FSNodeStream::from_paths(
@@ -473,6 +475,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         false,
         snapshot_options.absolute_source_paths.clone(),
         exclude_paths.clone(),
+        crate::fs::filter::WalkOptions::default(),
         false,
         status.clone(),
         event_sender.clone(),

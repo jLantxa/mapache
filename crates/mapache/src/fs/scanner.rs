@@ -3,7 +3,7 @@ use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 use crate::{
     fs::{
         filesystem::{fill_device_id, scan_metadata},
-        filter::PathFilter,
+        filter::{PathFilter, WalkOptions},
         node::NodeType,
         tree::crosses_filesystem_boundary,
     },
@@ -21,6 +21,7 @@ pub struct ScanStats {
 pub fn scan_directories<F>(
     paths: &[PathBuf],
     filter: Arc<PathFilter>,
+    walk_options: &WalkOptions,
     one_file_system: bool,
     event_sender: &EventSender,
     mut is_cancelled: F,
@@ -59,6 +60,17 @@ where
                     0
                 };
 
+                // Keep the progress estimate in sync with the archiver's
+                // `--exclude-larger-than`: oversized files are not snapshotted,
+                // so they must not inflate the expected item/byte counts.
+                if node.node_type == NodeType::File
+                    && walk_options
+                        .exclude_larger_than
+                        .is_some_and(|max| size > max)
+                {
+                    continue;
+                }
+
                 scan_items += 1;
                 scan_bytes += size;
 
@@ -77,6 +89,26 @@ where
                             .collect::<std::io::Result<Vec<_>>>()
                     }) {
                         Ok(entries) => {
+                            // Mirror `--exclude-if-present`: when a marker file
+                            // is present, only the marker files are kept.
+                            let entries: Vec<_> = if walk_options
+                                .exclude_if_present
+                                .iter()
+                                .any(|marker| entries.iter().any(|name| name == marker))
+                            {
+                                entries
+                                    .into_iter()
+                                    .filter(|name| {
+                                        walk_options
+                                            .exclude_if_present
+                                            .iter()
+                                            .any(|marker| name == marker)
+                                    })
+                                    .collect()
+                            } else {
+                                entries
+                            };
+
                             for name in entries {
                                 stack.push_back((current.join(name), node.dev));
                             }
@@ -113,6 +145,7 @@ where
 pub fn spawn_background_scanner<F>(
     paths: Vec<PathBuf>,
     exclude_paths: Vec<PathBuf>,
+    walk_options: WalkOptions,
     one_file_system: bool,
     event_sender: EventSender,
     is_cancelled: F,
@@ -126,7 +159,14 @@ where
         let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
         let sender = event_sender.clone();
         let res = tokio::task::spawn_blocking(move || {
-            scan_directories(&paths, filter, one_file_system, &sender, is_cancelled)
+            scan_directories(
+                &paths,
+                filter,
+                &walk_options,
+                one_file_system,
+                &sender,
+                is_cancelled,
+            )
         })
         .await;
 

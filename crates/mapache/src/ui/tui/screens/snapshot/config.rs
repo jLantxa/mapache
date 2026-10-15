@@ -202,6 +202,9 @@ impl SnapshotForm {
                 .get_text_by_label("Exclude file:")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
+            exclude_if_present: Vec::new(),
+            exclude_larger_than: None,
+            hostname: None,
             tags,
             description,
             no_scan: self.form.get_toggle_by_label("No scan:").unwrap_or(false),

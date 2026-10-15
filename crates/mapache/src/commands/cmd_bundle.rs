@@ -214,9 +214,14 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS, value_parser = parse_readers)]
     pub readers: usize,
 
-    /// Bundle format version (1 or 2). v2 includes ECC protection.
-    // TODO(v1-removal): Remove --format flag, always use v2.
-    #[clap(long, default_value_t = repository::repo::THIS_REPOSITORY_VERSION)]
+    /// Bundle format version.
+    ///
+    /// Not exposed on the command line: new bundles are always written in the
+    /// current format. Retained as an internal knob so integration tests can
+    /// still construct v1 bundles to exercise the read paths until v1 support
+    /// is removed.
+    // TODO(v1-removal): Remove this field along with v1 support.
+    #[clap(skip = repository::repo::THIS_REPOSITORY_VERSION)]
     pub format: u32,
 
     /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
@@ -272,7 +277,7 @@ impl Default for CmdArgs {
             allow_other: false,
             metadata_only: false,
             data_cache_size_mib: 256.0,
-            format: crate::repository::repo::THIS_REPOSITORY_VERSION,
+            format: repository::repo::THIS_REPOSITORY_VERSION,
             ecc: None,
             internal_password: None,
             calibrate_kdf: false,
@@ -293,7 +298,7 @@ impl Default for CmdArgs {
             exclude: vec![],
             as_root: None,
             readers: DEFAULT_SNAPSHOT_READERS,
-            format: crate::repository::repo::THIS_REPOSITORY_VERSION,
+            format: repository::repo::THIS_REPOSITORY_VERSION,
             ecc: None,
             internal_password: None,
             calibrate_kdf: false,
@@ -302,20 +307,6 @@ impl Default for CmdArgs {
 }
 
 pub async fn run(global: &crate::commands::GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
-    // TODO(v1-removal): Remove format validation and the v1 branch.
-    if args.format < 1 || args.format > 2 {
-        return Err(BundleError::Config(format!(
-            "unsupported bundle format: {} (supported: 1, 2)",
-            args.format
-        )));
-    }
-
-    if args.format < 2 && args.ecc.is_some() {
-        return Err(BundleError::Config(
-            "ECC is not supported in bundle format v1; use format 2".to_string(),
-        ));
-    }
-
     if args.as_root == Some(true) && !args.bundle {
         return Err(BundleError::Config(
             "--as-root can only be used with bundle mode".to_string(),
@@ -362,11 +353,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         None => cli::request_new_password("Enter bundle password", "Confirm password")
             .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     };
-
-    // TODO(v1-removal): Remove v1 branch, always use ECC.
-    if args.format < 2 {
-        warn_v1_bundle();
-    }
 
     let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
 
@@ -681,15 +667,6 @@ async fn export_snapshot_impl(
     let cleanup_handler = CleanupHandler::new();
     cleanup_handler.add_lock(lock_handle);
 
-    // Block exporting v2 repos to v1 bundles and vice versa.
-    let repo_version = repo.repo_version();
-    if args.format != repo_version {
-        return Err(BundleError::Config(format!(
-            "cannot export v{} repository to a v{} bundle",
-            repo_version, args.format
-        )));
-    }
-
     repo.reload_master_index().await?;
 
     // Resolve snapshot (supports "latest", prefix, or full ID)
@@ -713,10 +690,6 @@ async fn export_snapshot_impl(
     }
 
     // Create bundle writer
-    // TODO(v1-removal): Remove v1 branch, always use ECC.
-    if args.format < 2 {
-        warn_v1_bundle();
-    }
     let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
     let bundle_writer = Arc::new(
         BundleWriter::new(

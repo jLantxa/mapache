@@ -501,14 +501,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_v2_bundle_export_rejected_by_v1_repo() -> Result<()> {
+    async fn test_v1_repo_export_succeeds() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
         let synthetic = SyntheticData::new(dataset);
         let backup_data_path = ctx.setup_backup_data(&synthetic)?;
 
-        // Init a v2 repo and create a snapshot
-        ctx.init_repo().await?;
+        // Init a v1 repo and create a snapshot
+        ctx.init_builder()
+            .format(1)
+            .run(&ctx.global)
+            .await
+            .context("Failed to init v1 repo")?;
         ctx.snapshot_builder(vec![backup_data_path.clone()])
             .no_scan(true)
             .run(&ctx.global)
@@ -517,28 +521,17 @@ mod tests {
         let src_ids = ctx.get_snapshot_ids()?;
         let snap_prefix = &src_ids[0][..8];
 
-        // Exporting from a v2 repo to a v1 bundle should fail
-        let bundle_path = ctx._tmp_dir.path().join("v2_to_v1_export.mapache");
-        let result = ctx
-            .bundle_builder()
+        // v1 repositories remain readable: exporting a snapshot produces a
+        // bundle in the current (v2) format.
+        let bundle_path = ctx._tmp_dir.path().join("v1_repo_export.mapache");
+        ctx.bundle_builder()
             .export_snapshot(UseSnapshot::SnapshotId(snap_prefix.to_string()))
-            .format(1)
             .output(bundle_path.clone())
             .password("pass".to_string())
             .run(&ctx.global.clone())
-            .await;
+            .await?;
 
-        assert!(
-            result.is_err(),
-            "exporting v2 repo snapshot to v1 bundle should fail"
-        );
-        assert!(
-            result
-                .unwrap_err()
-                .downcast_ref::<BundleError>()
-                .is_some_and(|e| matches!(e, BundleError::Config(_))),
-            "expected BundleError::Config"
-        );
+        assert!(bundle_path.exists(), "bundle was not created");
 
         Ok(())
     }

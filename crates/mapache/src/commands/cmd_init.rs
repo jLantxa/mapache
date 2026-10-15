@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{Compression, GlobalArgs, ToExitCode},
+    commands::{GlobalArgs, ToExitCode},
     common::{ID, defaults::SHORT_REPO_ID_LEN, error::MapacheError},
     repository::{
         manifest::EccConfig,
@@ -51,9 +51,14 @@ impl ToExitCode for InitError {
         storage bucket. The storage backend is determined by the --repo URL scheme."
 )]
 pub struct CmdArgs {
-    /// Repository format version (1 or 2)
-    // TODO(v1-removal): Remove --format flag, always use v2.
-    #[clap(long, default_value_t = THIS_REPOSITORY_VERSION)]
+    /// Repository format version.
+    ///
+    /// Not exposed on the command line: `init` always creates a repository in
+    /// the current format. Retained as an internal knob so integration tests
+    /// can still construct v1 repositories to exercise the read and migrate
+    /// paths until v1 support is removed.
+    // TODO(v1-removal): Remove this field along with v1 support.
+    #[clap(skip = THIS_REPOSITORY_VERSION)]
     pub format: u32,
 
     /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
@@ -72,30 +77,6 @@ pub struct CmdArgs {
 const INIT_MSG: &str = "init";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitError> {
-    // TODO(v1-removal): Remove format validation and the v1 branch.
-    if args.format < 1 || args.format > 2 {
-        return Err(InitError::RepoInitError(format!(
-            "unsupported repository format: {} (supported: 1, 2)",
-            args.format
-        )));
-    }
-
-    // TODO(v1-removal): The v1 format has no per-blob compression marker.
-    if args.format < 2 && matches!(global_args.compression_level, Compression::None) {
-        return Err(InitError::RepoInitError(
-            "compression 'none' is not supported in repository format v1; \
-             use format 2 or a compression preset"
-                .to_string(),
-        ));
-    }
-
-    // ECC is only supported on v2+ repos.
-    if args.format < 2 && args.ecc.is_some() {
-        return Err(InitError::RepoInitError(
-            "ECC is not supported in repository format v1; use format 2".to_string(),
-        ));
-    }
-
     let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
 
     tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);

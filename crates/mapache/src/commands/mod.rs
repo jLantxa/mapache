@@ -559,7 +559,7 @@ fn pack_size_parser(s: &str) -> std::result::Result<f32, String> {
     Ok(val)
 }
 
-#[derive(Debug, Copy, Clone, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Compression {
     None,

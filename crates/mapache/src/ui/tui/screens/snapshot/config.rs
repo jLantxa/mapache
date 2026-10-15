@@ -104,6 +104,20 @@ impl SnapshotForm {
                     config_defaults
                         .and_then(|cfg| cfg.num_packers)
                         .unwrap_or(DEFAULT_SNAPSHOT_PACKERS) as u32).help("Number of parallel packers used to write blobs.").bounds(1, u32::MAX),
+            FormField::choice(
+                "Compression:",
+                0,
+                vec![
+                    "Default".to_string(),
+                    "None".to_string(),
+                    "Auto".to_string(),
+                    "Fastest".to_string(),
+                    "Fast".to_string(),
+                    "Balanced".to_string(),
+                    "Better".to_string(),
+                    "Best".to_string(),
+                ],
+            ).help("Compression preset for this snapshot; 'Default' keeps the repository default."),
 
             FormField::action("Start Snapshot"),
         ];
@@ -289,6 +303,19 @@ impl SnapshotForm {
                 .form
                 .get_number_by_label("Packers:")
                 .unwrap_or(DEFAULT_SNAPSHOT_PACKERS as u32) as usize,
+            compression: self
+                .form
+                .get_choice_by_label("Compression:")
+                .and_then(|idx| match idx {
+                    1 => Some(commands::Compression::None),
+                    2 => Some(commands::Compression::Auto),
+                    3 => Some(commands::Compression::Fastest),
+                    4 => Some(commands::Compression::Fast),
+                    5 => Some(commands::Compression::Balanced),
+                    6 => Some(commands::Compression::Better),
+                    7 => Some(commands::Compression::Best),
+                    _ => None,
+                }),
         }
     }
 }
@@ -562,6 +589,30 @@ mod tests {
         type_into_focused(&mut form, "notbytes");
         assert!(form.exclude_larger_than().is_err());
         assert!(!form.validate());
+    }
+
+    #[test]
+    fn compression_choice_maps_to_preset() {
+        let mut form = make_form_with_paths(&["data"]);
+        assert_eq!(form.to_snapshot_options().compression, None);
+
+        // Cycle right to the "None" preset (index 1).
+        form.form.focus_field("Compression:");
+        form.form.handle_key(KeyCode::Right);
+        assert_eq!(
+            form.to_snapshot_options().compression,
+            Some(commands::Compression::None)
+        );
+
+        // Right, Right, Right lands on index 4 ("Fast").
+        form.form.focus_field("Compression:");
+        form.form.handle_key(KeyCode::Right);
+        form.form.handle_key(KeyCode::Right);
+        form.form.handle_key(KeyCode::Right);
+        assert_eq!(
+            form.to_snapshot_options().compression,
+            Some(commands::Compression::Fast)
+        );
     }
 
     #[test]

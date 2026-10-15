@@ -14,7 +14,7 @@ use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProcessSummary},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot,
+        Compression, EMPTY_TAG_MARK, GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot,
         cleanup::CleanupHandler, find_use_snapshot, merge_flag, merge_opt, parse_positive_usize,
         parse_tags, with_repository_lock,
     },
@@ -300,6 +300,9 @@ pub struct SnapshotRunOptions {
     pub num_packers: usize,
     pub stdin: bool,
     pub hostname: Option<String>,
+    /// Compression preset override for this snapshot. `None` keeps the
+    /// repository default (the global `--compression` preset).
+    pub compression: Option<Compression>,
 }
 
 impl From<&CmdArgs> for SnapshotRunOptions {
@@ -329,6 +332,7 @@ impl From<&CmdArgs> for SnapshotRunOptions {
                 .unwrap_or(common::defaults::DEFAULT_SNAPSHOT_PACKERS),
             stdin: args.stdin,
             hostname: args.hostname.clone(),
+            compression: None,
         }
     }
 }
@@ -559,6 +563,13 @@ pub(crate) async fn run_with_repo(
     parent_snapshot_pair: Option<SnapshotPair>,
     shutdown_signal: Option<Arc<AtomicBool>>,
 ) -> Result<SnapshotOutcome, SnapshotError> {
+    // Apply a per-snapshot compression override, if any. Interactive callers
+    // (the TUI) use this to pick a preset without reopening the repository.
+    let repo = match options.compression {
+        Some(compression) => repo.with_compression(compression)?,
+        None => repo,
+    };
+
     let as_root = options.as_root;
     let skip_if_unchanged = options.skip_if_unchanged;
     let num_readers = options.num_readers;

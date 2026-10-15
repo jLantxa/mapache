@@ -97,6 +97,19 @@ impl SecureStorage {
         self
     }
 
+    /// Returns a copy of this storage that compresses at `level`.
+    ///
+    /// The cipher and nonce placement are preserved; the compressor pool is
+    /// left empty and repopulated lazily.
+    pub fn with_compression_level(&self, level: i32) -> Self {
+        Self {
+            compression_level: level,
+            cipher: self.cipher.clone(),
+            nonce_at_end: AtomicBool::new(self.nonce_at_end()),
+            compressor_pool: Mutex::new(Vec::new()),
+        }
+    }
+
     /// Set a 32-byte key and initialize the cipher (immutable afterward)
     pub fn with_key(mut self, key: &[u8]) -> Result<Self> {
         if key.len() != 32 {

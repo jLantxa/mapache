@@ -618,6 +618,47 @@ impl Repository {
         self.secure_storage.clone()
     }
 
+    /// Returns a repository handle with a different compression preset.
+    ///
+    /// The backend, cipher and master index are shared with `self`; only the
+    /// compression preset (and the zstd level used to encode new blobs) differ.
+    /// This lets a single snapshot override the repository-wide default without
+    /// reopening the repository.
+    pub(crate) fn with_compression(&self, compression: Compression) -> Result<Arc<Self>> {
+        // TODO(v1-removal): The v1 format has no per-blob compression marker.
+        if matches!(compression, Compression::None) && !self.supports_compression_none() {
+            return Err(MapacheError::Repo(
+                "compression 'none' is not supported in repository format v1; \
+                 migrate the repository to v2 first"
+                    .to_string(),
+            ));
+        }
+
+        let secure_storage = Arc::new(
+            self.secure_storage
+                .with_compression_level(compression.to_level()),
+        );
+
+        Ok(Arc::new(Self {
+            manifest: self.manifest.clone(),
+            repo_version: self.repo_version,
+            backend: self.backend.clone(),
+            secure_storage,
+            compression,
+            compress_policy: self.compress_policy.clone(),
+            objects_path: self.objects_path.clone(),
+            snapshot_path: self.snapshot_path.clone(),
+            index_path: self.index_path.clone(),
+            keys_path: self.keys_path.clone(),
+            master_index: self.master_index.clone(),
+            locks_path: self.locks_path.clone(),
+            max_packer_size: self.max_packer_size,
+            pack_saver_tx: parking_lot::RwLock::new(None),
+            pack_saver_handle: parking_lot::RwLock::new(None),
+            stats: RepoStats::default(),
+        }))
+    }
+
     /// Decides whether a blob should be compressed.
     ///
     /// v1 has no per-blob compression marker, so it always compresses.
@@ -2158,6 +2199,68 @@ mod tests {
 
         let loaded_tree = repo.load_blob(&tree_id).await?;
         assert_eq!(loaded_tree, tree_data);
+
+        Ok(())
+    }
+
+    /// A per-snapshot compression override must change the encoding preset used
+    /// for new blobs while sharing the backend and master index with the handle
+    /// it was derived from.
+    #[tokio::test]
+    async fn test_with_compression_overrides_preset() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        // `None` disables blob compression, which is observable in the index.
+        let uncompressed = repo.with_compression(Compression::None)?;
+        uncompressed.init_pack_saver(1)?;
+
+        let data = vec![b'A'; 64 * 1024];
+        let id = uncompressed.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(&data),
+            SaveID::CalculateID,
+        )?;
+        uncompressed.flush_and_finalize_pack_saver().await?;
+
+        let loc = uncompressed
+            .index()
+            .get_data(&id)
+            .expect("blob must be indexed");
+        assert!(!loc.compressed, "'none' override must skip zstd");
+
+        // The shared index makes the blob readable through the original handle.
+        assert_eq!(repo.load_blob(&id).await?, data);
+
+        Ok(())
+    }
+
+    /// The v1 format has no per-blob compression marker, so `none` is rejected.
+    #[tokio::test]
+    async fn test_with_compression_rejects_none_on_v1() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(1, &auth, None, backend.clone(), None, false).await?;
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        assert!(matches!(
+            repo.with_compression(Compression::None),
+            Err(MapacheError::Repo(_))
+        ));
+        // Real compression presets remain allowed on v1.
+        assert!(repo.with_compression(Compression::Fast).is_ok());
 
         Ok(())
     }

@@ -16,6 +16,7 @@ use crate::{
 mod app;
 mod background;
 mod help;
+mod logs;
 mod screens;
 #[cfg(test)]
 mod test_support;

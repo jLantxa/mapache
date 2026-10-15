@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 
 use async_trait::async_trait;
 use chrono::Local;
@@ -14,6 +14,7 @@ use ratatui::{
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
     common::{
+        ID,
         defaults::{APP_NAME, SHORT_SNAPSHOT_ID_LEN},
         error::Result,
         global::THIS_MAPACHE_VERSION,
@@ -25,6 +26,7 @@ use crate::{
     },
     ui::tui::{
         app::{Screen, Transition},
+        background::BackgroundTask,
         screens::{
             clean::CleanScreen, diff::DiffScreen, find::FindScreen, forget::ForgetScreen,
             restore::RestoreScreen, snapshot::SnapshotCreateScreen, snapshot_cells,
@@ -32,8 +34,8 @@ use crate::{
         },
         theme,
         widgets::{
-            FilterAction, FilterState, StateNavigation, ToastSink, click_to_index,
-            impl_attach_toasts, truncate_with_ellipsis,
+            FilterAction, FilterState, Spinner, StateNavigation, ToastSink, click_to_index,
+            impl_attach_toasts, text_width, truncate_with_ellipsis,
         },
     },
     utils,
@@ -181,7 +183,7 @@ fn menu_lines(
     // `key_hint` renders " key " + " label ", i.e. key+label+4 columns.
     let widths: Vec<usize> = entries
         .iter()
-        .map(|item| item.key.chars().count() + item.label.chars().count() + 4)
+        .map(|item| text_width(item.key) + text_width(item.label) + 4)
         .collect();
     theme::wrap_rows(&widths, width as usize)
         .into_iter()
@@ -236,6 +238,14 @@ pub struct DashboardScreen {
     diff_source: Option<usize>,
     needs_reload: bool,
 
+    /// A background snapshot reload is in flight. The UI stays responsive and
+    /// shows a loading state until [`DashboardScreen::poll_load`] lands it.
+    loading: bool,
+    load_task: Option<BackgroundTask<Vec<SnapshotEntry>>>,
+    /// Snapshot selected before a reload, restored once the new list arrives.
+    pending_selection: Option<ID>,
+    spinner: Spinner,
+
     menu_cursor: usize,
     menu_focused: bool,
 
@@ -271,52 +281,99 @@ impl DashboardScreen {
             },
             diff_source: None,
             needs_reload: true,
+            loading: false,
+            load_task: None,
+            pending_selection: None,
+            spinner: Spinner::default(),
             menu_cursor: 0,
             menu_focused: false,
             toasts: ToastSink::default(),
         }
     }
 
-    pub async fn load_snapshots(&mut self) -> Result<()> {
-        // Reload master index first to ensure we see any new data from other processes
-        self.repo.reload_master_index().await?;
-
-        // Remember which snapshot was selected so we can restore it after reload
-        let selected_id = self
-            .table_state
-            .selected()
-            .and_then(|display_idx| self.display_entry(display_idx).map(|e| e.id));
+    /// Loads the snapshot list (master index reload plus active and dropped
+    /// snapshot streams) off the UI thread.
+    async fn load_entries(
+        repo: Arc<Repository>,
+    ) -> std::result::Result<Vec<SnapshotEntry>, String> {
+        repo.reload_master_index()
+            .await
+            .map_err(|error| error.to_string())?;
 
         let (active_stream, dropped_stream) = futures::try_join!(
-            SnapshotStream::new(self.repo.clone()),
-            SnapshotStream::dropped(self.repo.clone())
-        )?;
+            SnapshotStream::new(repo.clone()),
+            SnapshotStream::dropped(repo.clone())
+        )
+        .map_err(|error| error.to_string())?;
 
         let (active_entries, mut dropped_entries) = futures::try_join!(
             active_stream.collect_entries(true),
             dropped_stream.collect_entries(false)
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
 
         let mut entries = active_entries;
         entries.append(&mut dropped_entries);
-
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.snapshot.timestamp));
-        self.stats = Self::compute_stats(&entries);
-        self.snapshots = Arc::new(entries);
-        self.update_search_cache();
-        self.apply_filter();
+        Ok(entries)
+    }
 
-        // Restore the previous selection if the snapshot still exists
-        if let Some(id) = selected_id
-            && let Some(idx) = self.snapshots.iter().position(|e| e.id == id)
-            && let Some(display_idx) = self.filtered_indices.iter().position(|&i| i == idx)
-        {
-            self.table_state.select(Some(display_idx));
+    /// Starts a background snapshot reload, remembering the current selection so
+    /// it can be restored once the new list arrives. Returns immediately.
+    fn start_load(&mut self) {
+        // A superseded load can only be observed through its receiver, which we
+        // drop here; its worker observes the cancellation flag and exits.
+        self.request_shutdown();
+        self.load_task = None;
+
+        self.pending_selection = self
+            .table_state
+            .selected()
+            .and_then(|display_idx| self.display_entry(display_idx).map(|e| e.id));
+        self.loading = true;
+
+        let repo = self.repo.clone();
+        self.load_task = Some(BackgroundTask::spawn_async(
+            Arc::new(AtomicBool::new(false)),
+            async move { Self::load_entries(repo).await },
+        ));
+    }
+
+    /// Polls the background reload, folding a finished result into the UI.
+    fn poll_load(&mut self) {
+        let Some(task) = self.load_task.as_mut() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            return;
+        };
+        self.load_task = None;
+        self.loading = false;
+
+        match result {
+            Ok(entries) => {
+                self.stats = Self::compute_stats(&entries);
+                self.snapshots = Arc::new(entries);
+                self.update_search_cache();
+                self.apply_filter();
+
+                // Restore the previous selection if the snapshot still exists.
+                if let Some(id) = self.pending_selection.take()
+                    && let Some(idx) = self.snapshots.iter().position(|e| e.id == id)
+                    && let Some(display_idx) = self.filtered_indices.iter().position(|&i| i == idx)
+                {
+                    self.table_state.select(Some(display_idx));
+                }
+
+                self.diff_source = None;
+                self.needs_reload = false;
+            }
+            Err(error) => {
+                tracing::error!("Failed to load snapshots: {}", error);
+                self.toasts
+                    .error(format!("Failed to load snapshots: {error}"));
+            }
         }
-
-        self.diff_source = None;
-        self.needs_reload = false;
-        Ok(())
     }
 
     fn compute_stats(entries: &[SnapshotEntry]) -> DashboardStats {
@@ -864,18 +921,18 @@ impl DashboardScreen {
                         self.toasts
                             .error(format!("Failed to recall snapshot {}: {e}", entry.id));
                     } else {
-                        let _ = self.load_snapshots().await;
+                        self.toasts
+                            .success(format!("Recalled snapshot {}.", entry.id));
+                        self.needs_reload = true;
+                        self.start_load();
                     }
                 }
                 None
             }
             MenuAction::Refresh => {
+                self.toasts.info("Refreshing snapshots\u{2026}");
                 self.needs_reload = true;
-                if let Err(e) = self.load_snapshots().await {
-                    tracing::error!("Failed to refresh snapshots: {}", e);
-                    self.toasts
-                        .error(format!("Failed to refresh snapshots: {e}"));
-                }
+                self.start_load();
                 None
             }
             MenuAction::Quit => Some(Transition::Quit),
@@ -891,6 +948,8 @@ impl DashboardScreen {
 #[async_trait]
 impl Screen for DashboardScreen {
     fn render(&mut self, frame: &mut Frame) {
+        self.poll_load();
+
         let inner_content = frame.area().inner(theme::CONTENT_MARGIN);
 
         let diff_status_height: u16 = if self.diff_source.is_some() { 2 } else { 1 };
@@ -919,7 +978,17 @@ impl Screen for DashboardScreen {
         }
         self.last_height = chunks[2].height.saturating_sub(2);
         self.last_snapshot_area = chunks[2];
-        self.render_snapshot_list(frame, chunks[2]);
+        if self.loading && self.snapshots.is_empty() {
+            let ch = self.spinner.tick();
+            theme::empty_state(
+                frame,
+                chunks[2],
+                "Snapshots",
+                &format!("{ch} Loading snapshots\u{2026}"),
+            );
+        } else {
+            self.render_snapshot_list(frame, chunks[2]);
+        }
         if info_height > 0 {
             self.render_selected_info(frame, chunks[3]);
         }
@@ -1003,14 +1072,15 @@ impl Screen for DashboardScreen {
     }
 
     async fn on_become_active(&mut self) -> Result<()> {
-        if self.needs_reload {
-            self.load_snapshots().await?;
+        if self.needs_reload && !self.loading {
+            self.start_load();
         }
         Ok(())
     }
 
     async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
         if self.filter.is_active()
+            || self.loading
             || self.needs_reload
             || !matches!(
                 mouse.kind,
@@ -1056,6 +1126,22 @@ impl Screen for DashboardScreen {
 
     fn text_input_active(&self) -> bool {
         self.filter.is_active()
+    }
+
+    fn request_shutdown(&mut self) {
+        if let Some(task) = &self.load_task {
+            task.cancel();
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        if let Some(task) = &mut self.load_task {
+            task.shutdown().await;
+        }
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.loading
     }
 
     impl_attach_toasts!(toasts);

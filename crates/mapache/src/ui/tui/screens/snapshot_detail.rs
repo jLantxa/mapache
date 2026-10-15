@@ -264,7 +264,6 @@ impl Screen for SnapshotDetailScreen {
 
         match key.code {
             KeyCode::Esc => Some(Transition::Pop),
-            KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Enter => {
                 let entry = self.entry().clone();
                 let tree_id = entry.snapshot.tree;

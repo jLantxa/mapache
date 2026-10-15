@@ -61,6 +61,10 @@
   - Forms validate input and ask for confirmation before discarding changed
     values. Forget applies host/tag filters and supports keep-min and force.
   - The dashboard header shows the session lock status.
+  - A notification centre (`Ctrl+N`) with the full history, `Info`/`Success`
+    notifications, click-to-dismiss toasts and `c` to clear it.
+  - A log overlay (`Ctrl+L`) showing recent log records; info-level records are
+    now captured even when `MAPACHE_DEBUG_LEVEL` is unset.
 
 ### Changed
 
@@ -93,6 +97,15 @@
     clamp to their range, and progress views list log entries chronologically.
   - Improved contrast, empty dashboard states and layout on narrow and wide
     terminals (wrapping, no table or popup overflow).
+  - The dashboard loads snapshots and the find/diff views run their work in the
+    background, so the UI stays responsive and long operations can be cancelled;
+    the TUI only redraws while something is animating.
+  - Layout, wrapping and truncation use Unicode display width, so wide (CJK)
+    glyphs and combining marks no longer misalign tables and popups.
+  - `q` now consistently returns to the previous screen on every sub-screen
+    (cancelling any running task) and only quits from the dashboard.
+  - Pressing Enter on a find result opens the file explorer on the matched
+    item's directory with the item selected, instead of the snapshot root.
 
 ## v0.7.1 (2026-10-05)
 

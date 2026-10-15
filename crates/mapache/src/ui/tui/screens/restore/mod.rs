@@ -171,7 +171,6 @@ impl Screen for RestoreScreen {
                     self.phase = RestorePhase::Config;
                     None
                 }
-                KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             },
             RestorePhase::Progress => self
@@ -211,6 +210,10 @@ impl Screen for RestoreScreen {
 
     async fn shutdown(&mut self) {
         self.session.shutdown().await;
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.phase == RestorePhase::Progress
     }
 }
 

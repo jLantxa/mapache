@@ -225,4 +225,8 @@ impl Screen for SnapshotCreateScreen {
     async fn shutdown(&mut self) {
         self.session.shutdown().await;
     }
+
+    fn wants_animation(&self) -> bool {
+        self.phase == SnapshotPhase::Progress
+    }
 }

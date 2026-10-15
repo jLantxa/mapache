@@ -69,16 +69,15 @@ impl<E, T: Send + 'static> TaskSession<E, T> {
         self.task.as_mut()?.poll()
     }
 
-    /// Applies the shared progress-view keys: `Esc` asks the worker to stop and
-    /// `q` quits the app. `cancelling` mirrors the request in the screen's
-    /// progress display.
+    /// Applies the shared progress-view keys: `Esc` asks the worker to stop.
+    /// `cancelling` mirrors the request in the screen's progress display.
+    /// (`q` is handled globally by `App`, which pops the screen and cancels.)
     pub fn handle_progress_key(
         &mut self,
         key: KeyCode,
         cancelling: &mut bool,
     ) -> Option<Transition> {
         match ProgressKey::from_key(key) {
-            ProgressKey::Quit => Some(Transition::Quit),
             ProgressKey::Cancel => {
                 self.request_shutdown();
                 *cancelling = true;
@@ -88,11 +87,9 @@ impl<E, T: Send + 'static> TaskSession<E, T> {
         }
     }
 
-    /// Applies the shared summary-view keys: `Enter`/`Esc` go back and `q`
-    /// quits the app.
+    /// Applies the shared summary-view keys: `Enter`/`Esc` go back.
     pub fn handle_summary_key(&mut self, key: KeyCode) -> Option<Transition> {
         match SummaryKey::from_key(key) {
-            SummaryKey::Quit => Some(Transition::Quit),
             SummaryKey::Done => Some(Transition::Pop),
             SummaryKey::None => None,
         }

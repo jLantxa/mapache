@@ -237,6 +237,10 @@ impl Screen for VerifyScreen {
     async fn shutdown(&mut self) {
         self.session.shutdown().await;
     }
+
+    fn wants_animation(&self) -> bool {
+        self.phase == VerifyPhase::Progress
+    }
 }
 
 impl VerifyScreen {

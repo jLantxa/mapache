@@ -323,7 +323,6 @@ impl Screen for StatsScreen {
                     None
                 }
                 KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             };
         }
@@ -334,7 +333,6 @@ impl Screen for StatsScreen {
 
         match key.code {
             KeyCode::Esc => Some(Transition::Pop),
-            KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Char('f') => {
                 self.toggle_full().await;
                 None
@@ -380,6 +378,10 @@ impl Screen for StatsScreen {
         if let Some(task) = &mut self.footers_task {
             task.shutdown().await;
         }
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.base_loading || self.footers_loading
     }
 }
 

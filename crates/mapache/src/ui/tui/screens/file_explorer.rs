@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -93,6 +93,81 @@ impl FileExplorerScreen {
             load_task: None,
             toasts: ToastSink::default(),
         })
+    }
+
+    /// Opens the explorer with `target` revealed: its containing directory is
+    /// shown with the target highlighted, instead of starting at the root.
+    ///
+    /// `target` is a path relative to the snapshot root, as produced by
+    /// [`crate::repository::repo::find_in_snapshot`].
+    pub async fn new_at(
+        repo: Arc<Repository>,
+        snapshot: SnapshotEntry,
+        root_tree_id: &ID,
+        target: &Path,
+    ) -> Result<Self> {
+        let mut screen = Self::new(repo, snapshot, root_tree_id).await?;
+        screen.reveal(target).await;
+        Ok(screen)
+    }
+
+    /// Descends into the directories leading to `target` and selects it.
+    ///
+    /// Resolution is best-effort: if a component is missing (or its tree cannot
+    /// be loaded) the explorer simply stays at the deepest directory reached,
+    /// which is still closer to the item than the root.
+    async fn reveal(&mut self, target: &Path) {
+        let mut components: Vec<String> = target
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(name) => name.to_str().map(str::to_owned),
+                _ => None,
+            })
+            .collect();
+
+        // The final component is the item itself; the rest are directories to
+        // descend into.
+        let Some(leaf) = components.pop() else {
+            return; // The root itself: nothing to reveal.
+        };
+
+        for dir_name in components {
+            let Some(tree_id) = self
+                .current_tree
+                .nodes
+                .iter()
+                .find(|node| node.name == dir_name)
+                .and_then(|node| node.tree)
+            else {
+                return;
+            };
+
+            match Tree::load_from_repo(&self.repo, &tree_id).await {
+                Ok(mut subtree) => {
+                    Self::sort_nodes(&mut subtree.nodes);
+                    let parent = std::mem::replace(&mut self.current_tree, subtree);
+                    self.path_stack.push(PathStackEntry {
+                        tree: parent,
+                        previous_selection: 0,
+                    });
+                    self.current_path.push(&dir_name);
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to reveal path component '{dir_name}': {error}");
+                    return;
+                }
+            }
+        }
+
+        if let Some(index) = self
+            .current_tree
+            .nodes
+            .iter()
+            .position(|node| node.name == leaf)
+        {
+            self.list_state.select(Some(index));
+        }
+        self.filter.clear();
     }
 
     fn sort_nodes(nodes: &mut [Node]) {
@@ -454,7 +529,6 @@ impl Screen for FileExplorerScreen {
             // receiver is dropped.
             return match key.code {
                 KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             };
         }
@@ -474,7 +548,6 @@ impl Screen for FileExplorerScreen {
                     Some(Transition::Pop)
                 }
             }
-            KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Char('/') => {
                 self.filter.open();
                 None
@@ -574,6 +647,22 @@ impl Screen for FileExplorerScreen {
 
     fn text_input_active(&self) -> bool {
         self.filter.is_active()
+    }
+
+    fn request_shutdown(&mut self) {
+        if let Some(task) = &self.load_task {
+            task.cancel();
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        if let Some(task) = &mut self.load_task {
+            task.shutdown().await;
+        }
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.loading
     }
 
     impl_attach_toasts!(toasts);
@@ -730,6 +819,73 @@ mod tests {
         assert_eq!(screen.current_tree.nodes.len(), 1);
         assert_eq!(screen.current_tree.nodes[0].name, "file.txt");
         assert_eq!(screen.current_path, PathBuf::from("/subdir"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn new_at_reveals_a_nested_item_instead_of_the_root() -> Result<()> {
+        let (repo, _root_id) = make_repo().await?;
+        let entry = SnapshotEntry {
+            id: ID::default(),
+            snapshot: Snapshot::default(),
+            active: true,
+        };
+
+        // Store /subdir/file.txt and a root that points at it.
+        repo.init_pack_saver(2)?;
+        let mut sub = Tree::new(Vec::new());
+        sub.nodes.push(Node {
+            name: "file.txt".into(),
+            ..Default::default()
+        });
+        let sub_id = sub
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        let mut root = Tree::new(Vec::new());
+        root.nodes.push(Node {
+            name: "subdir".into(),
+            tree: Some(sub_id),
+            ..Default::default()
+        });
+        repo.init_pack_saver(2)?;
+        let root_id = root
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        let screen =
+            FileExplorerScreen::new_at(repo, entry, &root_id, Path::new("subdir/file.txt")).await?;
+
+        assert_eq!(
+            screen.current_path,
+            PathBuf::from("/subdir"),
+            "the explorer should descend into the item's directory"
+        );
+        assert_eq!(screen.current_tree.nodes.len(), 1);
+        assert_eq!(screen.current_tree.nodes[0].name, "file.txt");
+        assert_eq!(
+            screen.list_state.selected(),
+            Some(0),
+            "the found item should be selected"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn new_at_stays_put_when_a_component_is_missing() -> Result<()> {
+        let (repo, root_id) = make_repo().await?;
+        let entry = SnapshotEntry {
+            id: ID::default(),
+            snapshot: Snapshot::default(),
+            active: true,
+        };
+
+        let screen =
+            FileExplorerScreen::new_at(repo, entry, &root_id, Path::new("nope/missing.txt"))
+                .await?;
+        assert_eq!(screen.current_path, PathBuf::from("/"));
         Ok(())
     }
 

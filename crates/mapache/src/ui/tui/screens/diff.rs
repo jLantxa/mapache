@@ -76,6 +76,7 @@ pub struct DiffScreen {
     toasts: ToastSink,
 
     rx: mpsc::UnboundedReceiver<Result<DiffLoadResult>>,
+    diff_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl DiffScreen {
@@ -104,6 +105,7 @@ impl DiffScreen {
             filter: FilterState::new(),
             toasts: ToastSink::default(),
             rx,
+            diff_task: None,
         }
     }
 
@@ -360,6 +362,11 @@ impl DiffScreen {
         self.error = None;
         self.spinner.reset();
 
+        // A new diff supersedes any load still in flight.
+        if let Some(handle) = self.diff_task.take() {
+            handle.abort();
+        }
+
         let (tx, rx) = mpsc::unbounded_channel();
         self.rx = rx;
 
@@ -369,10 +376,10 @@ impl DiffScreen {
         let target_idx = self.target_idx;
         let toasts = self.toasts.clone();
 
-        tokio::spawn(async move {
+        self.diff_task = Some(tokio::spawn(async move {
             let result = Self::diff_entries(repo, snapshots, source_idx, target_idx, toasts).await;
             let _ = tx.send(result);
-        });
+        }));
     }
 
     fn selected_entry(&self) -> Option<&DiffEntry> {
@@ -627,6 +634,11 @@ impl Screen for DiffScreen {
     async fn on_become_active(&mut self) -> Result<()> {
         self.repo.reload_master_index().await?;
 
+        // A new diff supersedes any load still in flight.
+        if let Some(handle) = self.diff_task.take() {
+            handle.abort();
+        }
+
         let (tx, rx) = mpsc::unbounded_channel();
         self.rx = rx;
 
@@ -636,10 +648,10 @@ impl Screen for DiffScreen {
         let target_idx = self.target_idx;
         let toasts = self.toasts.clone();
 
-        tokio::spawn(async move {
+        self.diff_task = Some(tokio::spawn(async move {
             let result = Self::diff_entries(repo, snapshots, source_idx, target_idx, toasts).await;
             let _ = tx.send(result);
-        });
+        }));
 
         Ok(())
     }
@@ -719,7 +731,6 @@ impl Screen for DiffScreen {
             // finishes harmlessly once its receiver is dropped.
             return match key.code {
                 KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             };
         }
@@ -739,7 +750,6 @@ impl Screen for DiffScreen {
                     Some(Transition::Pop)
                 }
             }
-            KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Enter | KeyCode::Right => {
                 self.toggle_current();
                 None
@@ -833,6 +843,20 @@ impl Screen for DiffScreen {
 
     fn text_input_active(&self) -> bool {
         self.filter.is_active()
+    }
+
+    fn request_shutdown(&mut self) {
+        if let Some(handle) = self.diff_task.take() {
+            handle.abort();
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        self.request_shutdown();
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.loading
     }
 
     impl_attach_toasts!(toasts);

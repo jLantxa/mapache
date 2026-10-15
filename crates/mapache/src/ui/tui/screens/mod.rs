@@ -17,6 +17,10 @@ pub mod verify;
 pub(crate) use snapshot_row::snapshot_cells;
 pub(crate) use task::TaskSession;
 
+// `q` is handled globally by `App`, which pops sub-screens (shutting their
+// tasks down) and only quits on the dashboard. These helpers therefore cover
+// just the keys that are specific to a running or finished task.
+
 /// A screen's response to a key pressed while a background task is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgressKey {
@@ -24,15 +28,12 @@ pub(crate) enum ProgressKey {
     None,
     /// `Esc`: ask the running task to stop.
     Cancel,
-    /// `q`: quit the application.
-    Quit,
 }
 
 impl ProgressKey {
-    /// Shared `Esc`/`q` handling for the progress phase of an action screen.
+    /// Shared `Esc` handling for the progress phase of an action screen.
     pub(crate) fn from_key(key: KeyCode) -> Self {
         match key {
-            KeyCode::Char('q') => Self::Quit,
             KeyCode::Esc => Self::Cancel,
             _ => Self::None,
         }
@@ -46,15 +47,12 @@ pub(crate) enum SummaryKey {
     None,
     /// `Enter`/`Esc`: dismiss the summary and go back.
     Done,
-    /// `q`: quit the application.
-    Quit,
 }
 
 impl SummaryKey {
-    /// Shared `Enter`/`Esc`/`q` handling for the summary phase.
+    /// Shared `Enter`/`Esc` handling for the summary phase.
     pub(crate) fn from_key(key: KeyCode) -> Self {
         match key {
-            KeyCode::Char('q') => Self::Quit,
             KeyCode::Enter | KeyCode::Esc => Self::Done,
             _ => Self::None,
         }

@@ -69,6 +69,7 @@ pub struct FindScreen {
     is_searching: bool,
     search_rx: Option<mpsc::UnboundedReceiver<SearchUpdate>>,
     search_cancel: Arc<AtomicBool>,
+    search_task: Option<tokio::task::JoinHandle<()>>,
     search_progress: Option<(usize, usize, usize)>,
     status_message: String,
 
@@ -94,6 +95,7 @@ impl FindScreen {
             is_searching: false,
             search_rx: None,
             search_cancel: Arc::new(AtomicBool::new(false)),
+            search_task: None,
             search_progress: None,
             status_message: "Type a glob pattern and press Enter to search".to_string(),
             last_height: 0,
@@ -120,13 +122,18 @@ impl FindScreen {
         self.filtered_indices.clear();
         self.focus = Focus::Input;
 
+        // A new search supersedes any running one.
+        if let Some(handle) = self.search_task.take() {
+            handle.abort();
+        }
+
         let cancel = Arc::new(AtomicBool::new(false));
         self.search_cancel = cancel.clone();
 
         let repo = self.repo.clone();
         let entries = self.snapshots.clone();
         let toasts = self.toasts.clone();
-        tokio::spawn(async move {
+        self.search_task = Some(tokio::spawn(async move {
             let total = entries.len();
             let mut all_results = Vec::new();
 
@@ -165,7 +172,7 @@ impl FindScreen {
             }
 
             let _ = tx.send(SearchUpdate::Done(all_results));
-        });
+        }));
     }
 
     fn check_search_updates(&mut self) {
@@ -494,6 +501,9 @@ impl Screen for FindScreen {
         if self.is_searching {
             if key.code == KeyCode::Esc {
                 self.search_cancel.store(true, Ordering::Relaxed);
+                if let Some(handle) = self.search_task.take() {
+                    handle.abort();
+                }
                 self.is_searching = false;
                 self.search_progress = None;
                 self.search_rx = None;
@@ -523,7 +533,6 @@ impl Screen for FindScreen {
             },
             Focus::Results => match key.code {
                 KeyCode::Esc => Some(Transition::Pop),
-                KeyCode::Char('q') => Some(Transition::Quit),
                 KeyCode::Char('/') => {
                     self.focus = Focus::Input;
                     None
@@ -531,8 +540,13 @@ impl Screen for FindScreen {
                 KeyCode::Enter => {
                     if let Some(result) = self.selected_result() {
                         let entry = result.snapshot_entry.clone();
+                        let path = result.path.clone();
                         let tree_id = entry.snapshot.tree;
-                        match FileExplorerScreen::new(self.repo.clone(), entry, &tree_id).await {
+                        // Open the explorer on the found item, not the snapshot
+                        // root, so the user lands where the match lives.
+                        match FileExplorerScreen::new_at(self.repo.clone(), entry, &tree_id, &path)
+                            .await
+                        {
                             Ok(explorer) => Some(Transition::Push(Box::new(explorer))),
                             Err(e) => {
                                 tracing::error!("Failed to open file explorer: {}", e);
@@ -612,6 +626,21 @@ impl Screen for FindScreen {
 
     fn text_input_active(&self) -> bool {
         matches!(self.focus, Focus::Input) && !self.is_searching
+    }
+
+    fn request_shutdown(&mut self) {
+        self.search_cancel.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.search_task.take() {
+            handle.abort();
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        self.request_shutdown();
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.is_searching
     }
 
     impl_attach_toasts!(toasts);

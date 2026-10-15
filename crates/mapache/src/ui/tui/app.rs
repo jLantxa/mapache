@@ -8,17 +8,20 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
-use ratatui::{Frame, Terminal, backend::Backend, style::Style, widgets::Block};
+use ratatui::{Frame, Terminal, backend::Backend, layout::Rect, style::Style, widgets::Block};
 
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
     common::error::{MapacheError, Result},
     repository::{lock::LockHandle, repo::Repository},
-    ui::tui::{
-        help,
-        screens::dashboard::DashboardScreen,
-        theme,
-        widgets::{ToastQueue, ToastSink},
+    ui::{
+        debug::LogBuffer,
+        tui::{
+            help, logs,
+            screens::dashboard::DashboardScreen,
+            theme,
+            widgets::{ToastQueue, ToastSink},
+        },
     },
 };
 
@@ -57,6 +60,13 @@ pub trait Screen: Send {
     /// Receives the shared notification sink when the screen joins the
     /// stack. Screens that can surface errors override this.
     fn attach_toasts(&mut self, _sink: ToastSink) {}
+
+    /// Whether this screen is animating — a spinner is spinning or a
+    /// background task is running. While nothing animates the run loop redraws
+    /// slowly instead of every frame, so an idle TUI does not burn CPU.
+    fn wants_animation(&self) -> bool {
+        false
+    }
 }
 
 pub enum Transition {
@@ -65,12 +75,26 @@ pub enum Transition {
     Quit,
 }
 
+/// A modal panel drawn over the active screen. Only one can be open at a time;
+/// while one is open it captures keyboard and mouse input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Overlay {
+    #[default]
+    None,
+    Help,
+    Notifications,
+    Logs,
+}
+
 pub struct App {
     stack: Vec<Box<dyn Screen>>,
     should_quit: bool,
     toasts: ToastSink,
-    help_visible: bool,
-    help_scroll: u16,
+    overlay: Overlay,
+    overlay_scroll: u16,
+    /// Area of the last rendered frame, used to hit-test toast clicks.
+    last_area: Rect,
+    log_buffer: Option<LogBuffer>,
 }
 
 impl App {
@@ -100,8 +124,10 @@ impl App {
             stack,
             should_quit: false,
             toasts,
-            help_visible: false,
-            help_scroll: 0,
+            overlay: Overlay::None,
+            overlay_scroll: 0,
+            last_area: Rect::default(),
+            log_buffer: crate::ui::debug::log_buffer(),
         }
     }
 
@@ -131,12 +157,29 @@ impl App {
             screen.on_become_active().await?;
         }
 
+        // Redraw every frame only while something is animated (a spinner or a
+        // running background task); otherwise wait longer between frames. The
+        // slow idle tick still prunes fading notifications and polls any
+        // background result, so no work is missed.
         while !self.should_quit {
+            let animating = self
+                .stack
+                .last()
+                .is_some_and(|screen| screen.wants_animation());
+            let toasts_pending = self.toasts.with_queue(|queue| !queue.is_empty());
+            let active = animating || toasts_pending;
+
             terminal
                 .draw(|frame| self.render(frame))
                 .map_err(|e| MapacheError::Internal(format!("terminal error: {e}")))?;
 
-            if event::poll(Duration::from_millis(100))? {
+            let timeout = if active {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(1000)
+            };
+
+            if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         self.handle_key(key).await;
@@ -160,48 +203,110 @@ impl App {
             _ => None,
         };
         if let Some(code) = code {
-            self.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
-                .await;
+            let key = KeyEvent::new(code, KeyModifiers::NONE);
+            if self.overlay == Overlay::None {
+                self.handle_key(key).await;
+            } else {
+                self.handle_overlay_key(key);
+            }
             return;
         }
 
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && let Some(active) = self.stack.last_mut()
-        {
-            active.handle_mouse(mouse).await;
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            // While an overlay is open it swallows clicks.
+            if self.overlay != Overlay::None {
+                return;
+            }
+
+            // A click on a toast dismisses it before anything else sees it.
+            let area = self.last_area;
+            if self
+                .toasts
+                .with_queue(|queue| queue.dismiss_at(area, mouse.column, mouse.row))
+            {
+                return;
+            }
+
+            if let Some(active) = self.stack.last_mut() {
+                active.handle_mouse(mouse).await;
+            }
+        }
+    }
+
+    /// Opens `overlay`, or closes it if it is already open.
+    fn toggle_overlay(&mut self, overlay: Overlay) {
+        self.overlay = if self.overlay == overlay {
+            Overlay::None
+        } else {
+            overlay
+        };
+        self.overlay_scroll = 0;
+    }
+
+    fn close_overlay(&mut self) {
+        self.overlay = Overlay::None;
+        self.overlay_scroll = 0;
+    }
+
+    fn scroll_overlay(&mut self, delta: i32) {
+        let next = self.overlay_scroll as i32 + delta;
+        self.overlay_scroll = next.max(0) as u16;
+    }
+
+    /// Handles a key while an overlay is open. Always consumes the key.
+    fn handle_overlay_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_overlay(),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_overlay(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_overlay(1),
+            KeyCode::PageUp => self.scroll_overlay(-10),
+            KeyCode::PageDown => self.scroll_overlay(10),
+            KeyCode::Home => self.overlay_scroll = 0,
+            KeyCode::End => self.overlay_scroll = u16::MAX,
+            KeyCode::Char('c') => match self.overlay {
+                Overlay::Notifications => self.toasts.clear(),
+                Overlay::Logs => {
+                    if let Some(buffer) = &self.log_buffer {
+                        buffer.clear();
+                    }
+                }
+                _ => {}
+            },
+            // `?` / `F1` closes the help overlay it opened.
+            KeyCode::Char('?') | KeyCode::F(1) if self.overlay == Overlay::Help => {
+                self.close_overlay();
+            }
+            _ => {}
         }
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
-        // Ctrl+C always quits, whatever the screen (or the help overlay)
-        // is doing. The run loop shuts the screens down on the way out.
+        // Ctrl+C always quits, whatever the screen (or an overlay) is doing.
+        // The run loop shuts the screens down on the way out.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
             return;
         }
 
-        if self.help_visible {
+        // Global overlay toggles work from anywhere, including inside an
+        // overlay (where they switch or close it).
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1) => {
-                    self.help_visible = false;
-                    self.help_scroll = 0;
+                KeyCode::Char('n') => {
+                    self.toggle_overlay(Overlay::Notifications);
+                    return;
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                KeyCode::Char('l') => {
+                    self.toggle_overlay(Overlay::Logs);
+                    return;
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.help_scroll = self.help_scroll.saturating_add(1);
-                }
-                KeyCode::PageUp => {
-                    self.help_scroll = self.help_scroll.saturating_sub(10);
-                }
-                KeyCode::PageDown => {
-                    self.help_scroll = self.help_scroll.saturating_add(10);
-                }
-                KeyCode::Home => self.help_scroll = 0,
-                KeyCode::End => self.help_scroll = u16::MAX,
                 _ => {}
             }
+        }
+
+        // While an overlay is open it owns every remaining key.
+        if self.overlay != Overlay::None {
+            self.handle_overlay_key(key);
             return;
         }
 
@@ -211,8 +316,7 @@ impl App {
             || (key.code == KeyCode::Char('?')
                 && !self.stack.last().is_some_and(|s| s.text_input_active()))
         {
-            self.help_visible = true;
-            self.help_scroll = 0;
+            self.toggle_overlay(Overlay::Help);
             return;
         }
 
@@ -271,6 +375,7 @@ impl App {
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        self.last_area = area;
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::THEME.bg)),
             area,
@@ -280,19 +385,36 @@ impl App {
             active.render(frame);
         }
 
-        if self.help_visible {
-            let hints = self
-                .stack
-                .last()
-                .map(|s| s.help_hints())
-                .unwrap_or_default();
-            help::render(frame, &hints, &mut self.help_scroll);
-        }
-
         self.toasts.with_queue(|queue: &mut ToastQueue| {
             queue.prune(Instant::now());
             queue.render(area, frame);
         });
+
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::Help => {
+                let hints = self
+                    .stack
+                    .last()
+                    .map(|s| s.help_hints())
+                    .unwrap_or_default();
+                help::render(frame, &hints, &mut self.overlay_scroll);
+            }
+            Overlay::Notifications => {
+                let mut scroll = self.overlay_scroll;
+                self.toasts
+                    .with_queue(|queue| queue.render_center(area, frame, &mut scroll));
+                self.overlay_scroll = scroll;
+            }
+            Overlay::Logs => {
+                let records = self
+                    .log_buffer
+                    .as_ref()
+                    .map(|buffer| buffer.snapshot())
+                    .unwrap_or_default();
+                logs::render(frame, &records, &mut self.overlay_scroll);
+            }
+        }
     }
 }
 
@@ -341,8 +463,14 @@ mod tests {
             stack: vec![Box::new(WorkerScreen { signal, task })],
             should_quit: false,
             toasts: ToastSink::default(),
-            help_visible,
-            help_scroll: 0,
+            overlay: if help_visible {
+                Overlay::Help
+            } else {
+                Overlay::None
+            },
+            overlay_scroll: 0,
+            last_area: Rect::default(),
+            log_buffer: None,
         };
         (app, finished)
     }
@@ -375,32 +503,34 @@ mod tests {
             stack: vec![Box::new(WorkerScreen { signal, task })],
             should_quit: false,
             toasts: ToastSink::default(),
-            help_visible: true,
-            help_scroll: 0,
+            overlay: Overlay::Help,
+            overlay_scroll: 0,
+            last_area: Rect::default(),
+            log_buffer: None,
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
             .await;
-        assert_eq!(app.help_scroll, 1);
+        assert_eq!(app.overlay_scroll, 1);
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.help_scroll, 2);
+        assert_eq!(app.overlay_scroll, 2);
         app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.help_scroll, 12);
+        assert_eq!(app.overlay_scroll, 12);
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
             .await;
-        assert_eq!(app.help_scroll, 11);
+        assert_eq!(app.overlay_scroll, 11);
         app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.help_scroll, 0);
+        assert_eq!(app.overlay_scroll, 0);
 
         // Closing the overlay resets the offset so the next opening starts at
         // the top.
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .await;
-        assert!(!app.help_visible);
-        assert_eq!(app.help_scroll, 0);
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.overlay_scroll, 0);
     }
 
     fn worker_screen() -> Box<dyn Screen> {
@@ -415,8 +545,10 @@ mod tests {
             stack: vec![worker_screen(), worker_screen()],
             should_quit: false,
             toasts: ToastSink::default(),
-            help_visible: false,
-            help_scroll: 0,
+            overlay: Overlay::None,
+            overlay_scroll: 0,
+            last_area: Rect::default(),
+            log_buffer: None,
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
@@ -431,12 +563,58 @@ mod tests {
             stack: vec![worker_screen()],
             should_quit: false,
             toasts: ToastSink::default(),
-            help_visible: false,
-            help_scroll: 0,
+            overlay: Overlay::None,
+            overlay_scroll: 0,
+            last_area: Rect::default(),
+            log_buffer: None,
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
             .await;
         assert!(app.should_quit, "q on the dashboard quits mapache");
+    }
+
+    #[tokio::test]
+    async fn overlay_toggles_switch_and_close() {
+        let (mut app, _finished) = worker_app(false);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.overlay, Overlay::Notifications);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(
+            app.overlay,
+            Overlay::None,
+            "Ctrl+N toggles the centre closed"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.overlay, Overlay::Logs);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(
+            app.overlay,
+            Overlay::Notifications,
+            "toggles switch overlay"
+        );
+
+        // An overlay swallows `q` instead of quitting.
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn ctrl_n_and_ctrl_l_are_not_sent_to_screens() {
+        // A screen that quits on any key would end the app if these leaked
+        // through; instead the overlay opens.
+        let (mut app, _finished) = worker_app(false);
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.overlay, Overlay::Logs);
+        assert!(!app.should_quit);
     }
 }

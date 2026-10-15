@@ -73,7 +73,6 @@ impl ForgetSelection {
 
 enum ForgetAction {
     None,
-    Quit,
     Pop,
     ExecuteForget,
 }
@@ -201,7 +200,6 @@ impl ForgetScreen {
     fn handle_selection_key(&mut self, key: KeyEvent) -> ForgetAction {
         match key.code {
             KeyCode::Esc => ForgetAction::Pop,
-            KeyCode::Char('q') => ForgetAction::Quit,
             KeyCode::Char(' ') => {
                 if let Some(idx) = self.table_state.selected()
                     && idx < self.entries.len()
@@ -264,7 +262,6 @@ impl ForgetScreen {
                     }
                     ForgetAction::None
                 }
-                KeyCode::Char('q') if !self.retention.form.is_editing() => ForgetAction::Quit,
                 _ => ForgetAction::None,
             },
         }
@@ -277,7 +274,6 @@ impl ForgetScreen {
                 ForgetAction::None
             }
             KeyCode::Enter => ForgetAction::ExecuteForget,
-            KeyCode::Char('q') => ForgetAction::Quit,
             _ => ForgetAction::None,
         }
     }
@@ -463,14 +459,12 @@ impl Screen for ForgetScreen {
                         ForgetAction::None
                     }
                 }
-                KeyCode::Char('q') => ForgetAction::Quit,
                 _ => ForgetAction::None,
             },
         };
 
         match action {
             ForgetAction::None => None,
-            ForgetAction::Quit => Some(Transition::Quit),
             ForgetAction::Pop => Some(Transition::Pop),
             ForgetAction::ExecuteForget => {
                 self.execute_forget().await;

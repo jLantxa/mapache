@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{ListState, TableState},
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::ui::tui::theme;
 
@@ -93,9 +94,23 @@ pub(crate) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// Wraps a single `Line` into multiple lines respecting `max_width` characters.
-/// Each span keeps its own style, so wrapped key/value rows do not collapse to
-/// a single colour.
+/// Display width of `text` in terminal columns.
+///
+/// Uses Unicode width rather than character count, so wide (CJK) glyphs take
+/// two columns and combining marks take none. Layout math must use this instead
+/// of `chars().count()` or rows misalign on non-Latin text.
+pub(crate) fn text_width(text: &str) -> usize {
+    text.chars().map(char_width).sum()
+}
+
+/// Display width of a single character; combining/zero-width marks count as 0.
+pub(crate) fn char_width(ch: char) -> usize {
+    UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
+/// Wraps a single `Line` into multiple lines respecting `max_width` display
+/// columns. Each span keeps its own style, so wrapped key/value rows do not
+/// collapse to a single colour.
 pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize, out: &mut Vec<Line<'static>>) {
     let max_width = max_width.max(1);
     if line.spans.is_empty() {
@@ -111,7 +126,11 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize, out: &mut Vec<Line<'s
 
     for span in &line.spans {
         for ch in span.content.chars() {
-            if width == max_width {
+            let ch_width = char_width(ch);
+            // Break before a glyph that would overflow, unless it is the first
+            // glyph of the row (a two-column glyph on a one-column row still has
+            // to be drawn somewhere).
+            if width > 0 && width + ch_width > max_width {
                 flush_span(&mut spans, &mut current, current_style);
                 lines.push(Line::from(std::mem::take(&mut spans)));
                 width = 0;
@@ -122,7 +141,7 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize, out: &mut Vec<Line<'s
                 current_style = Some(span.style);
             }
             current.push(ch);
-            width += 1;
+            width += ch_width;
         }
     }
 
@@ -145,15 +164,24 @@ fn flush_span(spans: &mut Vec<Span<'static>>, current: &mut String, style: Optio
     }
 }
 
-/// Cuts `text` down to at most `max_chars` characters, appending an ellipsis
-/// when it was shortened, so long text cannot push a row off-screen.
-pub(crate) fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
+/// Cuts `text` down to at most `max_width` display columns, appending an
+/// ellipsis when it was shortened, so long text cannot push a row off-screen.
+pub(crate) fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if text_width(text) <= max_width {
         return text.to_string();
     }
-    let keep = max_chars.saturating_sub(1);
-    let mut shortened: String = text.chars().take(keep).collect();
+
+    let keep = max_width.saturating_sub(char_width('\u{2026}'));
+    let mut shortened = String::new();
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let ch_width = char_width(ch);
+        if width + ch_width > keep {
+            break;
+        }
+        shortened.push(ch);
+        width += ch_width;
+    }
     shortened.push('\u{2026}');
     shortened
 }
@@ -349,6 +377,23 @@ mod tests {
             truncate_with_ellipsis("caf\u{e9}\u{e9}\u{e9}", 3),
             "ca\u{2026}"
         );
+    }
+
+    #[test]
+    fn width_aware_helpers_count_columns_not_characters() {
+        // CJK glyphs occupy two columns each.
+        assert_eq!(text_width("日本語"), 6);
+        // Combining marks add no width.
+        assert_eq!(text_width("e\u{301}"), 1);
+
+        // Truncation must not split a wide glyph across the ellipsis budget.
+        assert_eq!(truncate_with_ellipsis("日本語", 3), "日\u{2026}");
+
+        // Wrapping honours display width: two wide glyphs fit four columns.
+        let line = Line::from("日本語");
+        let mut out = Vec::new();
+        wrap_line(&line, 4, &mut out);
+        assert_eq!(plain(&out), vec!["日本", "語"]);
     }
 
     #[test]

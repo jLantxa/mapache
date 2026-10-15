@@ -192,7 +192,6 @@ impl Screen for CleanScreen {
                     self.phase = CleanPhase::Config;
                     None
                 }
-                KeyCode::Char('q') => Some(Transition::Quit),
                 _ => None,
             },
             CleanPhase::Progress => self
@@ -235,6 +234,10 @@ impl Screen for CleanScreen {
 
     async fn shutdown(&mut self) {
         self.session.shutdown().await;
+    }
+
+    fn wants_animation(&self) -> bool {
+        self.phase == CleanPhase::Progress
     }
 }
 

@@ -14,12 +14,14 @@ use ratatui::{
 
 use crate::ui::tui::{
     theme,
-    widgets::{centered_rect, wrap_line},
+    widgets::{centered_rect, text_width, wrap_line},
 };
 
 /// Bindings that work on every screen, independent of the active screen.
 const GLOBAL_HINTS: &[(&str, &str)] = &[
     ("? / F1", "toggle this help"),
+    ("Ctrl+N", "notification centre"),
+    ("Ctrl+L", "log overlay"),
     ("Ctrl+C", "quit mapache"),
     ("\u{2191}\u{2193}", "navigate / scroll"),
     ("PgUp/PgDn", "scroll this help"),
@@ -36,16 +38,16 @@ pub fn render(frame: &mut Frame, screen_hints: &[(&str, &str)], scroll: &mut u16
     let key_width = GLOBAL_HINTS
         .iter()
         .chain(screen_hints.iter())
-        .map(|(key, _)| key.chars().count())
+        .map(|(key, _)| text_width(key))
         .max()
         .unwrap_or(0);
 
     let row = move |key: &str, label: &str| {
+        // Pad by display width, so a wide glyph in a key does not shift the
+        // following labels out of alignment.
+        let pad = key_width.saturating_sub(text_width(key));
         Line::from(vec![
-            Span::styled(
-                format!(" {:width$} ", key, width = key_width),
-                theme::THEME.menu_key,
-            ),
+            Span::styled(format!(" {key}{} ", " ".repeat(pad)), theme::THEME.menu_key),
             Span::styled(
                 format!("  {}", label),
                 Style::default().fg(theme::THEME.subtext),

@@ -1,3 +1,4 @@
+use super::widgets::text_width;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -280,7 +281,7 @@ pub fn key_hint_lines(hints: &[(&str, &str)], width: u16) -> Vec<Line<'static>> 
     // `key_hint` renders " key " + " label ", i.e. key+label+4 columns.
     let widths: Vec<usize> = hints
         .iter()
-        .map(|(key, label)| key.chars().count() + label.chars().count() + 4)
+        .map(|(key, label)| text_width(key) + text_width(label) + 4)
         .collect();
     wrap_rows(&widths, width as usize)
         .into_iter()

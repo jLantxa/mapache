@@ -80,8 +80,6 @@ pub(crate) fn get_auth_with_command(
             })?
             .to_string();
 
-        strip_auth_envvars();
-
         return Ok(Some(Auth {
             username,
             password: Zeroizing::new(password),
@@ -91,7 +89,6 @@ pub(crate) fn get_auth_with_command(
     // Read env credentials before clearing them.
     let env_username = get_envvar(USERNAME_ENVVAR);
     let env_password = get_envvar(PASSWORD_ENVVAR);
-    strip_auth_envvars();
 
     if let Some(command) = password_command {
         return get_auth_from_command(command).map(Some);
@@ -103,16 +100,6 @@ pub(crate) fn get_auth_with_command(
             password: Zeroizing::new(p),
         })),
         _ => Ok(None),
-    }
-}
-
-/// Removes repository credentials from the process env so child processes
-/// (hooks, password commands, etc.) can't see them.
-fn strip_auth_envvars() {
-    // SAFETY: called during single-threaded startup; no other thread reads these vars.
-    unsafe {
-        std::env::remove_var(USERNAME_ENVVAR);
-        std::env::remove_var(PASSWORD_ENVVAR);
     }
 }
 
@@ -156,7 +143,7 @@ fn get_auth_from_command(command: &str) -> Result<Auth> {
 
 /// Builds a shell command that runs `command` with the platform's default shell.
 fn password_shell_command(command: &str) -> std::process::Command {
-    if cfg!(windows) {
+    let mut command = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
         c.arg("/C").arg(command);
         c
@@ -164,7 +151,11 @@ fn password_shell_command(command: &str) -> std::process::Command {
         let mut c = std::process::Command::new("sh");
         c.arg("-c").arg(command);
         c
-    }
+    };
+    command
+        .env_remove(USERNAME_ENVVAR)
+        .env_remove(PASSWORD_ENVVAR);
+    command
 }
 
 // --- Formatting ---
@@ -965,6 +956,15 @@ mod tests {
             tmp_dir.path(),
             r#"{"username":"cmd_user","password":"cmd_pass"}"#,
         );
+
+        let child = password_shell_command(&command);
+        for name in [USERNAME_ENVVAR, PASSWORD_ENVVAR] {
+            assert!(
+                child
+                    .get_envs()
+                    .any(|(key, value)| { key == std::ffi::OsStr::new(name) && value.is_none() })
+            );
+        }
 
         let auth = get_auth_from_command(&command)?;
         assert_eq!(auth.username, "cmd_user");

@@ -208,11 +208,17 @@ fn render_success(
     }));
     frame.render_widget(data_table, chunks[1]);
 
+    let skipped_suffix = if summary.skipped_items == 0 {
+        String::new()
+    } else {
+        format!("; skipped {} items", summary.skipped_items)
+    };
     let stats_line = Line::from(vec![Span::raw(format!(
-        "Processed {} and {} items in {}",
+        "Processed {} and {} items in {}{}",
         utils::format_size_binary(summary.processed_bytes, 3),
         summary.processed_items_count,
         utils::pretty_print_duration(duration),
+        skipped_suffix,
     ))]);
     frame.render_widget(Paragraph::new(stats_line), chunks[2]);
 
@@ -259,5 +265,22 @@ mod tests {
         });
         assert!(text.contains("Dry run: no snapshot saved"));
         assert!(!text.contains("Snapshot ID:"));
+    }
+
+    #[test]
+    fn summary_shows_skipped_item_count() {
+        let result = Some(SummaryResult::Success {
+            summary: Box::new(SnapshotSummary {
+                skipped_items: 3,
+                ..Default::default()
+            }),
+            snapshot_id: ID::default(),
+            duration: std::time::Duration::ZERO,
+        });
+        let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
+            render_summary(frame, &result, false);
+        });
+
+        assert!(text.contains("skipped 3 items"));
     }
 }

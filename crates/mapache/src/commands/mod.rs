@@ -997,6 +997,7 @@ where
 {
     let auth = match utils::get_auth_with_command(&auth_file.cloned(), password_command) {
         Ok(a) => a,
+        Err(e) if password_command.is_some() => return Err(e),
         Err(e) => {
             tracing::warn!("{e:#} — falling back to interactive prompt");
             None
@@ -1357,5 +1358,18 @@ mod tests {
 
         // SAFETY: Modifying environment variables in tests.
         unsafe { std::env::remove_var(ENVVAR) };
+    }
+
+    #[tokio::test]
+    async fn failed_password_command_does_not_fall_back_to_prompt() {
+        let open_called = std::sync::atomic::AtomicBool::new(false);
+        let result = open_with_retry::<(), _, _>(None, Some("exit 7"), |_, _| {
+            open_called.store(true, std::sync::atomic::Ordering::Relaxed);
+            async { Err(MapacheError::Internal("open should not be called".into())) }
+        })
+        .await;
+
+        assert!(matches!(result, Err(MapacheError::Config(_))));
+        assert!(!open_called.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

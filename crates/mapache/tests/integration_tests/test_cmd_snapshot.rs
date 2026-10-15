@@ -1241,6 +1241,18 @@ mod tests {
         std::fs::write(src.join("cache/sub/deep.txt"), b"deep")?;
         std::fs::write(src.join("keep.txt"), b"keep")?;
 
+        let incomplete = ctx
+            .snapshot_builder(vec![src.clone()])
+            .root(true)
+            .exclude_if_present(vec!["MARKER".to_string()])
+            .fail_on_skipped(true)
+            .run(&ctx.global)
+            .await;
+        assert!(
+            incomplete.is_err(),
+            "marker-pruned content must count as skipped"
+        );
+
         ctx.snapshot_builder(vec![src.clone()])
             .root(true)
             .exclude_if_present(vec!["MARKER".to_string()])

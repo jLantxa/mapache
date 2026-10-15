@@ -25,6 +25,21 @@
   different filesystem (Unix device IDs and Windows volume serial numbers).
 - `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
   unreadable source items are omitted. The default behavior is unchanged.
+- Snapshot source selection and omission controls:
+  - `--files-from <PATH>` adds source paths from a one-per-line file, and
+    `--host <HOST>` sets the hostname recorded in the snapshot.
+  - `--exclude-if-present <FILE>` prunes directory contents when a marker is
+    present; `--exclude-caches` uses `CACHEDIR.TAG`.
+  - `--exclude-larger-than <SIZE>` omits regular files above the size limit.
+    Marker- and size-excluded items are counted as skipped and are covered by
+    `--fail-on-skipped`.
+- `--password-command <COMMAND>` and `MAPACHE_PASSWORD_COMMAND` provide
+  repository credentials through a shell command that emits a JSON object with
+  `username` and `password`. An auth file takes precedence; command failures
+  are reported rather than falling back to an interactive prompt.
+- `init` and bundle creation now always use the current format (v2); the
+  `--format` creation switches for legacy v1 have been removed. Existing v1
+  repositories can still be migrated, and legacy bundle data can still be read.
 - Terminal UI:
   - New **Stats** (`6`), **Clean** (`7`) and **Verify** (`8`) screens wrap the
     corresponding CLI commands, exposing their options, live progress and a
@@ -36,6 +51,9 @@
   - Snapshot, Restore, Forget, Clean and Verify forms expose their full set of
     options, grouped under **Basic** and **Advanced** sections, scroll to keep
     the focused field visible and show per-field help.
+  - The snapshot form exposes marker and size exclusions, a recorded hostname,
+    and a per-snapshot compression override. Snapshot summaries report skipped
+    source items when any were omitted.
   - List inputs (source paths, restore selections, tags, host filters,
     include/exclude patterns) use chips with keyboard editing.
   - Forms validate input and ask for confirmation before discarding changed
@@ -56,6 +74,8 @@
 - Snapshot progress scanning now reads only node type, size, and filesystem
   device metadata, avoiding extended attribute, file flag, and symlink target
   queries. Snapshots continue to capture full metadata.
+- Marker-pruned directory contents are now included in the skipped-item count,
+  so `snapshot --fail-on-skipped` also rejects snapshots that omit those items.
 
 ### Fixed
 

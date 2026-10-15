@@ -638,8 +638,8 @@ impl WalkOptions {
     ///
     /// If a marker file is present, the directory is pruned to the marker
     /// files only. Otherwise, regular files larger than the size limit are
-    /// removed. Returns the number of entries dropped by the size limit so the
-    /// caller can record them as skipped.
+    /// removed. Returns the number of entries dropped so the caller can record
+    /// them as skipped.
     pub(crate) fn filter_children(&self, children: &mut Vec<(OsString, Result<Node>)>) -> u64 {
         if self.is_empty() {
             return 0;
@@ -648,8 +648,9 @@ impl WalkOptions {
         if !self.exclude_if_present.is_empty()
             && children.iter().any(|(name, _)| self.is_marker(name))
         {
+            let original_len = children.len();
             children.retain(|(name, _)| self.is_marker(name));
-            return 0;
+            return (original_len - children.len()) as u64;
         }
 
         let Some(max) = self.exclude_larger_than else {

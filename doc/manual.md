@@ -315,6 +315,7 @@ ECC is configured per-repository at initialization time with `--ecc <PERCENT>`.
 | `MAPACHE_REPOSITORY` | Default repository URL/Path |
 | `MAPACHE_USERNAME` | Repository username |
 | `MAPACHE_PASSWORD` | Repository password |
+| `MAPACHE_PASSWORD_COMMAND` | Shell command that prints repository credentials as JSON |
 
 ### TOML Config File
 
@@ -355,6 +356,11 @@ index-mode = "eager"
 [snapshot]
 paths = ["/home/user/Documents"]
 exclude = ["**/node_modules", "**/.git"]
+exclude-if-present = [".snapshot-exclude"]
+exclude-caches = false
+exclude-larger-than = 10737418240 # bytes (10 GiB)
+files-from = "~/.mapache/paths.txt"
+hostname = "backup-host"
 tags = "work,important"
 one-file-system = false
 fail-on-skipped = false
@@ -403,8 +409,15 @@ Authentication can be provided via:
 1. Interactive prompt (default) — prompts for username and password
 2. `--auth-file <PATH>` — file with username on the first line and password on
    the second line
-3. `MAPACHE_USERNAME` / `MAPACHE_PASSWORD` environment variables
-4. `--key-file <PATH>` — path to an external key file (still requires username
+3. `--password-command <COMMAND>` or `MAPACHE_PASSWORD_COMMAND` — run a shell
+   command whose standard output is a JSON object containing `username` and
+   `password`, for example `{"username":"backup","password":"secret"}`.
+   The command is used when no auth file is supplied and takes precedence over
+   `MAPACHE_USERNAME` / `MAPACHE_PASSWORD`. Credentials are removed from the
+   command's environment. A command failure is reported rather than falling
+   back to an interactive prompt.
+4. `MAPACHE_USERNAME` / `MAPACHE_PASSWORD` environment variables
+5. `--key-file <PATH>` — path to an external key file (still requires username
    and password for authentication)
 
 When authenticating interactively, mapache allows 3 password attempts before
@@ -522,8 +535,6 @@ command = "/usr/local/bin/maintenance-end.sh"
 
 ```bash
 mapache init -r <URL>
-mapache init --format 2 -r <URL>   # Explicit v2 (default)
-mapache init --format 1 -r <URL>   # Legacy v1 (deprecated)
 mapache init --ecc 50 -r <URL>     # Enable ECC with 50% overhead
 mapache init --calibrate-kdf -r <URL>  # Tune Argon2id for this hardware
 ```
@@ -536,7 +547,6 @@ Creates a new empty repository at the given location. Supported URL schemes:
 
 | Flag | Description |
 |---|---|
-| `--format <1\|2>` | Repository format version (default: 2) |
 | `--ecc <0-100>` | Enable ECC with given overhead percentage (0 disables) |
 | `--calibrate-kdf` | Benchmark Argon2id parameters on the current hardware (slow; use once) |
 
@@ -548,9 +558,8 @@ You will be prompted for a username and password. A manifest file is created
 with a unique repository ID and the current mapache version. **Do not lose
 your password** — there is no password recovery mechanism.
 
-> **Note:** Format v1 is deprecated and will be unsupported in a future release.
-> New repositories should use v2 (the default). To migrate an existing v1
-> repository, see [`migrate`](#migrate--migrate-repository-format).
+New repositories are created in format v2. To upgrade an existing v1 repository,
+see [`migrate`](#migrate--migrate-repository-format).
 
 ---
 
@@ -735,6 +744,11 @@ shared content across all of them.
 | `--as-root` | Use a single directory as the snapshot root (its children become top-level items) |
 | `--exclude PATH[,PATH,...]` | Comma-separated paths to exclude (repeatable) |
 | `--exclude-file <PATH>` | File with exclude paths, one per line |
+| `--exclude-if-present <FILE>` | Keep marker files but omit the other contents of any directory containing a marker (repeatable) |
+| `--exclude-caches` | Shorthand for `--exclude-if-present CACHEDIR.TAG` |
+| `--exclude-larger-than <SIZE>` | Omit regular files larger than a size such as `10MB` or `1GiB` |
+| `--files-from <PATH>` | Read additional source paths from a file, one per line |
+| `--host <HOST>` | Hostname to record in the snapshot (defaults to the system hostname) |
 | `--tags <TAGS>` | Comma-separated tags for the snapshot |
 | `--description <TEXT>` | Snapshot description |
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
@@ -767,6 +781,20 @@ mapache snapshot ~/project --exclude "~/project/target","~/project/.git"
 
 # Exclusion file (one path per line)
 mapache snapshot ~/project --exclude-file ~/.mapache-exclude
+```
+
+`--exclude-if-present` prunes the contents of a directory when any named marker
+file is present, while keeping the directory and its marker file(s).
+`--exclude-caches` uses `CACHEDIR.TAG` as that marker. `--exclude-larger-than`
+omits regular files above the specified size. These omitted items are counted
+as skipped; `--fail-on-skipped` prevents snapshot metadata from being saved if
+any source items were skipped.
+
+`--files-from` reads additional source paths, one per line, and combines them
+with any paths given as positional arguments:
+
+```bash
+mapache snapshot --files-from ~/.mapache/paths.txt -r /backup/repo
 ```
 
 ### Tags
@@ -839,7 +867,8 @@ and `--parent`.
 
 > **Important**: `--stdin` requires non-interactive authentication (stdin is
 > consumed by backup data, so the password cannot be prompted interactively).
-> Use either `--auth-file` or `MAPACHE_USERNAME`/`MAPACHE_PASSWORD` env vars:
+> Use `--auth-file`, `--password-command`, or `MAPACHE_USERNAME` and
+> `MAPACHE_PASSWORD` environment variables:
 >
 > ```bash
 > # Option 1: auth file
@@ -847,7 +876,11 @@ and `--parent`.
 > echo "mypassword" >> ~/.mapache-auth
 > mapache snapshot --stdin -r /backup/myrepo --auth-file ~/.mapache-auth
 >
-> # Option 2: environment variables
+> # Option 2: password command (prints a JSON credentials object)
+> mapache snapshot --stdin -r /backup/myrepo \
+>   --password-command 'my-credential-tool'
+>
+> # Option 3: environment variables
 > MAPACHE_USERNAME=myusername MAPACHE_PASSWORD=mypassword \
 >   mapache snapshot --stdin -r /backup/myrepo
 > ```
@@ -858,6 +891,7 @@ After a successful snapshot, mapache displays:
 
 - Changes since parent (new/changed/deleted/unchanged files and dirs)
 - Data and metadata sizes (raw vs compressed)
+- The number of source items skipped, when non-zero
 - The new snapshot ID
 
 ---
@@ -1475,8 +1509,7 @@ Bundle-specific options:
 | `-e, --exclude <GLOB>` | Glob patterns to exclude (bundle mode only) |
 | `--as-root` | Use a single directory as the bundle root (bundle mode only) |
 | `--readers <N>` | Parallel readers (default: 4) |
-| `--format <1\|2>` | Bundle format version (default: 2). v2 supports ECC |
-| `--ecc <0-100>` | Enable Reed-Solomon ECC with given overhead percentage (v2 only) |
+| `--ecc <0-100>` | Enable Reed-Solomon ECC with given overhead percentage |
 | `--calibrate-kdf` | Benchmark Argon2id parameters for this hardware (slow; use once) |
 | `-c, --create` | Create mountpoint if it does not exist (mount mode) |
 | `--allow-other` | Allow other users to access the mount |
@@ -1484,7 +1517,8 @@ Bundle-specific options:
 | `--cache-size-mib <MIB>` | Data cache size (default: 256 MiB, mount mode) |
 
 Bundles are password-protected (AES-GCM-SIV). The password is independent
-from the repository password.
+from the repository password. New bundles use the current format (v2); legacy
+v1 bundles can still be read, but cannot be created with the current command.
 
 ---
 
@@ -1637,10 +1671,15 @@ values; applying a valid form establishes the new saved state.
 
 Snapshot configuration also exposes **Exclude file**, **No scan**,
 **One filesystem**, **Fail on skipped**, **Skip unchanged**, **Parent** and
-**With atime**. Parent accepts a snapshot ID or `latest`; it cannot be combined
-with **No parent**. **Dry run** simulates the snapshot with an isolated index
-and a write-discarding backend. Progress is marked `[DRY RUN]`, and the summary
-does not report a saved snapshot.
+**With atime**. The form also supports marker-file exclusions, cache-directory
+exclusion, a maximum file size, and a custom recorded hostname. The
+**Compression** choice can override the repository's compression preset for
+this snapshot; **Default** leaves the repository setting unchanged. Parent
+accepts a snapshot ID or `latest`; it cannot be combined with **No parent**.
+**Dry run** simulates the snapshot with an isolated index and a write-discarding
+backend. Progress is marked `[DRY RUN]`, and the summary does not report a
+saved snapshot. The summary includes the number of skipped source items when
+non-zero.
 
 Restore supports **Include file** and **Exclude file** (one pattern per line),
 **Quit on error** and **Sparse**. File patterns are combined with the form's
@@ -1679,6 +1718,7 @@ include: `bash`, `zsh`, `fish`, `powershell`, `elvish`, and `nushell`.
 | `MAPACHE_REPOSITORY` | Default repository URL/path (replaces `--repo`/`-r`) |
 | `MAPACHE_USERNAME` | Repository username (used for authentication) |
 | `MAPACHE_PASSWORD` | Repository password (used for authentication) |
+| `MAPACHE_PASSWORD_COMMAND` | Shell command that prints repository credentials as JSON |
 | `MAPACHE_REFRESH_RATE` | UI progress refresh rate in Hz (float) |
 | `MAPACHE_DEBUG_PATH` | Directory to write debug logs to |
 | `MAPACHE_DEBUG_LEVEL` | Debug log level: `trace`, `debug`, `info`, `warn`, `error` (default: `debug`) |
@@ -1687,6 +1727,10 @@ If `MAPACHE_REPOSITORY` is set, the `-r` flag can be omitted for all commands.
 
 If `MAPACHE_USERNAME` and `MAPACHE_PASSWORD` are set, interactive
 authentication prompts are skipped.
+
+`MAPACHE_PASSWORD_COMMAND` has the same behavior as `--password-command` and
+is used when `--auth-file` is not supplied. Its output must be a JSON object
+with `username` and `password` string fields.
 
 ---
 
@@ -1704,6 +1748,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `--ssh-privatekey <PATH>` | SSH private key file (SFTP backend) |
 | `--ssh-known-hosts <PATH>` | SSH known hosts file (SFTP backend) |
 | `--auth-file <PATH>` | File with username on the first line and password on the second line |
+| `--password-command <COMMAND>` | Shell command that prints repository credentials as JSON |
 | `--pack-size <MIB>` | Pack target size in MiB (1–4095, default: 16) |
 | `-k, --key-file <PATH>` | Path to an external key file |
 | `--quiet` | Suppress all logging output (verbosity = 0) |
@@ -1822,10 +1867,12 @@ Initialize a new backup repository.
 
 ```
 mapache init -r <URL>
-  --format <1|2>         Repository format version (default: 2)
   --ecc <0-100>          Enable ECC with given overhead percentage (0 disables)
   --calibrate-kdf        Benchmark Argon2id parameters for this hardware
 ```
+
+New repositories are created using format v2. Use `mapache migrate` to upgrade
+an existing v1 repository.
 
 ### `mapache snapshot`
 
@@ -1836,6 +1883,11 @@ mapache snapshot [PATHS...] -r <URL>
   --as-root               Use a single directory as the snapshot root
   --exclude <PATH,...>    Paths to exclude (repeatable, or comma-separated)
   --exclude-file <PATH>   File with exclude paths (one per line)
+  --exclude-if-present <FILE>  Omit directory contents when marker is present
+  --exclude-caches        Exclude directory contents containing CACHEDIR.TAG
+  --exclude-larger-than <SIZE>  Omit regular files above this size
+  --files-from <PATH>     Read additional source paths, one per line
+  --host <HOST>           Hostname to record in the snapshot
   --tags <TAGS>           Comma-separated tags
   --description <TEXT>    Snapshot description
   --no-parent             Force complete analysis (no parent diff)
@@ -2056,6 +2108,7 @@ mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
   -e, --exclude <GLOB>    Exclude globs (bundle mode)
   --as-root               Use a single directory as the bundle root (bundle mode)
   --readers <N>           Parallel readers (default: 4)
+  --ecc <0-100>           Enable Reed-Solomon ECC with given overhead percentage
   --calibrate-kdf         Benchmark Argon2id parameters for this hardware (create mode)
   -c, --create            Create mountpoint (mount mode)
   --allow-other           Allow other users (mount mode)

@@ -277,10 +277,7 @@ impl VerifyScreen {
                     "Duration",
                     utils::pretty_print_duration(summary.duration),
                 ));
-                lines.push(kv(
-                    "Packs processed",
-                    utils::format_count(summary.packs_processed, "pack", "packs"),
-                ));
+                lines.push(kv("Packs processed", summary.packs_processed.to_string()));
                 lines.push(kv("Packs corrupt", summary.packs_corrupt.to_string()));
                 lines.push(kv("Packs missing", summary.packs_missing.to_string()));
                 lines.push(kv("Packs repaired", summary.packs_repaired.to_string()));

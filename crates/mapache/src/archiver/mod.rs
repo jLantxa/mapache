@@ -352,7 +352,8 @@ pub(crate) async fn run_pipeline(
         .ok_or_else(|| error::MapacheError::Internal("root tree ID not set".to_string()))?;
 
     status.signal_finished();
-    let summary = status.progress.summary();
+    let mut summary = status.progress.summary();
+    summary.skipped_items = status.skipped_items.load(Ordering::Relaxed);
 
     Ok(PipelineResult {
         root_tree_id,
@@ -621,7 +622,8 @@ pub(crate) async fn snapshot(
         }
     }
 
-    let summary = progress.summary();
+    let mut summary = progress.summary();
+    summary.skipped_items = status.skipped_items.load(Ordering::Relaxed);
     emit_event(
         &event_sender,
         Event::Backup(BackupEvent::Finished(summary.clone())),
@@ -651,6 +653,7 @@ impl From<progress::SnapshotProcessSummary> for SnapshotSummary {
             processed_items_count: s.processed_items_count,
             processed_bytes: s.processed_bytes,
             diff_counts: s.diff_counts,
+            skipped_items: s.skipped_items,
             ..Default::default()
         }
     }

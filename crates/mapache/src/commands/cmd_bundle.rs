@@ -632,6 +632,7 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
             processed_items_count: total_items as u64,
             processed_bytes: total_bytes,
             diff_counts: crate::repository::snapshot::DiffCounts::default(),
+            skipped_items: 0,
         },
     )));
 

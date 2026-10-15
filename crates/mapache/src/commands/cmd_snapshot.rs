@@ -691,6 +691,7 @@ pub(crate) async fn run_with_repo(
                         processed_items_count: 0,
                         processed_bytes: 0,
                         diff_counts: Default::default(),
+                        skipped_items: 0,
                     },
                 )));
             })
@@ -701,6 +702,7 @@ pub(crate) async fn run_with_repo(
                     processed_items_count: 0,
                     processed_bytes: 0,
                     diff_counts: Default::default(),
+                    skipped_items: 0,
                 },
             )));
         }),
@@ -768,6 +770,7 @@ pub(crate) async fn run_with_repo(
         processed_items_count: new_snapshot.summary.processed_items_count,
         processed_bytes: new_snapshot.summary.processed_bytes,
         diff_counts: new_snapshot.summary.diff_counts.clone(),
+        skipped_items: new_snapshot.summary.skipped_items,
     };
 
     // Fill snapshot summary from repo stats

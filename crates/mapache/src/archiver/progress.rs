@@ -13,6 +13,9 @@ pub struct SnapshotProcessSummary {
     pub processed_items_count: u64,
     pub processed_bytes: u64,
     pub diff_counts: DiffCounts,
+    /// Source items omitted from the snapshot (unreadable files and items
+    /// excluded by size or marker rules).
+    pub skipped_items: u64,
 }
 /// Centralized snapshot progress counters owned by the archiver.
 #[derive(Debug, Default)]
@@ -44,6 +47,7 @@ impl SnapshotProgress {
             processed_items_count: self.processed_items.load(Ordering::Relaxed),
             processed_bytes: self.processed_bytes.load(Ordering::Relaxed),
             diff_counts: self.diff_counts.snapshot(),
+            skipped_items: 0,
         }
     }
 }

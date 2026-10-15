@@ -217,6 +217,12 @@ pub struct SnapshotSummary {
     pub processed_items_count: u64, // Number of files processed
     pub processed_bytes: u64,       // Bytes processed (only data)
 
+    /// Source items omitted from the snapshot (unreadable files and items
+    /// excluded by size or marker rules). Serialized only when non-zero so
+    /// snapshots without skips keep their historical encoding.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub skipped_items: u64,
+
     pub raw_bytes: u64,           // Bytes 'written' before encoding
     pub encoded_bytes: u64,       // Bytes written after encoding
     pub meta_raw_bytes: u64,      // Metadata bytes 'written' before encoding
@@ -232,6 +238,11 @@ pub struct SnapshotSummary {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amends: Option<ID>,
+}
+
+/// Serde helper: skip a numeric field when it is zero.
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A stream of Snapshot Results.
@@ -461,6 +472,7 @@ mod tests {
         let summary = SnapshotSummary {
             processed_items_count: 42,
             processed_bytes: 9999,
+            skipped_items: 0,
             raw_bytes: 8888,
             encoded_bytes: 7777,
             meta_raw_bytes: 666,

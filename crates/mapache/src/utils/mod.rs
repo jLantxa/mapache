@@ -46,10 +46,20 @@ pub(crate) mod size {
 
 // --- Password ---
 
-/// Reads authentication credentials (username and password) from a file or environment variables.
-/// The file should contain the username on the first line and the password on the second.
-/// If no file is provided, it checks the MAPACHE_USERNAME and MAPACHE_PASSWORD environment variables.
-pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
+/// Reads authentication credentials, preferring a credentials file, then a
+/// password command, then the MAPACHE_USERNAME / MAPACHE_PASSWORD environment
+/// variables.
+///
+/// The password command's standard output must be a JSON object with
+/// `username` and `password` fields:
+///
+/// ```json
+/// { "username": "alice", "password": "s3cr3t" }
+/// ```
+pub(crate) fn get_auth_with_command(
+    password_file_path: &Option<PathBuf>,
+    password_command: Option<&str>,
+) -> Result<Option<Auth>> {
     if let Some(path) = password_file_path {
         let text = std::fs::read_to_string(path)?;
 
@@ -70,39 +80,90 @@ pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Au
             })?
             .to_string();
 
-        // Remove from process env so child processes (hooks, etc.) can't see it.
-        // SAFETY: called during single-threaded startup; no other thread reads these vars.
-        unsafe {
-            std::env::remove_var(USERNAME_ENVVAR);
-            std::env::remove_var(PASSWORD_ENVVAR);
-        }
+        strip_auth_envvars();
 
-        Ok(Some(Auth {
+        return Ok(Some(Auth {
             username,
             password: Zeroizing::new(password),
-        }))
+        }));
+    }
+
+    // Read env credentials before clearing them.
+    let env_username = get_envvar(USERNAME_ENVVAR);
+    let env_password = get_envvar(PASSWORD_ENVVAR);
+    strip_auth_envvars();
+
+    if let Some(command) = password_command {
+        return get_auth_from_command(command).map(Some);
+    }
+
+    match (env_username, env_password) {
+        (Some(u), Some(p)) => Ok(Some(Auth {
+            username: u,
+            password: Zeroizing::new(p),
+        })),
+        _ => Ok(None),
+    }
+}
+
+/// Removes repository credentials from the process env so child processes
+/// (hooks, password commands, etc.) can't see them.
+fn strip_auth_envvars() {
+    // SAFETY: called during single-threaded startup; no other thread reads these vars.
+    unsafe {
+        std::env::remove_var(USERNAME_ENVVAR);
+        std::env::remove_var(PASSWORD_ENVVAR);
+    }
+}
+
+/// Credentials as emitted by a password command.
+#[derive(serde::Deserialize)]
+struct AuthCredentials {
+    username: String,
+    password: String,
+}
+
+/// Runs a password command and parses its stdout as a JSON credentials object.
+fn get_auth_from_command(command: &str) -> Result<Auth> {
+    if command.trim().is_empty() {
+        return Err(MapacheError::Config(
+            "password command is empty".to_string(),
+        ));
+    }
+
+    let output = password_shell_command(command)
+        .output()
+        .map_err(|e| MapacheError::Config(format!("failed to run password command: {e}")))?;
+
+    if !output.status.success() {
+        return Err(MapacheError::Config(format!(
+            "password command failed ({})",
+            output.status
+        )));
+    }
+
+    let creds: AuthCredentials = serde_json::from_slice(&output.stdout).map_err(|e| {
+        MapacheError::Config(format!(
+            "password command output is not a valid JSON credentials object: {e}"
+        ))
+    })?;
+
+    Ok(Auth {
+        username: creds.username,
+        password: Zeroizing::new(creds.password),
+    })
+}
+
+/// Builds a shell command that runs `command` with the platform's default shell.
+fn password_shell_command(command: &str) -> std::process::Command {
+    if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
     } else {
-        let username = get_envvar(USERNAME_ENVVAR);
-        let password = get_envvar(PASSWORD_ENVVAR);
-
-        // Remove from process env so child processes can't see it.
-        // SAFETY: called during single-threaded startup; no other thread reads these vars.
-        unsafe {
-            if username.is_some() {
-                std::env::remove_var(USERNAME_ENVVAR);
-            }
-            if password.is_some() {
-                std::env::remove_var(PASSWORD_ENVVAR);
-            }
-        }
-
-        match (username, password) {
-            (Some(u), Some(p)) => Ok(Some(Auth {
-                username: u,
-                password: Zeroizing::new(p),
-            })),
-            _ => Ok(None),
-        }
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(command);
+        c
     }
 }
 
@@ -832,17 +893,17 @@ mod tests {
         // Write a valid auth file
         std::fs::write(&auth_file, "user1\npass123")?;
 
-        let auth = get_auth(&Some(auth_file.clone()))?.unwrap();
+        let auth = get_auth_with_command(&Some(auth_file.clone()), None)?.unwrap();
         assert_eq!(auth.username, "user1");
         assert_eq!(*auth.password, "pass123");
 
         // Test empty file
         std::fs::write(&auth_file, "")?;
-        assert!(get_auth(&Some(auth_file.clone())).is_err());
+        assert!(get_auth_with_command(&Some(auth_file.clone()), None).is_err());
 
         // Test missing password
         std::fs::write(&auth_file, "user1")?;
-        assert!(get_auth(&Some(auth_file.clone())).is_err());
+        assert!(get_auth_with_command(&Some(auth_file.clone()), None).is_err());
 
         // Test None input (no env vars)
 
@@ -851,7 +912,7 @@ mod tests {
             std::env::remove_var(USERNAME_ENVVAR);
             std::env::remove_var(PASSWORD_ENVVAR);
         }
-        assert!(get_auth(&None)?.is_none());
+        assert!(get_auth_with_command(&None, None)?.is_none());
 
         // Test environment variables
 
@@ -860,9 +921,95 @@ mod tests {
             std::env::set_var(USERNAME_ENVVAR, "env_user");
             std::env::set_var(PASSWORD_ENVVAR, "env_pass");
         }
-        let auth = get_auth(&None)?.unwrap();
+        let auth = get_auth_with_command(&None, None)?.unwrap();
         assert_eq!(auth.username, "env_user");
         assert_eq!(*auth.password, "env_pass");
+
+        // Cleanup
+        unsafe {
+            // SAFETY: Modifying environment variables in tests.
+            std::env::remove_var(USERNAME_ENVVAR);
+            std::env::remove_var(PASSWORD_ENVVAR);
+        }
+
+        Ok(())
+    }
+
+    /// Builds a shell command that prints `json` verbatim to stdout, for tests.
+    #[cfg(windows)]
+    fn json_echo_command(dir: &std::path::Path, json: &str) -> String {
+        let path = dir.join("cred.cmd");
+        // `echo` in cmd.exe prints its arguments verbatim, including quotes.
+        std::fs::write(&path, format!("@echo {json}\r\n")).expect("write cred.cmd");
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Builds a shell command that prints `json` verbatim to stdout, for tests.
+    #[cfg(unix)]
+    fn json_echo_command(dir: &std::path::Path, json: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("cred.sh");
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{json}'\n")).expect("write cred.sh");
+        let mut perms = std::fs::metadata(&path)
+            .expect("stat cred.sh")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("chmod cred.sh");
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn test_get_auth_from_command() -> Result<()> {
+        let tmp_dir = tempfile::tempdir()?;
+        let command = json_echo_command(
+            tmp_dir.path(),
+            r#"{"username":"cmd_user","password":"cmd_pass"}"#,
+        );
+
+        let auth = get_auth_from_command(&command)?;
+        assert_eq!(auth.username, "cmd_user");
+        assert_eq!(*auth.password, "cmd_pass");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_auth_command_rejects_invalid_json() -> Result<()> {
+        let tmp_dir = tempfile::tempdir()?;
+        let command = json_echo_command(tmp_dir.path(), "not-json");
+
+        assert!(
+            get_auth_from_command(&command).is_err(),
+            "non-JSON output must be rejected"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_auth_command_precedes_env() -> Result<()> {
+        let tmp_dir = tempfile::tempdir()?;
+        let command = json_echo_command(
+            tmp_dir.path(),
+            r#"{"username":"cmd_user","password":"cmd_pass"}"#,
+        );
+
+        // SAFETY: Modifying environment variables in tests.
+        unsafe {
+            std::env::set_var(USERNAME_ENVVAR, "env_user");
+            std::env::set_var(PASSWORD_ENVVAR, "env_pass");
+        }
+
+        let auth = get_auth_with_command(&None, Some(&command))?.unwrap();
+        assert_eq!(auth.username, "cmd_user");
+        assert_eq!(*auth.password, "cmd_pass");
+
+        // The credentials file still takes precedence over the command.
+        let auth_file = tmp_dir.path().join("auth");
+        std::fs::write(&auth_file, "file_user\nfile_pass")?;
+        let auth = get_auth_with_command(&Some(auth_file), Some(&command))?.unwrap();
+        assert_eq!(auth.username, "file_user");
+        assert_eq!(*auth.password, "file_pass");
 
         // Cleanup
         unsafe {

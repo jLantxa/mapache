@@ -12,7 +12,10 @@ mod tests {
     };
 
     use crate::{
-        integration_tests::{INTEGRATION_TEST_DATA, TestContext, assert_times_equal},
+        integration_tests::{
+            INTEGRATION_TEST_DATA, TestContext, assert_times_equal, json_credential_command,
+            run_bin,
+        },
         synthetic::{Dataset, SyntheticData},
     };
 
@@ -1409,6 +1412,36 @@ mod tests {
         assert!(
             out.contains("mapache-test-host"),
             "the snapshot log must show the overridden hostname; got:\n{out}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_password_command_opens_repository() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let command = json_credential_command(
+            ctx._tmp_dir.path(),
+            &ctx.auth.username,
+            ctx.auth.password.as_str(),
+        )?;
+
+        // `--password-command` replaces `--auth-file`: no credentials file is
+        // passed, so a successful run proves the command supplied valid auth.
+        let out = run_bin(&[
+            "log",
+            "--repo",
+            ctx.repo_path.to_str().context("repo path is not UTF-8")?,
+            "--password-command",
+            &command,
+        ])?;
+        assert!(
+            out.status.success(),
+            "log with --password-command must succeed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
         );
 
         Ok(())

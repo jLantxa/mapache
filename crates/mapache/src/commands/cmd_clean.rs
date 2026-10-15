@@ -85,6 +85,7 @@ pub async fn run(
     tracing::info!(target: "clean", "Starting clean command");
     let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
+        global_args.password_command.as_deref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(args.dry_run))
             .await

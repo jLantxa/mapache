@@ -196,7 +196,7 @@ pub struct CmdArgs {
 
     /// Read backup data from stdin as a single file at /stdin.
     /// Mutually exclusive with paths, excludes, and parent snapshot.
-    /// Requires --auth-file or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
+    /// Requires --auth-file, --password-command or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
     #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "exclude_if_present", "exclude_caches", "exclude_larger_than", "files_from", "parent", "as_root"])]
     pub stdin: bool,
 
@@ -340,16 +340,20 @@ pub async fn run(
 ) -> Result<(), SnapshotError> {
     tracing::info!(target: "snapshot", "Starting snapshot command");
 
-    if args.stdin
-        && global_args.auth_file.is_none()
-        && (get_envvar(USERNAME_ENVVAR).is_none() || get_envvar(PASSWORD_ENVVAR).is_none())
-    {
-        return Err(SnapshotError::SourcePathError(
-            "--stdin requires --auth-file or both MAPACHE_USERNAME and \
-             MAPACHE_PASSWORD env vars (stdin is consumed by backup data, \
-             so password cannot be prompted interactively)"
-                .to_string(),
-        ));
+    if args.stdin {
+        let can_auth_non_interactively = global_args.auth_file.is_some()
+            || global_args.password_command.is_some()
+            || (get_envvar(USERNAME_ENVVAR).is_some() && get_envvar(PASSWORD_ENVVAR).is_some());
+
+        if !can_auth_non_interactively {
+            return Err(SnapshotError::SourcePathError(
+                "--stdin requires --auth-file, --password-command or both \
+                 MAPACHE_USERNAME and MAPACHE_PASSWORD env vars (stdin is \
+                 consumed by backup data, so password cannot be prompted \
+                 interactively)"
+                    .to_string(),
+            ));
+        }
     }
 
     let mut options = SnapshotRunOptions::from(args);
@@ -406,6 +410,7 @@ pub async fn run(
 
     let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
+        global_args.password_command.as_deref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(dry_run))
             .await

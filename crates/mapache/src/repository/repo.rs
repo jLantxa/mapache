@@ -2057,7 +2057,7 @@ mod tests {
 
         std::fs::write(&password_file_path, "mapachito\npassword")?;
 
-        let auth = utils::get_auth(&Some(password_file_path))?.unwrap();
+        let auth = utils::get_auth_with_command(&Some(password_file_path), None)?.unwrap();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
         Repository::init(

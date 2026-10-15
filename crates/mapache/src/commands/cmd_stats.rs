@@ -292,6 +292,7 @@ fn check_interrupted(signal: &AtomicBool) -> Result<(), StatsError> {
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
+        global_args.password_command.as_deref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false))
             .await

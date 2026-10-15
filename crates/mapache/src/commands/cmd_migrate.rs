@@ -70,6 +70,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
     tracing::info!(target: "migrate", "Starting migrate command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
+        global_args.password_command.as_deref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?,
         global_args.to_repo_config(),

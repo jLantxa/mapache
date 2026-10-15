@@ -151,6 +151,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
 
     let (src_repo, _src_ss) = open_repository(
         global_args.auth_file.as_ref(),
+        global_args.password_command.as_deref(),
         global_args.key.as_ref(),
         src_backend.clone(),
         repo_config.clone(),
@@ -176,6 +177,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
     let (dst_repo, _dst_ss, dst_lock) = if global_args.no_lock {
         let (repo, ss) = open_repository(
             global_args.auth_file.as_ref(),
+            global_args.password_command.as_deref(),
             global_args.key.as_ref(),
             dst_backend.clone(),
             repo_config.clone(),
@@ -186,6 +188,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
     } else {
         let (repo, ss, lock) = open_repository_with_lock(
             global_args.auth_file.as_ref(),
+            global_args.password_command.as_deref(),
             global_args.key.as_ref(),
             dst_backend.clone(),
             repo_config,

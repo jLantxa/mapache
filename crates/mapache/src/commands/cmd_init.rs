@@ -90,7 +90,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
 
     tracing::info!(target: "init", "Backend initialized");
 
-    let auth = match utils::get_auth(&global_args.auth_file)? {
+    let auth = match utils::get_auth_with_command(
+        &global_args.auth_file,
+        global_args.password_command.as_deref(),
+    )? {
         Some(a) => a,
         None => ui::cli::request_new_auth().map_err(|e| {
             tracing::error!(target: "init", "authentication failed");

@@ -913,6 +913,7 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
 
     with_repository_lock(
         global.auth_file.as_ref(),
+        global.password_command.as_deref(),
         global.key.as_ref(),
         backend::new_backend_with_prompt(global.backend_options(false))
             .await
@@ -1282,6 +1283,7 @@ async fn run_import(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
 
     with_repository_lock(
         global.auth_file.as_ref(),
+        global.password_command.as_deref(),
         global.key.as_ref(),
         backend::new_backend_with_prompt(global.backend_options(false))
             .await

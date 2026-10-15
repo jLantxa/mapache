@@ -149,6 +149,7 @@ impl TestContext {
         let global = GlobalArgs {
             repo: repo_path.to_string_lossy().to_string(),
             auth_file: Some(auth_file_path.clone()),
+            password_command: None,
             key: None,
             quiet: *TEST_QUIET,
             json: false,
@@ -1158,4 +1159,34 @@ pub fn run_bin(args: &[&str]) -> Result<std::process::Output> {
         eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
     Ok(output)
+}
+
+/// Writes a small script that prints a JSON credentials object to stdout and
+/// returns the command string to run it. Used to test `--password-command`.
+#[cfg(windows)]
+pub fn json_credential_command(dir: &Path, username: &str, password: &str) -> Result<String> {
+    let path = dir.join("cred.cmd");
+    std::fs::write(
+        &path,
+        format!("@echo {{\"username\":\"{username}\",\"password\":\"{password}\"}}\r\n"),
+    )?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Writes a small script that prints a JSON credentials object to stdout and
+/// returns the command string to run it. Used to test `--password-command`.
+#[cfg(unix)]
+pub fn json_credential_command(dir: &Path, username: &str, password: &str) -> Result<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("cred.sh");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nprintf '%s' '{{\"username\":\"{username}\",\"password\":\"{password}\"}}'\n"
+        ),
+    )?;
+    let mut perms = std::fs::metadata(&path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms)?;
+    Ok(path.to_string_lossy().into_owned())
 }

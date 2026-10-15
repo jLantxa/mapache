@@ -144,8 +144,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         ))
     })?;
 
-    let auth = match utils::get_auth(&global_args.auth_file)
-        .map_err(|e| SyncError::BackendError(format!("failed to get auth: {}", e.inner())))?
+    let auth = match utils::get_auth_with_command(
+        &global_args.auth_file,
+        global_args.password_command.as_deref(),
+    )
+    .map_err(|e| SyncError::BackendError(format!("failed to get auth: {}", e.inner())))?
     {
         Some(a) => a,
         None => ui::cli::request_auth()

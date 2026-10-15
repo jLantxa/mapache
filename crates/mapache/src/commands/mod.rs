@@ -189,6 +189,12 @@ pub struct CliGlobalArgs {
     #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
     pub auth_file: Option<PathBuf>,
 
+    /// Command whose standard output is a JSON object with the repository
+    /// credentials (`{"username": ..., "password": ...}`). Used when no
+    /// `--auth-file` is provided. Can also be set via MAPACHE_PASSWORD_COMMAND.
+    #[clap(long = "password-command")]
+    pub password_command: Option<String>,
+
     /// Pack target size in MiB
     #[clap(long = "pack-size", value_parser = pack_size_parser)]
     #[serde(rename = "pack-size", alias = "pack-size-mib")]
@@ -290,6 +296,7 @@ impl CliGlobalArgs {
             ssh_privatekey: Some(PathBuf::from("~/.ssh/id_ed25519")),
             ssh_known_hosts: Some(PathBuf::from("~/.ssh/known_hosts")),
             auth_file: Some(PathBuf::from("~/.mapache/auth")),
+            password_command: Some("pass show mapache".to_string()),
             pack_size_mib: Some(DEFAULT_PACK_SIZE_MIB),
             key: Some(PathBuf::from("~/.mapache/repo.key")),
             quiet: Some(false),
@@ -330,6 +337,7 @@ impl Merge for CliGlobalArgs {
         merge_opt(&mut self.ssh_privatekey, other.ssh_privatekey);
         merge_opt(&mut self.ssh_known_hosts, other.ssh_known_hosts);
         merge_opt(&mut self.auth_file, other.auth_file);
+        merge_opt(&mut self.password_command, other.password_command);
         merge_opt(&mut self.pack_size_mib, other.pack_size_mib);
         merge_opt(&mut self.key, other.key);
         merge_flag(&mut self.quiet, other.quiet);
@@ -426,6 +434,7 @@ pub struct GlobalArgs {
     pub ssh_privatekey: Option<PathBuf>,
     pub ssh_known_hosts: Option<PathBuf>,
     pub auth_file: Option<PathBuf>,
+    pub password_command: Option<String>,
     pub pack_size_mib: f32,
     pub key: Option<PathBuf>,
     pub quiet: bool,
@@ -498,6 +507,10 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
         ssh_privatekey: cli.ssh_privatekey.clone(),
         ssh_known_hosts: cli.ssh_known_hosts.clone(),
         auth_file: cli.auth_file.clone(),
+        password_command: cli
+            .password_command
+            .clone()
+            .or_else(|| env::var(crate::common::vars::PASSWORD_COMMAND_ENVVAR).ok()),
         pack_size_mib,
         key: cli.key.clone(),
         quiet: cli.quiet.unwrap_or(false),
@@ -952,6 +965,7 @@ impl GlobalArgs {
             ssh_privatekey: None,
             ssh_known_hosts: None,
             auth_file: None,
+            password_command: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             key: None,
             quiet: false,
@@ -972,12 +986,16 @@ impl GlobalArgs {
 
 /// Resolves authentication from file/env or falls back to interactive prompt,
 /// then retries the open operation on auth errors.
-async fn open_with_retry<T, F, Fut>(auth_file: Option<&PathBuf>, open_fn: F) -> Result<T>
+async fn open_with_retry<T, F, Fut>(
+    auth_file: Option<&PathBuf>,
+    password_command: Option<&str>,
+    open_fn: F,
+) -> Result<T>
 where
     F: Fn(Zeroizing<String>, String) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    let auth = match utils::get_auth(&auth_file.cloned()) {
+    let auth = match utils::get_auth_with_command(&auth_file.cloned(), password_command) {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!("{e:#} — falling back to interactive prompt");
@@ -1018,11 +1036,12 @@ where
 /// Helper to open a repository with interactive authentication if needed.
 pub async fn open_repository(
     auth_file: Option<&PathBuf>,
+    password_command: Option<&str>,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
     config: RepoConfig,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
-    open_with_retry(auth_file, |password, username| {
+    open_with_retry(auth_file, password_command, |password, username| {
         let backend = backend.clone();
         let config = config.clone();
         async move {
@@ -1041,6 +1060,7 @@ pub async fn open_repository(
 #[allow(clippy::too_many_arguments)]
 pub async fn with_repository_lock<F, Fut, T, E>(
     auth_file: Option<&PathBuf>,
+    password_command: Option<&str>,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
     config: RepoConfig,
@@ -1055,11 +1075,13 @@ where
     E: From<MapacheError>,
 {
     let (repo, storage, lock) = if no_lock {
-        let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
+        let (repo, storage) =
+            open_repository(auth_file, password_command, key_file_path, backend, config).await?;
         (repo, storage, None)
     } else {
         let (repo, storage, lock) = open_repository_with_lock(
             auth_file,
+            password_command,
             key_file_path,
             backend,
             config,
@@ -1084,13 +1106,14 @@ where
 /// Helper to open a repository with a lock and interactive authentication if needed.
 pub async fn open_repository_with_lock(
     auth_file: Option<&PathBuf>,
+    password_command: Option<&str>,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
     config: RepoConfig,
     exclusive_lock: bool,
     retry_duration: Option<Duration>,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
-    open_with_retry(auth_file, |password, username| {
+    open_with_retry(auth_file, password_command, |password, username| {
         let backend = backend.clone();
         let config = config.clone();
         async move {
@@ -1292,5 +1315,47 @@ mod tests {
             !globals.compress_policy().probe,
             "content skipping is pointless when compression is disabled"
         );
+    }
+
+    #[test]
+    fn test_password_command_resolution() {
+        // CLI flag.
+        let cli =
+            CliGlobalArgs::try_parse_from(["mapache", "--password-command", "pass show repo"])
+                .expect("--password-command must parse");
+        assert_eq!(cli.password_command.as_deref(), Some("pass show repo"));
+
+        // Config value is merged (CLI wins when both are set).
+        let mut merged = CliGlobalArgs::default();
+        merged.merge(CliGlobalArgs {
+            password_command: Some("from-config".into()),
+            ..Default::default()
+        });
+        assert_eq!(merged.password_command.as_deref(), Some("from-config"));
+
+        let mut merged =
+            CliGlobalArgs::try_parse_from(["mapache", "--password-command", "from-cli"])
+                .expect("--password-command must parse");
+        merged.merge(CliGlobalArgs {
+            password_command: Some("from-config".into()),
+            ..Default::default()
+        });
+        assert_eq!(merged.password_command.as_deref(), Some("from-cli"));
+
+        // Environment fallback, and CLI precedence over the environment.
+        const ENVVAR: &str = crate::common::vars::PASSWORD_COMMAND_ENVVAR;
+        // SAFETY: Modifying environment variables in tests.
+        unsafe { std::env::set_var(ENVVAR, "from-env") };
+
+        let globals = cli_to_global_args(&CliGlobalArgs::default()).expect("globals must resolve");
+        assert_eq!(globals.password_command.as_deref(), Some("from-env"));
+
+        let cli = CliGlobalArgs::try_parse_from(["mapache", "--password-command", "from-cli"])
+            .expect("--password-command must parse");
+        let globals = cli_to_global_args(&cli).expect("globals must resolve");
+        assert_eq!(globals.password_command.as_deref(), Some("from-cli"));
+
+        // SAFETY: Modifying environment variables in tests.
+        unsafe { std::env::remove_var(ENVVAR) };
     }
 }

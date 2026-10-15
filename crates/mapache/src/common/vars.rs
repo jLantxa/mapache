@@ -7,6 +7,10 @@ pub(crate) const USERNAME_ENVVAR: &str = "MAPACHE_USERNAME";
 /// Repository password
 pub(crate) const PASSWORD_ENVVAR: &str = "MAPACHE_PASSWORD";
 
+/// Command whose standard output is a JSON object with the repository
+/// credentials (`{"username": ..., "password": ...}`).
+pub(crate) const PASSWORD_COMMAND_ENVVAR: &str = "MAPACHE_PASSWORD_COMMAND";
+
 /// Debug log output directory
 pub(crate) const DEBUG_PATH_ENVVAR: &str = "MAPACHE_DEBUG_PATH";
 

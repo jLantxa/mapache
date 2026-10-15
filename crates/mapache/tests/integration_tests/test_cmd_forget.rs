@@ -182,6 +182,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forget_with_disabled_config_rules() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .tags("None".to_string())
+            .run(&ctx.global)
+            .await?;
+
+        let mut args: cmd_forget::CmdArgs = toml::from_str(
+            r#"
+keep-last = "None"
+keep-within = "None"
+keep-yearly = "None"
+keep-monthly = "None"
+keep-weekly = "None"
+keep-daily = "None"
+keep-hourly = "None"
+keep-tags = "None"
+keep-min = "None"
+"#,
+        )?;
+        let ids = ctx.get_snapshot_ids()?;
+
+        let err = cmd_forget::run(&ctx.global, &args, None)
+            .await
+            .expect_err("disabled rules must not permit forgetting all snapshots");
+        assert!(matches!(err, cmd_forget::ForgetError::InvalidRule(_)));
+        assert_eq!(ctx.get_snapshot_ids()?, ids);
+
+        args.forget = ids;
+        args.force = true;
+        cmd_forget::run(&ctx.global, &args, None).await?;
+        assert!(ctx.get_snapshot_ids()?.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_forget_explicit_target_excluded_by_host_filter() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);

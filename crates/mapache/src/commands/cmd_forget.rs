@@ -129,6 +129,7 @@ pub struct CmdArgs {
 
     /// Keep all snapshots with tags
     #[arg(long = "keep-tags", value_parser, group = "retention_rules")]
+    #[serde(deserialize_with = "deserialize_retention_string_opt")]
     pub keep_tags: Option<String>,
 
     /// Always keep at least N snapshots (after applying retention rules).
@@ -206,13 +207,23 @@ impl Merge for CmdArgs {
     }
 }
 
+fn deserialize_retention_string_opt<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.filter(|s| !s.eq_ignore_ascii_case("none")))
+}
+
 fn deserialize_duration_opt<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<chrono::Duration>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let opt = Option::<String>::deserialize(deserializer)?;
+    let opt = deserialize_retention_string_opt(deserializer)?;
     opt.map(|s| utils::parse_duration_string(&s).map_err(serde::de::Error::custom))
         .transpose()
 }
@@ -241,6 +252,7 @@ where
                 ))
             }
         }
+        Some(RetentionValue::String(s)) if s.eq_ignore_ascii_case("none") => Ok(None),
         Some(RetentionValue::String(s)) => parse_retention_number(&s)
             .map(Some)
             .map_err(serde::de::Error::custom),
@@ -629,6 +641,78 @@ fn with_reasons<'a>(
 mod tests {
     use super::*;
     use clap::Parser;
+
+    const COUNT_FIELDS: [&str; 7] = [
+        "keep-last",
+        "keep-yearly",
+        "keep-monthly",
+        "keep-weekly",
+        "keep-daily",
+        "keep-hourly",
+        "keep-min",
+    ];
+
+    #[test]
+    fn config_none_disables_all_retention_options() {
+        for value in ["None", "none", "NONE"] {
+            let config = COUNT_FIELDS
+                .iter()
+                .copied()
+                .chain(["keep-within", "keep-tags"])
+                .map(|field| format!("{field} = \"{value}\"\n"))
+                .collect::<String>();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), format!("[forget]\n{config}")).unwrap();
+            let args = crate::common::config::load_config(&file.path().to_path_buf())
+                .expect("None values must load")
+                .forget
+                .expect("forget section must be present");
+            assert_eq!(
+                serde_json::to_value(&args).unwrap(),
+                serde_json::to_value(CmdArgs::default()).unwrap()
+            );
+
+            let mut cli = CmdArgs::try_parse_from(["forget", "--keep-last", "2"]).unwrap();
+            cli.merge(args);
+            assert_eq!(cli.keep_last, Some(2));
+            assert_eq!(cli.keep_daily, None);
+            assert_eq!(cli.keep_within, None);
+            assert_eq!(cli.keep_tags, None);
+            assert_eq!(cli.keep_min, None);
+        }
+    }
+
+    #[test]
+    fn config_retention_counts_preserve_validation() {
+        for field in COUNT_FIELDS {
+            for (value, expected) in [("3", 3), ("\"3\"", 3), ("\"all\"", usize::MAX)] {
+                let args: CmdArgs =
+                    toml::from_str(&format!("{field} = {value}")).expect("valid count must parse");
+                assert_eq!(serde_json::to_value(args).unwrap()[field], expected);
+            }
+            for value in ["0", "-1", "\"0\"", "\"-1\"", "\"invalid\"", "false", "1.5"] {
+                assert!(
+                    toml::from_str::<CmdArgs>(&format!("{field} = {value}")).is_err(),
+                    "{field} = {value} must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn config_retention_duration_and_tags_preserve_values() {
+        let args: CmdArgs = toml::from_str(
+            "keep-within = \"2d\"\nkeep-tags = \"important,archive\"\nkeep-daily = \"None\"",
+        )
+        .unwrap();
+        assert_eq!(args.keep_within, Some(chrono::Duration::days(2)));
+        assert_eq!(args.keep_tags.as_deref(), Some("important,archive"));
+        assert_eq!(args.keep_daily, None);
+        assert!(toml::from_str::<CmdArgs>("keep-within = \"invalid\"").is_err());
+
+        let args: CmdArgs = toml::from_str("keep-tags = \"\"").unwrap();
+        assert_eq!(args.keep_tags.as_deref(), Some(""));
+    }
 
     // `--keep-last 0` must be rejected, exactly like the other `--keep-*` rules.
     // `KeepLast(0)` would keep zero snapshots and, with no `--keep-min`,

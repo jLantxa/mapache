@@ -1175,6 +1175,24 @@ Use `--force` for immediate deletion.
 
 A snapshot is kept if **any** rule applies. Rules are inclusive, not exclusive.
 
+In the `[forget]` section of the TOML config, any `keep-*` setting (including
+`keep-within`, `keep-tags`, and `keep-min`) accepts the quoted string `"None"`
+(case-insensitive) to disable it without removing the setting:
+
+```toml
+[forget]
+keep-last = 5
+keep-daily = "None"
+keep-within = "None"
+keep-tags = "None"
+keep-min = "None"
+```
+
+`"None"` behaves like an omitted setting, and an explicit CLI value still takes
+precedence. It is a config-only value, not a CLI argument. If all rules are
+disabled, `forget` still requires explicit snapshot IDs; it will not remove all
+snapshots implicitly.
+
 ### Filtering
 
 ```bash

@@ -4,6 +4,8 @@
 
 ### Added
 
+- All `keep-*` retention settings in the TOML config accept `"None"`
+  (case-insensitive) to disable a rule without removing its entry.
 - Per-blob compression skipping. Already-compressed content is stored
   uncompressed, saving CPU on snapshots. Controlled by:
   - `skip-compression` / `--skip-compression <GLOB>`: never compress matching

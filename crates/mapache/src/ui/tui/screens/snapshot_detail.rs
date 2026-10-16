@@ -170,7 +170,7 @@ impl SnapshotDetailScreen {
         for relative in paths_iter {
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(lw)),
-                Span::raw(relative),
+                Span::styled(relative, theme::THEME.stat_value),
             ]));
         }
 
@@ -214,6 +214,7 @@ impl SnapshotDetailScreen {
 
         let paragraph = ratatui::widgets::Paragraph::new(Text::from(wrapped))
             .alignment(Alignment::Left)
+            .style(ratatui::style::Style::new().fg(theme::THEME.file_fg))
             .block(block)
             .scroll((self.scroll.offset as u16, 0));
 

@@ -592,7 +592,10 @@ impl DashboardScreen {
                     Span::styled(format!("{:>13}", size), theme::THEME.snap_size),
                 ];
                 if show_tags {
-                    cells.push(Span::raw(theme::format_tags(&entry.snapshot.tags)));
+                    cells.push(Span::styled(
+                        theme::format_tags(&entry.snapshot.tags),
+                        theme::THEME.subtext,
+                    ));
                 }
                 Row::new(cells)
             })
@@ -670,7 +673,10 @@ impl DashboardScreen {
             let p_str = p.display().to_string();
             let indent = " ".repeat(label_w);
             let shown = truncate_with_ellipsis(&p_str, max_w);
-            lines.push(Line::from(vec![Span::raw(format!("{indent}{shown}"))]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{indent}{shown}"),
+                theme::THEME.stat_value,
+            )]));
             if i >= 4 {
                 let remaining = entry.snapshot.paths.len() - i - 1;
                 if remaining > 0 {
@@ -699,9 +705,11 @@ impl DashboardScreen {
             ));
         }
 
-        let info = Paragraph::new(lines)
-            .block(theme::block("Details"))
-            .style(Style::new().bg(theme::THEME.surface));
+        let info = Paragraph::new(lines).block(theme::block("Details")).style(
+            Style::new()
+                .fg(theme::THEME.file_fg)
+                .bg(theme::THEME.surface),
+        );
         frame.render_widget(info, area);
     }
 

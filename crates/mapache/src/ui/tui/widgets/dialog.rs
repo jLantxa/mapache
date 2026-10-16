@@ -73,6 +73,7 @@ impl Dialog {
 
         let content = Paragraph::new(Text::from(wrapped_lines))
             .alignment(Alignment::Center)
+            .style(Style::new().fg(theme::THEME.file_fg))
             .block(block);
 
         ratatui::widgets::Clear.render(popup_area, frame.buffer_mut());

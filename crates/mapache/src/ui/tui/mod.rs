@@ -23,6 +23,15 @@ mod test_support;
 mod theme;
 mod widgets;
 
+pub use theme::{ColorMode, ThemeVariant};
+
+/// Look-and-feel options resolved from the command line.
+#[derive(Clone, Copy, Debug)]
+pub struct Appearance {
+    pub variant: ThemeVariant,
+    pub color: ColorMode,
+}
+
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -47,7 +56,10 @@ pub async fn run(
     repo_path: String,
     snapshot_config: Option<cmd_snapshot::CmdArgs>,
     forget_config: Option<cmd_forget::CmdArgs>,
+    appearance: Appearance,
 ) -> Result<()> {
+    theme::init(appearance.variant, appearance.color);
+
     let _guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;

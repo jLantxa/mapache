@@ -65,6 +65,12 @@
     notifications, click-to-dismiss toasts and `c` to clear it.
   - A log overlay (`Ctrl+L`) showing recent log records; info-level records are
     now captured even when `MAPACHE_DEBUG_LEVEL` is unset.
+  - The TUI adapts its colours to the terminal: `--theme auto|dark|light`
+    selects the scheme (including a new light palette), `--color
+    auto|truecolor|ansi256|ansi16|never` selects the colour depth and steps a
+    24-bit palette down to 256 or 16 colours when the terminal needs it, and
+    `NO_COLOR` disables colour. Terminals smaller than 60x16 show a resize hint
+    instead of a clipped layout.
 
 ### Changed
 

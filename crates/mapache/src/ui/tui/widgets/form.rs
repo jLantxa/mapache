@@ -683,7 +683,12 @@ impl Form {
                 FormMessage::Warning(text) => {
                     (" ! ", theme::THEME.warning, theme::THEME.warning, text)
                 }
-                FormMessage::Help(text) => (" ? ", theme::THEME.menu_key, Style::default(), text),
+                FormMessage::Help(text) => (
+                    " ? ",
+                    theme::THEME.menu_key,
+                    Style::new().fg(theme::THEME.file_fg),
+                    text,
+                ),
             };
             let line = Line::from(vec![
                 Span::styled(marker, marker_style),
@@ -695,6 +700,7 @@ impl Form {
 
     fn render_rows(&self) -> Vec<Row<'_>> {
         let focus_style = Style::default().fg(theme::THEME.green);
+        let text_style = Style::default().fg(theme::THEME.file_fg);
 
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(self.fields.len());
 
@@ -706,12 +712,8 @@ impl Form {
                 Style::default()
             };
 
-            // Value cells share this style: the focus colour, or the default.
-            let value_style = if focused {
-                focus_style
-            } else {
-                Style::default()
-            };
+            // Value cells share this style: the focus colour, or the theme foreground.
+            let value_style = if focused { focus_style } else { text_style };
 
             let label_cell = if focused {
                 Cell::from(Span::styled(
@@ -721,7 +723,7 @@ impl Form {
             } else {
                 Cell::from(Span::styled(
                     format!(" {} ", field.label),
-                    Style::default().bold(),
+                    text_style.bold(),
                 ))
             };
 
@@ -732,7 +734,7 @@ impl Form {
                     } else if focused {
                         Span::styled(input.text(), focus_style)
                     } else {
-                        Span::raw(input.text())
+                        Span::styled(input.text(), text_style)
                     };
                     Cell::from(text)
                 }
@@ -781,18 +783,15 @@ impl Form {
                     if focused {
                         Cell::from(Span::styled(format!(" {} ", label), theme::THEME.success))
                     } else {
-                        Cell::from(Span::styled(
-                            format!(" {} ", label),
-                            theme::THEME.subtext_dim,
-                        ))
+                        Cell::from(Span::styled(format!(" {} ", label), text_style))
                     }
                 }
                 FormFieldType::Label(text) => {
-                    Cell::from(Span::styled(text.clone(), Style::default().bold()))
+                    Cell::from(Span::styled(text.clone(), text_style.bold()))
                 }
             };
 
-            let row = Row::new(vec![label_cell, value_cell]).style(row_style);
+            let row = Row::new(vec![label_cell, value_cell]).style(row_style.patch(text_style));
             rows.push(row);
         }
         rows

@@ -8,14 +8,21 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
-use ratatui::{Frame, Terminal, backend::Backend, layout::Rect, style::Style, widgets::Block};
+use ratatui::{
+    Frame, Terminal,
+    backend::Backend,
+    layout::{Alignment, Rect},
+    style::Style,
+    text::{Line, Span, Text},
+    widgets::{Block, Paragraph, Wrap},
+};
 
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
     common::error::{MapacheError, Result},
     repository::{lock::LockHandle, repo::Repository},
     ui::{
-        debug::LogBuffer,
+        debug::{self, LogBuffer},
         tui::{
             help, logs,
             screens::dashboard::DashboardScreen,
@@ -75,6 +82,42 @@ pub enum Transition {
     Quit,
 }
 
+/// Smallest terminal the screens are laid out for. Below this columns and
+/// borders would clip, so the app shows a hint instead of a broken layout.
+const MIN_TERMINAL_WIDTH: u16 = 80;
+const MIN_TERMINAL_HEIGHT: u16 = 24;
+
+/// Draws a centred hint when the terminal is smaller than the screens need.
+fn render_too_small(frame: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled("Terminal too small", theme::THEME.header)),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(
+                "needs at least {MIN_TERMINAL_WIDTH}\u{d7}{MIN_TERMINAL_HEIGHT}, current {}x{}",
+                area.width, area.height
+            ),
+            theme::THEME.footer,
+        )),
+        Line::from(Span::styled(
+            "resize the window, or press q / Ctrl+C to quit",
+            theme::THEME.footer,
+        )),
+    ];
+    let height = lines.len() as u16;
+    let target = Rect {
+        y: area.y + area.height.saturating_sub(height) / 2,
+        height: height.min(area.height),
+        ..area
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        target,
+    );
+}
+
 /// A modal panel drawn over the active screen. Only one can be open at a time;
 /// while one is open it captures keyboard and mouse input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -127,7 +170,7 @@ impl App {
             overlay: Overlay::None,
             overlay_scroll: 0,
             last_area: Rect::default(),
-            log_buffer: crate::ui::debug::log_buffer(),
+            log_buffer: debug::log_buffer(),
         }
     }
 
@@ -381,6 +424,11 @@ impl App {
             area,
         );
 
+        if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
+            render_too_small(frame, area);
+            return;
+        }
+
         if let Some(active) = self.stack.last_mut() {
             active.render(frame);
         }
@@ -420,9 +468,11 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ui::tui::background::BackgroundTask;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::ui::tui::{background::BackgroundTask, test_support::render_text};
+
+    use super::*;
 
     struct WorkerScreen {
         signal: Arc<AtomicBool>,
@@ -616,5 +666,27 @@ mod tests {
             .await;
         assert_eq!(app.overlay, Overlay::Logs);
         assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn tiny_terminal_shows_a_resize_hint() {
+        let (mut app, _finished) = worker_app(false);
+        let text = render_text(40, 10, |frame| app.render(frame));
+
+        assert!(text.contains("Terminal too small"), "got: {text}");
+        assert!(
+            text.contains(&format!(
+                "needs at least {MIN_TERMINAL_WIDTH}\u{d7}{MIN_TERMINAL_HEIGHT}"
+            )),
+            "got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_terminal_renders_the_active_screen() {
+        let (mut app, _finished) = worker_app(false);
+        let text = render_text(80, 24, |frame| app.render(frame));
+
+        assert!(!text.contains("Terminal too small"), "got: {text}");
     }
 }

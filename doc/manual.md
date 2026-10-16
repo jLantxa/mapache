@@ -1656,6 +1656,15 @@ Launches an interactive terminal user interface with screens for:
 Press `?` (or `F1`) anywhere for a list of key bindings, `Ctrl+C` to quit, and
 use the mouse wheel to scroll.
 
+The TUI adapts its colours to the terminal. `--theme auto|dark|light` selects
+the colour scheme; `auto`, the default, detects a light terminal where the
+terminal reports it and falls back to dark. `--color
+auto|truecolor|ansi256|ansi16|never` selects the colour depth; `auto`, the
+default, detects the terminal's support and steps a 24-bit palette down to the
+256- or 16-colour palette when needed. Setting `NO_COLOR` disables colour
+entirely. Terminals smaller than 80x24 show a resize hint instead of a clipped
+layout.
+
 Quitting during snapshot, restore, clean or verify requests cancellation and
 waits for the operation to finish before releasing the session lock. Clean
 requires exclusive access while executing GC; it refuses to run if another

@@ -318,13 +318,16 @@ impl ForgetScreen {
                 let style = if is_selected {
                     Style::default().fg(theme::THEME.red)
                 } else {
-                    Style::default()
+                    Style::default().fg(theme::THEME.file_fg)
                 };
 
                 let [id, date, host] = snapshot_cells(e);
                 let mut cells = vec![Span::styled(selected_str, style), id, date, host];
                 if show_tags {
-                    cells.push(Span::raw(theme::format_tags(&e.snapshot.tags)));
+                    cells.push(Span::styled(
+                        theme::format_tags(&e.snapshot.tags),
+                        theme::THEME.subtext,
+                    ));
                 }
                 Row::new(cells)
             })

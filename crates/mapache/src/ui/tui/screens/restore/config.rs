@@ -107,7 +107,9 @@ impl RestoreConfig {
                 .as_deref()
                 .unwrap_or("unknown")
         );
-        let info = Paragraph::new(info_text).block(theme::block("Restore Configuration"));
+        let info = Paragraph::new(info_text)
+            .style(ratatui::style::Style::new().fg(theme::THEME.file_fg))
+            .block(theme::block("Restore Configuration"));
         frame.render_widget(info, chunks[0]);
 
         self.form.render(frame, chunks[1], "Options");

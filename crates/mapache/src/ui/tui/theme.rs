@@ -1,3 +1,5 @@
+use std::sync::{LazyLock, OnceLock};
+
 use super::widgets::text_width;
 use ratatui::{
     Frame,
@@ -71,9 +73,13 @@ pub(crate) fn field_spans(
     Line::from(spans)
 }
 
-/// A label/value row with a single unstyled value. See [`field_spans`].
+/// A label/value row with a single standard text-styled value. See [`field_spans`].
 pub(crate) fn field(label: &str, label_width: usize, value: impl Into<String>) -> Line<'static> {
-    field_spans(label, label_width, vec![Span::raw(value.into())])
+    field_spans(
+        label,
+        label_width,
+        vec![Span::styled(value.into(), THEME.stat_value)],
+    )
 }
 
 /// Electric Pastel colour palette used throughout the TUI.
@@ -131,74 +137,380 @@ pub(crate) struct Theme {
     pub stat_value: Style,
 }
 
-// ── Electric Pastel (dark) ──────────────────────────────────────
-const ELECTRIC: Theme = {
+/// The colour scheme the TUI draws with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThemeVariant {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ThemeVariant {
+    /// Best-effort detection of a light terminal background.
+    ///
+    /// Terminals that export `COLORFGBG` (rxvt, Konsole and others) report the
+    /// foreground and background palette indices; a light background index means
+    /// the light theme. Everything else falls back to the dark theme, so the
+    /// historic look is preserved when nothing can be detected.
+    pub fn detect() -> Self {
+        let Ok(value) = std::env::var("COLORFGBG") else {
+            return Self::Dark;
+        };
+        let Some(background) = value.rsplit(';').next() else {
+            return Self::Dark;
+        };
+        match background.trim().parse::<u8>() {
+            // 7 is light grey and 9..=15 are the bright colours; 8 is dark grey.
+            Ok(index) if (7..=15).contains(&index) && index != 8 => Self::Light,
+            _ => Self::Dark,
+        }
+    }
+}
+
+/// How many colours the terminal can render.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorMode {
+    /// 24-bit RGB, used as-is.
+    #[default]
+    TrueColor,
+    /// The 256-colour xterm palette.
+    Ansi256,
+    /// The 16 base ANSI colours.
+    Ansi16,
+    /// No colour at all (`NO_COLOR`); only text modifiers are kept.
+    None,
+}
+
+impl ColorMode {
+    /// Detects the best colour depth for the current terminal.
+    ///
+    /// Honours the `NO_COLOR` convention and steps down to 256 or 16 colours
+    /// when the terminal does not advertise 24-bit support, so a truecolor theme
+    /// is never sent to a terminal that cannot render it.
+    pub fn detect() -> Self {
+        if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+            return Self::None;
+        }
+        if std::env::var_os("CLICOLOR_FORCE").is_some() {
+            return Self::TrueColor;
+        }
+        if std::env::var("TERM").as_deref() == Ok("dumb") {
+            return Self::None;
+        }
+        if matches!(
+            std::env::var("COLORTERM").as_deref(),
+            Ok("truecolor") | Ok("24bit")
+        ) {
+            return Self::TrueColor;
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows Terminal advertises itself through `WT_SESSION` and, like
+            // modern conhost with VT processing enabled (`init_console`),
+            // handles 24-bit colour. Older consoles get the 256-colour cube.
+            if std::env::var_os("WT_SESSION").is_some() {
+                Self::TrueColor
+            } else {
+                Self::Ansi256
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            if std::env::var("TERM").is_ok_and(|term| term.contains("256color")) {
+                Self::Ansi256
+            } else {
+                Self::Ansi16
+            }
+        }
+    }
+}
+
+/// Maps a theme colour onto the palette the terminal can actually render.
+fn degrade(color: Color, mode: ColorMode) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    match mode {
+        ColorMode::TrueColor => color,
+        ColorMode::Ansi256 => rgb_to_ansi256(r, g, b),
+        ColorMode::Ansi16 => rgb_to_ansi16(r, g, b),
+        ColorMode::None => Color::Reset,
+    }
+}
+
+fn channel_distance(a: u8, b: u8) -> i32 {
+    let delta = a as i32 - b as i32;
+    delta * delta
+}
+
+/// Nearest xterm-256 index for an RGB colour (colour cube plus grey ramp).
+fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> Color {
+    const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+    let nearest = |value: u8| {
+        CUBE.iter()
+            .enumerate()
+            .min_by_key(|&(_, &level)| channel_distance(level, value))
+            .map(|(index, &level)| (index, level))
+            .expect("the colour cube is never empty")
+    };
+    let (ri, rc) = nearest(r);
+    let (gi, gc) = nearest(g);
+    let (bi, bc) = nearest(b);
+    let cube_distance = channel_distance(r, rc) + channel_distance(g, gc) + channel_distance(b, bc);
+
+    // The grey ramp (indices 232..=255) matches greys better than the sparse
+    // cube levels, so it wins whenever it is closer.
+    let average = (r as i32 + g as i32 + b as i32) / 3;
+    let step = ((average - 8 + 5).max(0) / 10).min(23) as u8;
+    let grey = 8 + 10 * step;
+    let grey_distance =
+        channel_distance(r, grey) + channel_distance(g, grey) + channel_distance(b, grey);
+
+    if grey_distance < cube_distance {
+        Color::Indexed(232 + step)
+    } else {
+        Color::Indexed(16 + 36 * ri as u8 + 6 * gi as u8 + bi as u8)
+    }
+}
+
+/// Nearest base-16 ANSI colour for an RGB colour.
+fn rgb_to_ansi16(r: u8, g: u8, b: u8) -> Color {
+    const PALETTE: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    const COLORS: [Color; 16] = [
+        Color::Black,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Gray,
+        Color::DarkGray,
+        Color::LightRed,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightBlue,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::White,
+    ];
+
+    let index = PALETTE
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &(pr, pg, pb))| {
+            channel_distance(r, pr) + channel_distance(g, pg) + channel_distance(b, pb)
+        })
+        .map(|(index, _)| index)
+        .expect("the ANSI palette is never empty");
+    COLORS[index]
+}
+
+/// Raw 24-bit colours for one theme variant, before colour-depth degradation.
+struct Palette {
+    bg: Color,
+    surface: Color,
+    overlay: Color,
+    border_line: Color,
+    selection_bg: Color,
+    subtext_dim: Color,
+    subtext: Color,
+    text: Color,
+    blue: Color,
+    green: Color,
+    yellow: Color,
+    red: Color,
+    mauve: Color,
+    peach: Color,
+    teal: Color,
+    pink: Color,
+}
+
+/// Electric Pastel (dark).
+const DARK: Palette = {
     use Color::Rgb;
-    let bg = Rgb(14, 24, 30);
-    let surface = Rgb(22, 34, 42);
-    let overlay = Rgb(34, 46, 54);
-    let border_line = Rgb(56, 74, 88);
-    let selection_bg = Rgb(70, 92, 106);
-    let subtext_dim = Rgb(76, 100, 112);
-    let subtext = Rgb(132, 155, 167);
-    let text = Rgb(228, 235, 240);
-    let blue = Rgb(110, 180, 255);
-    let green = Rgb(110, 230, 150);
-    let yellow = Rgb(255, 215, 110);
-    let red = Rgb(255, 110, 135);
-    let mauve = Rgb(170, 110, 255);
-    let peach = Rgb(255, 170, 110);
-    let teal = Rgb(110, 230, 210);
-    let pink = Rgb(255, 110, 175);
-
-    Theme {
-        bg,
-        surface,
-        subtext_dim,
-        subtext,
-
-        blue,
-        green,
-        yellow,
-        red,
-        peach,
-        teal,
-
-        header: Style::new().fg(teal).add_modifier(Modifier::BOLD),
-        border: Style::new().fg(border_line),
-        border_focused: Style::new().fg(teal),
-        selection: Style::new().bg(selection_bg),
-        menu_key: Style::new().fg(teal).add_modifier(Modifier::BOLD),
-        menu_selected: Style::new().bg(teal).fg(bg).add_modifier(Modifier::BOLD),
-        footer: Style::new().fg(subtext),
-
-        snap_id: Style::new().fg(green),
-        snap_date: Style::new().fg(yellow),
-        snap_host: Style::new().fg(pink),
-        snap_size: Style::new().fg(mauve),
-        snap_active: Style::new().fg(green),
-        snap_inactive: Style::new().fg(subtext_dim),
-
-        dir_fg: blue,
-        file_fg: text,
-        symlink_fg: pink,
-        file_size: Style::new().fg(subtext_dim),
-        breadcrumb: Style::new().fg(teal).add_modifier(Modifier::BOLD),
-
-        progress_filled: teal,
-        progress_empty: overlay,
-
-        success: Style::new().fg(green).add_modifier(Modifier::BOLD),
-        error: Style::new().fg(red).add_modifier(Modifier::BOLD),
-        warning: Style::new().fg(yellow).add_modifier(Modifier::BOLD),
-        info: Style::new().fg(blue).add_modifier(Modifier::BOLD),
-
-        stat_label: Style::new().fg(subtext),
-        stat_value: Style::new().fg(text).add_modifier(Modifier::BOLD),
+    Palette {
+        bg: Rgb(14, 24, 30),
+        surface: Rgb(22, 34, 42),
+        overlay: Rgb(34, 46, 54),
+        border_line: Rgb(56, 74, 88),
+        selection_bg: Rgb(70, 92, 106),
+        subtext_dim: Rgb(76, 100, 112),
+        subtext: Rgb(132, 155, 167),
+        text: Rgb(228, 235, 240),
+        blue: Rgb(110, 180, 255),
+        green: Rgb(110, 230, 150),
+        yellow: Rgb(255, 215, 110),
+        red: Rgb(255, 110, 135),
+        mauve: Rgb(170, 110, 255),
+        peach: Rgb(255, 170, 110),
+        teal: Rgb(110, 230, 210),
+        pink: Rgb(255, 110, 175),
     }
 };
 
-pub(crate) static THEME: Theme = ELECTRIC;
+/// Electric Pastel (light): darker text and accents target at least 6:1
+/// contrast on the page, panels, and selected rows.
+const LIGHT: Palette = {
+    use Color::Rgb;
+    Palette {
+        bg: Rgb(250, 250, 248),
+        surface: Rgb(238, 240, 238),
+        overlay: Rgb(125, 138, 136),
+        border_line: Rgb(125, 138, 136),
+        selection_bg: Rgb(235, 242, 249),
+        subtext_dim: Rgb(78, 88, 94),
+        subtext: Rgb(76, 89, 96),
+        text: Rgb(26, 36, 42),
+        blue: Rgb(20, 80, 170),
+        green: Rgb(10, 104, 54),
+        yellow: Rgb(119, 84, 0),
+        red: Rgb(176, 28, 48),
+        mauve: Rgb(105, 50, 175),
+        peach: Rgb(149, 65, 0),
+        teal: Rgb(0, 101, 97),
+        pink: Rgb(168, 29, 106),
+    }
+};
+
+fn palette_for(variant: ThemeVariant) -> &'static Palette {
+    match variant {
+        ThemeVariant::Dark => &DARK,
+        ThemeVariant::Light => &LIGHT,
+    }
+}
+
+/// Builds the full theme for a variant, mapping every colour onto `mode`.
+fn build(variant: ThemeVariant, mode: ColorMode) -> Theme {
+    let palette = palette_for(variant);
+    let color = |color: Color| degrade(color, mode);
+    let bg = color(palette.bg);
+
+    // With colours disabled a background tint can no longer mark the selection,
+    // so fall back to reverse video, which every terminal understands.
+    let (selection, menu_selected) = if mode == ColorMode::None {
+        (
+            Style::new().add_modifier(Modifier::REVERSED),
+            Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+    } else {
+        let selection = Style::new().bg(color(palette.selection_bg));
+        let selection = if variant == ThemeVariant::Light {
+            selection.add_modifier(Modifier::BOLD)
+        } else {
+            selection
+        };
+        (
+            selection,
+            Style::new()
+                .bg(color(palette.teal))
+                .fg(bg)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    Theme {
+        bg,
+        surface: color(palette.surface),
+        subtext_dim: color(palette.subtext_dim),
+        subtext: color(palette.subtext),
+
+        blue: color(palette.blue),
+        green: color(palette.green),
+        yellow: color(palette.yellow),
+        red: color(palette.red),
+        peach: color(palette.peach),
+        teal: color(palette.teal),
+
+        header: Style::new()
+            .fg(color(palette.teal))
+            .add_modifier(Modifier::BOLD),
+        border: Style::new().fg(color(palette.border_line)),
+        border_focused: Style::new().fg(color(palette.teal)),
+        selection,
+        menu_key: Style::new()
+            .fg(color(palette.teal))
+            .add_modifier(Modifier::BOLD),
+        menu_selected,
+        footer: Style::new().fg(color(palette.subtext)),
+
+        snap_id: Style::new().fg(color(palette.green)),
+        snap_date: Style::new().fg(color(palette.yellow)),
+        snap_host: Style::new().fg(color(palette.pink)),
+        snap_size: Style::new().fg(color(palette.mauve)),
+        snap_active: Style::new().fg(color(palette.green)),
+        snap_inactive: Style::new().fg(color(palette.subtext_dim)),
+
+        dir_fg: color(palette.blue),
+        file_fg: color(palette.text),
+        symlink_fg: color(palette.pink),
+        file_size: Style::new().fg(color(palette.subtext_dim)),
+        breadcrumb: Style::new()
+            .fg(color(palette.teal))
+            .add_modifier(Modifier::BOLD),
+
+        progress_filled: color(palette.teal),
+        progress_empty: color(palette.overlay),
+
+        success: Style::new()
+            .fg(color(palette.green))
+            .add_modifier(Modifier::BOLD),
+        error: Style::new()
+            .fg(color(palette.red))
+            .add_modifier(Modifier::BOLD),
+        warning: Style::new()
+            .fg(color(palette.yellow))
+            .add_modifier(Modifier::BOLD),
+        info: Style::new()
+            .fg(color(palette.blue))
+            .add_modifier(Modifier::BOLD),
+
+        stat_label: Style::new().fg(color(palette.subtext)),
+        stat_value: Style::new()
+            .fg(color(palette.text))
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+/// Theme selection made once, before the first [`THEME`] access. The defaults
+/// keep the historic dark truecolor look for tests and for any caller that
+/// never initialises the theme.
+static SELECTION: OnceLock<(ThemeVariant, ColorMode)> = OnceLock::new();
+
+/// Selects the theme. Call before the TUI starts drawing; a later call is
+/// ignored because the theme is built lazily on first use.
+pub fn init(variant: ThemeVariant, mode: ColorMode) {
+    let _ = SELECTION.set((variant, mode));
+}
+
+/// The active theme, built once on first use from the selection made by [`init`].
+pub(crate) static THEME: LazyLock<Theme> = LazyLock::new(|| {
+    let (variant, mode) = SELECTION
+        .get()
+        .copied()
+        .unwrap_or((ThemeVariant::Dark, ColorMode::TrueColor));
+    build(variant, mode)
+});
 
 // ── Convenience helpers ─────────────────────────────────────────
 
@@ -365,25 +677,193 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
+    const VARIANTS: [ThemeVariant; 2] = [ThemeVariant::Dark, ThemeVariant::Light];
+
     #[test]
     fn selection_is_visible_against_the_surface() {
         // WCAG 1.4.11 wants >= 3.0 for non-text UI; the palette aims for at
-        // least 2.0 here so selection is obvious without shouting.
-        let selection = THEME.selection.bg.expect("selection sets a background");
-        assert!(
-            contrast(selection, THEME.surface) >= 2.0,
-            "selection background blends into the surface"
-        );
+        // least 2.0 here so selection is obvious without shouting. The light
+        // theme uses a subtle highlight instead, with bold text preserving the
+        // selected-row cue while keeping colored text readable.
+        for variant in VARIANTS {
+            let theme = build(variant, ColorMode::TrueColor);
+            let selection = theme.selection.bg.expect("selection sets a background");
+            if variant == ThemeVariant::Light {
+                assert!(theme.selection.add_modifier.contains(Modifier::BOLD));
+                assert!(contrast(selection, theme.surface) > 1.0);
+            } else {
+                assert!(
+                    contrast(selection, theme.surface) >= 2.0,
+                    "{variant:?}: selection background blends into the surface"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn field_values_use_the_theme_text_style() {
+        let line = field("Path", 8, "C:\\backup");
+        assert_eq!(line.spans[1].style, THEME.stat_value);
     }
 
     #[test]
     fn footer_text_is_readable() {
-        // WCAG AA body-text contrast is 4.5:1.
-        let footer = THEME.footer.fg.expect("footer sets a foreground");
-        assert!(
-            contrast(footer, THEME.bg) >= 4.5,
-            "footer text contrast is too low"
-        );
+        // Light-theme body text targets 6:1 on both the page and panel surfaces.
+        for variant in VARIANTS {
+            let theme = build(variant, ColorMode::TrueColor);
+            let footer = theme.footer.fg.expect("footer sets a foreground");
+            assert!(
+                contrast(footer, theme.bg) >= 6.0,
+                "{variant:?}: footer text contrast is too low"
+            );
+            if variant == ThemeVariant::Light {
+                for (name, color) in [
+                    ("footer", footer),
+                    ("dim text", theme.subtext_dim),
+                    (
+                        "stat label",
+                        theme.stat_label.fg.expect("stat label sets a foreground"),
+                    ),
+                ] {
+                    for (surface, background) in [("page", theme.bg), ("panel", theme.surface)] {
+                        assert!(
+                            contrast(color, background) >= 6.0,
+                            "{variant:?}: {name} contrast is too low on the {surface} background"
+                        );
+                    }
+                }
+                for (name, color) in [
+                    ("text", theme.file_fg),
+                    ("subtext", theme.subtext),
+                    ("dim text", theme.subtext_dim),
+                    ("blue", theme.blue),
+                    ("green", theme.green),
+                    ("yellow", theme.yellow),
+                    ("red", theme.red),
+                    ("peach", theme.peach),
+                    ("teal", theme.teal),
+                    (
+                        "mauve",
+                        theme.snap_size.fg.expect("snapshot size sets a foreground"),
+                    ),
+                    ("pink", theme.symlink_fg),
+                ] {
+                    for background in [
+                        theme.bg,
+                        theme.surface,
+                        theme.selection.bg.expect("selection sets a background"),
+                    ] {
+                        assert!(
+                            contrast(color, background) >= 6.0,
+                            "light-theme {name} color {color:?} is below 6:1 on {background:?}"
+                        );
+                    }
+                }
+                assert!(
+                    contrast(
+                        theme
+                            .menu_selected
+                            .fg
+                            .expect("selected menu sets a foreground"),
+                        theme
+                            .menu_selected
+                            .bg
+                            .expect("selected menu sets a background"),
+                    ) >= 6.0,
+                    "selected menu text contrast is below 6:1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn light_progress_track_is_visible_on_page_and_panel_backgrounds() {
+        let theme = build(ThemeVariant::Light, ColorMode::TrueColor);
+        for background in [theme.bg, theme.surface] {
+            assert!(
+                contrast(theme.progress_empty, background) >= 3.0,
+                "empty progress track is hard to distinguish from its background"
+            );
+            assert!(
+                contrast(
+                    theme.border.fg.expect("border sets a foreground"),
+                    background
+                ) >= 3.0,
+                "border is hard to distinguish from its background"
+            );
+        }
+    }
+
+    #[test]
+    fn accents_stay_readable_on_the_selection_background() {
+        for variant in VARIANTS {
+            let theme = build(variant, ColorMode::TrueColor);
+            let selection = theme.selection.bg.expect("selection sets a background");
+            let minimum_contrast = if variant == ThemeVariant::Light {
+                6.0
+            } else {
+                2.0
+            };
+            for (name, style) in [
+                ("snap_id", theme.snap_id),
+                ("snap_date", theme.snap_date),
+                ("snap_host", theme.snap_host),
+                ("snap_size", theme.snap_size),
+                ("blue", Style::new().fg(theme.blue)),
+                ("green", Style::new().fg(theme.green)),
+                ("yellow", Style::new().fg(theme.yellow)),
+                ("red", Style::new().fg(theme.red)),
+                ("peach", Style::new().fg(theme.peach)),
+                ("teal", Style::new().fg(theme.teal)),
+            ] {
+                let fg = style.fg.expect("column styles set a foreground");
+                assert!(
+                    contrast(fg, selection) >= minimum_contrast,
+                    "{variant:?}: {name} is hard to read on a selected row"
+                );
+            }
+            if variant == ThemeVariant::Light {
+                assert!(
+                    contrast(theme.subtext_dim, selection) >= minimum_contrast,
+                    "{variant:?}: dim text is hard to read on a selected row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn colour_modes_degrade_the_palette() {
+        let truecolor = build(ThemeVariant::Dark, ColorMode::TrueColor);
+        assert!(matches!(truecolor.bg, Color::Rgb(..)));
+
+        let ansi256 = build(ThemeVariant::Dark, ColorMode::Ansi256);
+        assert!(matches!(ansi256.bg, Color::Indexed(_)));
+        assert!(matches!(ansi256.header.fg, Some(Color::Indexed(_))));
+
+        let ansi16 = build(ThemeVariant::Dark, ColorMode::Ansi16);
+        assert!(!matches!(ansi16.bg, Color::Rgb(..) | Color::Indexed(_)));
+
+        let none = build(ThemeVariant::Dark, ColorMode::None);
+        assert_eq!(none.bg, Color::Reset);
+        assert_eq!(none.footer.fg, Some(Color::Reset));
+        assert!(none.selection.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn ansi256_picks_the_nearest_cube_and_grey_levels() {
+        // Exact cube levels map to themselves: (95,95,95) is index 59.
+        assert_eq!(rgb_to_ansi256(95, 95, 95), Color::Indexed(59));
+        assert_eq!(rgb_to_ansi256(255, 255, 255), Color::Indexed(231));
+        assert_eq!(rgb_to_ansi256(0, 0, 0), Color::Indexed(16));
+        // Mid greys land on the 232..=255 ramp instead of the colour cube.
+        assert!(matches!(rgb_to_ansi256(128, 128, 128), Color::Indexed(i) if i >= 232));
+    }
+
+    #[test]
+    fn ansi16_picks_the_nearest_base_colour() {
+        assert_eq!(rgb_to_ansi16(255, 255, 255), Color::White);
+        assert_eq!(rgb_to_ansi16(0, 0, 0), Color::Black);
+        assert_eq!(rgb_to_ansi16(200, 20, 30), Color::LightRed);
     }
 
     #[test]

@@ -289,7 +289,7 @@ impl VerifyScreen {
                 lines.push(kv("Blobs dangling", summary.blobs_dangling.to_string()));
                 lines.push(kv(
                     "Snapshots verified",
-                    utils::format_count(summary.snapshots_verified, "snapshot", "snapshots"),
+                    summary.snapshots_verified.to_string(),
                 ));
                 lines.push(kv(
                     "Snapshots corrupt",

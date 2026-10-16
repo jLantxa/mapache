@@ -2,7 +2,7 @@
 name = "mapache"
 version = "0.7.1"
 edition = "2024"
-rust-version = "1.93.1"
+rust-version = "1.96.0"
 description = "Fast, secure, deduplicating, incremental backup tool"
 license = "GPL-3.0-only"
 repository.workspace = true
@@ -85,8 +85,13 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 anyhow = "1.0"
 flate2 = "1"
+hyper-util = { version = "0.1", features = ["server-auto", "http1", "tokio"] }
 proptest = "1.12"
 rstest = "0.27"
+# In-process S3 server used by the backend conformance tests (`s3s` + `s3s-fs`,
+# served with `hyper-util`). Never shipped.
+s3s = "0.17"
+s3s-fs = "0.17"
 scopeguard = "1.2"
 serial_test = "4.0"
 tar = "0.4"

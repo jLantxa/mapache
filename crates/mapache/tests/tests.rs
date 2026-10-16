@@ -9,6 +9,7 @@
 
 use std::sync::LazyLock;
 
+mod backend;
 mod integration_tests;
 pub mod synthetic;
 

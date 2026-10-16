@@ -19,6 +19,10 @@ pub struct S3Backend {
     bucket: Box<Bucket>,
     prefix: PathBuf,
     retry_opts: RetryOptions,
+    /// Optional override for the multipart-upload threshold, used by tests.
+    multipart_threshold: Option<u64>,
+    /// Optional override for the multipart part size, used by tests.
+    multipart_part_size: Option<u64>,
 }
 
 impl S3Backend {
@@ -49,7 +53,21 @@ impl S3Backend {
             bucket,
             prefix,
             retry_opts: RetryOptions::default(),
+            multipart_threshold: None,
+            multipart_part_size: None,
         })
+    }
+
+    /// Overrides the multipart-upload threshold and part size.
+    ///
+    /// Production code uses the runtime defaults from [`defaults::runtime`];
+    /// this exists so tests can exercise the multipart code path without
+    /// writing hundreds of megabytes.
+    #[doc(hidden)]
+    pub fn with_multipart_config(mut self, threshold: u64, part_size: u64) -> Self {
+        self.multipart_threshold = Some(threshold);
+        self.multipart_part_size = Some(part_size);
+        self
     }
 
     fn key_from_path(&self, path: &Path) -> String {
@@ -197,7 +215,9 @@ impl StorageBackend for S3Backend {
         tracing::trace!(target: "backend", "S3: write {:?} ({} bytes)", handle.path, content_len);
 
         let d = defaults::runtime();
-        if (content_len as u64) < d.s3_multipart_threshold {
+        let threshold = self.multipart_threshold.unwrap_or(d.s3_multipart_threshold);
+        let part_size = self.multipart_part_size.unwrap_or(d.s3_multipart_part_size) as usize;
+        if (content_len as u64) < threshold {
             self.retry(|| async {
                 let response = self.bucket.put_object(&key, &contents).await?;
                 if response.status_code() >= 400 {
@@ -227,7 +247,7 @@ impl StorageBackend for S3Backend {
             let mut current_offset: usize = 0;
 
             while current_offset < content_len {
-                let end = (current_offset + d.s3_multipart_part_size as usize).min(content_len);
+                let end = (current_offset + part_size).min(content_len);
                 let part_data = &contents[current_offset..end];
 
                 let etag_res = self

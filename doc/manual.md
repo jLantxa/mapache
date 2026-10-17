@@ -1626,6 +1626,8 @@ extension) by `forget`. The snapshot is reactivated and will appear in
 
 ```bash
 mapache tui -r <URL>
+mapache tui -r <URL> --theme light
+mapache tui -r <URL> --color ansi256
 ```
 
 Launches an interactive terminal user interface with screens for:
@@ -1654,16 +1656,28 @@ Launches an interactive terminal user interface with screens for:
   pass/fail report with the integrity counters
 
 Press `?` (or `F1`) anywhere for a list of key bindings, `Ctrl+C` to quit, and
-use the mouse wheel to scroll.
+use the mouse wheel to scroll. `q` returns to the previous screen — cancelling
+any running operation — and only quits from the dashboard. Long-running work
+such as loading the dashboard, searching, diffing, or snapshot, restore, clean
+and verify runs in the background, so the interface stays responsive.
 
-The TUI adapts its colours to the terminal. `--theme auto|dark|light` selects
-the colour scheme; `auto`, the default, detects a light terminal where the
-terminal reports it and falls back to dark. `--color
-auto|truecolor|ansi256|ansi16|never` selects the colour depth; `auto`, the
-default, detects the terminal's support and steps a 24-bit palette down to the
-256- or 16-colour palette when needed. Setting `NO_COLOR` disables colour
-entirely. Terminals smaller than 80x24 show a resize hint instead of a clipped
-layout.
+Transient toasts report info, success, warnings and errors. Click a toast to
+dismiss it, or press `Ctrl+N` for the notification centre, which keeps the full
+history (`c` clears it, `Esc` or `Ctrl+N` closes it). `Ctrl+L` opens an overlay
+of recent log records, which are captured even when `MAPACHE_DEBUG_LEVEL` is
+unset (`c` clears it, `Esc` or `Ctrl+L` closes it).
+
+### TUI Colours and Themes
+
+The TUI adapts its colours to the terminal and ships a dark and a light
+palette:
+
+| Flag | Values | Description |
+|---|---|---|
+| `--theme <THEME>` | `auto` (default), `dark`, `light` | Colour scheme. `auto` uses the light palette when the terminal reports a light background (via `COLORFGBG`) and otherwise falls back to dark. |
+| `--color <COLOR>` | `auto` (default), `truecolor`, `ansi256`, `ansi16`, `never` | Colour depth. `auto` detects the terminal's support and steps a 24-bit palette down to the 256- or 16-colour palette when needed. `never` disables colour, as does setting `NO_COLOR`. |
+
+Terminals smaller than 80x24 show a resize hint instead of a clipped layout.
 
 Quitting during snapshot, restore, clean or verify requests cancellation and
 waits for the operation to finish before releasing the session lock. Clean
@@ -1749,6 +1763,7 @@ include: `bash`, `zsh`, `fish`, `powershell`, `elvish`, and `nushell`.
 | `MAPACHE_REFRESH_RATE` | UI progress refresh rate in Hz (float) |
 | `MAPACHE_DEBUG_PATH` | Directory to write debug logs to |
 | `MAPACHE_DEBUG_LEVEL` | Debug log level: `trace`, `debug`, `info`, `warn`, `error` (default: `debug`) |
+| `NO_COLOR` | Disable colour in the TUI (equivalent to `--color never`) |
 
 If `MAPACHE_REPOSITORY` is set, the `-r` flag can be omitted for all commands.
 
@@ -1758,6 +1773,10 @@ authentication prompts are skipped.
 `MAPACHE_PASSWORD_COMMAND` has the same behavior as `--password-command` and
 is used when `--auth-file` is not supplied. Its output must be a JSON object
 with `username` and `password` string fields.
+
+The TUI also reads `TERM`, `COLORTERM` and `COLORFGBG` to detect the terminal's
+colour depth and whether its background is light or dark; see
+[TUI Colours and Themes](#tui-colours-and-themes).
 
 ---
 
@@ -2299,4 +2318,7 @@ Launch terminal user interface.
 
 ```
 mapache tui -r <URL>
+  --theme <THEME>         Colour scheme: auto|dark|light (default: auto)
+  --color <COLOR>         Colour depth: auto|truecolor|ansi256|ansi16|never
+                          (default: auto)
 ```

@@ -69,7 +69,7 @@
     selects the scheme (including a new light palette), `--color
     auto|truecolor|ansi256|ansi16|never` selects the colour depth and steps a
     24-bit palette down to 256 or 16 colours when the terminal needs it, and
-    `NO_COLOR` disables colour. Terminals smaller than 60x16 show a resize hint
+    `NO_COLOR` disables colour. Terminals smaller than 80x24 show a resize hint
     instead of a clipped layout.
 
 ### Changed

@@ -4,114 +4,56 @@
 
 ### Added
 
-- All `keep-*` retention settings in the TOML config accept `"None"`
-  (case-insensitive) to disable a rule without removing its entry.
-- Per-blob compression skipping. Already-compressed content is stored
-  uncompressed, saving CPU on snapshots. Controlled by:
-  - `skip-compression` / `--skip-compression <GLOB>`: never compress matching
-    file names.
-  - `force-compression` / `--force-compression <GLOB>`: always compress
-    matching file names.
-  - `skip-incompressible` / `--no-skip-incompressible`: sample a blob and skip
-    compression when it does not shrink at the configured level. Sampling uses
-    several evenly spaced windows, each judged on its own, and the blob is
-    skipped unless a majority of the windows shrink. Every blob is probed on its
-    own: a media file's compressible container header no longer forces the whole
-    file to be compressed. Enabled by default.
-  - Compression never expands a blob: blobs whose compressed form is not
-    smaller are stored raw.
-  - All of the above require repository format v2, and apply to bundles too.
-- `--compression auto` (now the default) selects the compression level
-  automatically; it currently resolves to the `fast` preset.
-- `snapshot --one-file-system` prevents traversal into child entries on a
-  different filesystem (Unix device IDs and Windows volume serial numbers).
-- `snapshot --fail-on-skipped` fails instead of saving snapshot metadata when
-  unreadable source items are omitted. The default behavior is unchanged.
-- Snapshot source selection and omission controls:
-  - `--files-from <PATH>` adds source paths from a one-per-line file, and
-    `--host <HOST>` sets the hostname recorded in the snapshot.
-  - `--exclude-if-present <FILE>` prunes directory contents when a marker is
-    present; `--exclude-caches` uses `CACHEDIR.TAG`.
-  - `--exclude-larger-than <SIZE>` omits regular files above the size limit.
-    Marker- and size-excluded items are counted as skipped and are covered by
-    `--fail-on-skipped`.
-- `--password-command <COMMAND>` and `MAPACHE_PASSWORD_COMMAND` provide
-  repository credentials through a shell command that emits a JSON object with
-  `username` and `password`. An auth file takes precedence; command failures
-  are reported rather than falling back to an interactive prompt.
-- `init` and bundle creation now always use the current format (v2); the
-  `--format` creation switches for legacy v1 have been removed. Existing v1
-  repositories can still be migrated, and legacy bundle data can still be read.
-- Terminal UI:
-  - New **Stats** (`6`), **Clean** (`7`) and **Verify** (`8`) screens wrap the
-    corresponding CLI commands, exposing their options, live progress and a
-    summary.
-  - A help overlay (`?`/`F1`) lists the global and per-screen keys, `Ctrl+C`
-    quits from any screen, the mouse wheel scrolls, and errors and warnings
-    that previously only reached the debug log now show on-screen
-    notifications.
-  - Snapshot, Restore, Forget, Clean and Verify forms expose their full set of
-    options, grouped under **Basic** and **Advanced** sections, scroll to keep
-    the focused field visible and show per-field help.
-  - The snapshot form exposes marker and size exclusions, a recorded hostname,
-    and a per-snapshot compression override. Snapshot summaries report skipped
-    source items when any were omitted.
-  - List inputs (source paths, restore selections, tags, host filters,
-    include/exclude patterns) use chips with keyboard editing.
-  - Forms validate input and ask for confirmation before discarding changed
-    values. Forget applies host/tag filters and supports keep-min and force.
-  - The dashboard header shows the session lock status.
-  - A notification centre (`Ctrl+N`) with the full history, `Info`/`Success`
-    notifications, click-to-dismiss toasts and `c` to clear it.
-  - A log overlay (`Ctrl+L`) showing recent log records; info-level records are
-    now captured even when `MAPACHE_DEBUG_LEVEL` is unset.
-  - The TUI adapts its colours to the terminal: `--theme auto|dark|light`
-    selects the scheme (including a new light palette), `--color
-    auto|truecolor|ansi256|ansi16|never` selects the colour depth and steps a
-    24-bit palette down to 256 or 16 colours when the terminal needs it, and
-    `NO_COLOR` disables colour. Terminals smaller than 80x24 show a resize hint
-    instead of a clipped layout.
+- **Compression policy**: content that is already compressed is stored
+  uncompressed. `--skip-compression <GLOB>` and `--force-compression <GLOB>`
+  override the per-file decision, and `--skip-incompressible`
+  (`--no-skip-incompressible` to disable it), enabled by default, samples each
+  blob on its own and skips compression unless it shrinks. Compression never
+  expands a blob. `--compression auto` (the new default) resolves to the `fast`
+  preset. All of this requires format v2 and applies to bundles too.
+- **Snapshot selection and omission**: `--one-file-system` stops at filesystem
+  boundaries; `--files-from <PATH>` and `--host <HOST>` add source paths and set
+  the recorded hostname; `--exclude-if-present <FILE>`, `--exclude-caches` and
+  `--exclude-larger-than <SIZE>` prune directories and oversized files; and
+  `--fail-on-skipped` fails instead of saving a snapshot that omitted items.
+  Skipped items are reported in the snapshot summary.
+- `--password-command <COMMAND>` / `MAPACHE_PASSWORD_COMMAND` obtain credentials
+  from a command that prints `{"username": ..., "password": ...}`. An auth file
+  takes precedence, and command failures are reported instead of prompting.
+- `keep-*` retention settings in the TOML config accept `"None"` to disable a
+  rule without removing its entry.
+- `init` and bundle creation always use format v2; the legacy `--format`
+  switches were removed. Existing v1 repositories can still be migrated, and
+  legacy bundle data can still be read.
+- **Terminal UI**: new **Stats** (`6`), **Clean** (`7`) and **Verify** (`8`)
+  screens, a help overlay (`?`/`F1`), a notification centre (`Ctrl+N`), a log
+  overlay (`Ctrl+L`) and on-screen errors and warnings. Snapshot, Restore,
+  Forget, Clean and Verify forms expose their full options under
+  **Basic**/**Advanced** sections, with chip-based list inputs, per-field help,
+  validation and discard confirmation. Colours adapt to the terminal
+  (`--theme`, `--color`, `NO_COLOR`), and undersized terminals show a resize
+  hint instead of a clipped layout.
 
 ### Changed
 
-- Boolean command-line flags no longer accept a `true`/`false` value; they are
-  now plain presence flags: `--no-scan`, `--one-file-system`,
-  `--fail-on-skipped`, `--skip-if-unchanged`, `--with-atime`, `--as-root`,
-  `--delete`, `--no-preserve-root`, `--quit-on-error`, `--sparse`, `--verify`,
-  `--strip-prefix`, `--no-cache`, `--quiet`, `--json`, `--no-lock` and
-  `--no-skip-incompressible`. This fixes a path argument being consumed as the
-  flag's value (for example `snapshot --no-scan /backup`). Their TOML
-  equivalents still accept `true`/`false`, and passing the flag still overrides
-  the configured value.
-- Snapshot progress scanning now reads only node type, size, and filesystem
-  device metadata, avoiding extended attribute, file flag, and symlink target
-  queries. Snapshots continue to capture full metadata.
-- Marker-pruned directory contents are now included in the skipped-item count,
-  so `snapshot --fail-on-skipped` also rejects snapshots that omit those items.
+- Boolean flags are now plain presence flags (`--no-scan`, `--one-file-system`,
+  `--fail-on-skipped`, `--verify`, `--delete`, ...): a following path argument
+  is no longer consumed as a `true`/`false` value. TOML equivalents still accept
+  `true`/`false`, and passing the flag still overrides the configured value.
+- Snapshot progress scanning reads only node type, size and filesystem device
+  metadata, skipping extended attributes, file flags and symlink targets.
+- Marker-pruned directory contents count as skipped items, so
+  `--fail-on-skipped` also rejects snapshots that omit them.
 
 ### Fixed
 
-- Restore wildcard includes now expand against the snapshot's tree ID, fixing
-  filtered restores from both the CLI and TUI.
-- Terminal UI:
-  - Screen close and quit now manage the session lock and operation lifecycle
-    correctly: Clean takes exclusive access and restores the prior mode,
-    quitting stops running operations cooperatively, and background failures
-    are reported.
-  - Superseded stats tasks are canceled and awaited, retention discards
-    restore the last applied values, numeric fields accept typed digits and
-    clamp to their range, and progress views list log entries chronologically.
-  - Improved contrast, empty dashboard states and layout on narrow and wide
-    terminals (wrapping, no table or popup overflow).
-  - The dashboard loads snapshots and the find/diff views run their work in the
-    background, so the UI stays responsive and long operations can be cancelled;
-    the TUI only redraws while something is animating.
-  - Layout, wrapping and truncation use Unicode display width, so wide (CJK)
-    glyphs and combining marks no longer misalign tables and popups.
-  - `q` now consistently returns to the previous screen on every sub-screen
-    (cancelling any running task) and only quits from the dashboard.
-  - Pressing Enter on a find result opens the file explorer on the matched
-    item's directory with the item selected, instead of the snapshot root.
+- Restore wildcard includes expand against the snapshot's tree ID, fixing
+  filtered restores from the CLI and TUI.
+- Terminal UI: screens close and quit with correct session-lock and operation
+  lifecycle handling; background work keeps the UI responsive and cancellable;
+  layout, wrapping and truncation use Unicode display width; `q` returns to the
+  previous screen and only the dashboard quits; and Enter on a find result opens
+  the file explorer on the matched item.
 
 ## v0.7.1 (2026-10-05)
 

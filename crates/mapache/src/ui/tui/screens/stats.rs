@@ -543,6 +543,19 @@ fn build_lines(report: &StatsReport) -> Vec<Line<'static>> {
         kv("Total size", size(report.total_repo_bytes)),
     ]);
 
+    const LABEL_WIDTH: usize = 26;
+    for line in &mut lines {
+        if let Some(label) = line.spans.first_mut()
+            && label.style == theme::THEME.stat_label
+        {
+            let label_text = label.content.trim().to_string();
+            *label = Span::styled(
+                format!("  {label_text:<LABEL_WIDTH$}"),
+                theme::THEME.stat_label,
+            );
+        }
+    }
+
     lines
 }
 
@@ -603,6 +616,12 @@ mod tests {
             headers,
             vec!["Packs", "Index", "Snapshots", "Keys", "Repository"]
         );
+
+        let pack_row = lines
+            .iter()
+            .position(|line| line.to_string().contains("Pack files"))
+            .unwrap();
+        assert_eq!(lines[pack_row].spans[0].content.len(), 28);
 
         let dangling = lines
             .iter()

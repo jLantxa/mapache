@@ -172,7 +172,7 @@ impl ToastEntry {
     }
 }
 
-/// Queue of transient notifications (rendered as a stack in the bottom-right
+/// Queue of transient notifications (rendered as a centered stack
 /// corner) plus a longer-lived history for the notification centre.
 #[derive(Default)]
 pub struct ToastQueue {
@@ -224,25 +224,34 @@ impl ToastQueue {
     /// The rectangles of the currently visible toasts, newest first, paired
     /// with their index in `entries`. Used for both rendering and hit-testing.
     fn visible_rects(&self, area: Rect) -> Vec<(Rect, usize)> {
-        let mut rects = Vec::new();
-        let mut y = area.y + area.height;
+        let mut visible = Vec::new();
+        let mut stack_height: u16 = 0;
         for (idx, entry) in self.entries.iter().enumerate().rev() {
             let (width, height, _) = entry.toast().layout(area);
-            y = y.saturating_sub(height);
-            if y < area.y {
+            let gap = u16::from(!visible.is_empty());
+            let next_height = stack_height.saturating_add(gap).saturating_add(height);
+            if next_height > area.height {
                 break;
             }
+            stack_height = next_height;
+            visible.push((width, height, idx));
+        }
+
+        let mut y = area.y + area.height.saturating_sub(stack_height) / 2;
+        let mut rects = Vec::with_capacity(visible.len());
+        for (width, height, idx) in visible.into_iter().rev() {
             rects.push((
                 Rect {
-                    x: area.x + area.width.saturating_sub(width),
+                    x: area.x + area.width.saturating_sub(width) / 2,
                     y,
                     width,
                     height,
                 },
                 idx,
             ));
-            y = y.saturating_sub(1);
+            y = y.saturating_add(height).saturating_add(1);
         }
+        rects.reverse();
         rects
     }
 
@@ -268,8 +277,8 @@ impl ToastQueue {
         }
     }
 
-    /// Renders the queue anchored to the bottom-right of `area`, newest
-    /// entry at the bottom. Older entries that do not fit are skipped.
+    /// Renders a centered stack, with the newest entry at the bottom. Older
+    /// entries that do not fit are skipped.
     pub fn render(&self, area: Rect, frame: &mut Frame) {
         for (rect, idx) in self.visible_rects(area) {
             let toast = self.entries[idx].toast();
@@ -474,6 +483,29 @@ mod tests {
 
         // A click outside every toast is ignored.
         assert!(!queue.dismiss_at(area, 0, 0));
+    }
+
+    #[test]
+    fn visible_toasts_are_centered_as_a_stack() {
+        let mut queue = ToastQueue::default();
+        queue.push(ToastKind::Info, "first");
+        queue.push(ToastKind::Success, "second");
+
+        let area = Rect::new(4, 2, 80, 24);
+        let rects = queue.visible_rects(area);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].1, 1);
+        assert_eq!(rects[1].1, 0);
+
+        for (rect, _) in &rects {
+            assert_eq!(rect.x - area.x, area.width.saturating_sub(rect.width) / 2);
+        }
+
+        let top = rects[1].0.y;
+        let bottom = rects[0].0.y + rects[0].0.height;
+        let top_margin = top - area.y;
+        let bottom_margin = area.y + area.height - bottom;
+        assert!(top_margin.abs_diff(bottom_margin) <= 1);
     }
 
     #[test]

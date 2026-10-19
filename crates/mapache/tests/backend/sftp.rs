@@ -10,6 +10,7 @@
 //! authentication (the suite itself exercises password auth and the data path).
 
 use std::{
+    any::Any,
     collections::HashMap,
     fs,
     io::{Read, Seek, SeekFrom, Write},
@@ -26,7 +27,7 @@ use mapache::backend::{
 };
 use russh::{
     Channel, ChannelId,
-    keys::PrivateKey,
+    keys::{PrivateKey, PublicKey},
     server::{Auth, ChannelOpenHandle, Msg, Server as _, Session},
 };
 use russh_sftp::protocol::{
@@ -72,72 +73,159 @@ pub enum SftpAuth {
     PublicKey,
 }
 
+/// The credentials the in-process server is willing to accept.
+///
+/// The server enforces the policy rather than accepting everything, so the
+/// authentication tests exercise both the accept and the reject paths.
+#[derive(Clone)]
+enum AuthPolicy {
+    /// Accept only this password (and reject public-key authentication).
+    Password(String),
+    /// Accept only this public key (and reject password authentication).
+    PublicKey(PublicKey),
+}
+
 pub async fn build() -> Result<Fixture> {
     build_with(SftpAuth::default()).await
 }
 
 pub async fn build_with(auth: SftpAuth) -> Result<Fixture> {
-    let dir = tempfile::tempdir().context("creating temporary directory for the SFTP server")?;
-    let root = dir.path().to_path_buf();
-    fs::create_dir_all(root.join(BASE_DIR)).context("creating SFTP repository directory")?;
+    let policy = match auth {
+        SftpAuth::Password => AuthPolicy::Password(PASSWORD.to_string()),
+        SftpAuth::PublicKey => AuthPolicy::PublicKey(client_public_key()?),
+    };
+    let server = TestServer::start(policy).await?;
+    build_fixture(server, BASE_DIR, auth).await
+}
 
-    // Parse the host key and derive the public half *before* the key is moved
-    // into the server configuration.
-    let host_key = PrivateKey::from_openssh(HOST_KEY).context("parsing the test host key")?;
-    // The OpenSSH public-key encoding is `"<algorithm> <base64> [comment]"`,
-    // where the second field is exactly `base64(public_key.to_bytes())` -- the
-    // same key material `SftpBackend` compares against `known_hosts`.
-    let openssh_key = host_key
+/// The Ed25519 public half of [`CLIENT_KEY`].
+fn client_public_key() -> Result<PublicKey> {
+    Ok(PrivateKey::from_openssh(CLIENT_KEY)
+        .context("parsing the test client key")?
         .public_key()
-        .to_openssh()
-        .context("encoding the test host key")?;
-    let mut key_fields = openssh_key.split_whitespace();
-    let host_key_alg = key_fields
-        .next()
-        .context("OpenSSH public key has no algorithm")?;
-    let host_key_b64 = key_fields
-        .next()
-        .context("OpenSSH public key has no key material")?;
+        .clone())
+}
 
-    let config = Arc::new(russh::server::Config {
-        // Keep handshakes instant in tests.
-        auth_rejection_time: Duration::ZERO,
-        auth_rejection_time_initial: Some(Duration::ZERO),
-        inactivity_timeout: None,
-        keys: vec![host_key],
-        ..Default::default()
-    });
-
-    let listener = TcpListener::bind(("127.0.0.1", 0))
+/// Builds a fixture whose backend is rooted at `base_path` on `server`.
+async fn build_fixture(server: TestServer, base_path: &str, auth: SftpAuth) -> Result<Fixture> {
+    fs::create_dir_all(server.root.join(base_path))
+        .context("creating SFTP repository directory")?;
+    let backend = server.connect(base_path, auth).await?;
+    backend
+        .create()
         .await
-        .context("binding the in-process SFTP server")?;
-    let addr = listener
-        .local_addr()
-        .context("reading SFTP server address")?;
+        .context("initializing the SFTP backend")?;
 
-    let mut server = Server { root: root.clone() };
-    let task = tokio::spawn(async move {
-        let _ = server.run_on_socket(config, &listener).await;
-    });
+    Ok(Fixture::new(backend, server.into_guards()))
+}
 
-    // `SftpBackend` verifies the host key against a `known_hosts` file built
-    // from `base64(public_key.to_bytes())`, which is the second field of the
-    // OpenSSH encoding used above.
-    let host_port = format!("[{}]:{}", addr.ip(), addr.port());
-    let known_hosts = root.join("known_hosts");
-    fs::write(
-        &known_hosts,
-        format!("{host_port} {host_key_alg} {host_key_b64}\n"),
-    )
-    .context("writing the test known_hosts file")?;
+/// An in-process SFTP server bound to an ephemeral loopback port and backed by
+/// a temporary directory.
+struct TestServer {
+    addr: SocketAddr,
+    root: PathBuf,
+    host_key_alg: String,
+    host_key_b64: String,
+    task: AbortOnDrop,
+    dir: tempfile::TempDir,
+}
 
-    let backend = Arc::new(
-        SftpBackend::new(
-            PathBuf::from(BASE_DIR),
+impl TestServer {
+    /// Boots the server on an ephemeral loopback port with the given auth policy.
+    async fn start(policy: AuthPolicy) -> Result<Self> {
+        let dir =
+            tempfile::tempdir().context("creating temporary directory for the SFTP server")?;
+        let root = dir.path().to_path_buf();
+
+        // Parse the host key and derive the public half *before* the key is
+        // moved into the server configuration.
+        let host_key = PrivateKey::from_openssh(HOST_KEY).context("parsing the test host key")?;
+        // The OpenSSH public-key encoding is `"<algorithm> <base64> [comment]"`,
+        // where the second field is exactly `base64(public_key.to_bytes())` --
+        // the same key material `SftpBackend` compares against `known_hosts`.
+        let openssh_key = host_key
+            .public_key()
+            .to_openssh()
+            .context("encoding the test host key")?;
+        let mut key_fields = openssh_key.split_whitespace();
+        let host_key_alg = key_fields
+            .next()
+            .context("OpenSSH public key has no algorithm")?
+            .to_string();
+        let host_key_b64 = key_fields
+            .next()
+            .context("OpenSSH public key has no key material")?
+            .to_string();
+
+        let config = Arc::new(russh::server::Config {
+            // Keep handshakes instant in tests.
+            auth_rejection_time: Duration::ZERO,
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            inactivity_timeout: None,
+            keys: vec![host_key],
+            ..Default::default()
+        });
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .context("binding the in-process SFTP server")?;
+        let addr = listener
+            .local_addr()
+            .context("reading SFTP server address")?;
+
+        let mut server = Server {
+            root: root.clone(),
+            policy,
+        };
+        let task = tokio::spawn(async move {
+            let _ = server.run_on_socket(config, &listener).await;
+        });
+
+        Ok(Self {
+            addr,
+            root,
+            host_key_alg,
+            host_key_b64,
+            task: AbortOnDrop::new(task),
+            dir,
+        })
+    }
+
+    /// Connects a backend rooted at `base_path` using the requested scheme.
+    async fn connect(&self, base_path: &str, auth: SftpAuth) -> Result<Arc<SftpBackend>> {
+        let method = self.auth_method(base_path, auth)?;
+        self.connect_with(base_path, method).await
+    }
+
+    /// Connects a backend rooted at `base_path` with an explicit `AuthMethod`.
+    async fn connect_with(
+        &self,
+        base_path: &str,
+        auth_method: AuthMethod,
+    ) -> Result<Arc<SftpBackend>> {
+        // `SftpBackend` verifies the host key against a `known_hosts` file built
+        // from `base64(public_key.to_bytes())`, which is the second field of the
+        // OpenSSH encoding used in `start`.
+        let host_port = format!("[{}]:{}", self.addr.ip(), self.addr.port());
+        let known_hosts = self
+            .root
+            .join(format!("known_hosts-{}", sanitize(base_path)));
+        fs::write(
+            &known_hosts,
+            format!(
+                "{host_port} {alg} {b64}\n",
+                alg = self.host_key_alg,
+                b64 = self.host_key_b64
+            ),
+        )
+        .context("writing the test known_hosts file")?;
+
+        let backend = SftpBackend::new(
+            PathBuf::from(base_path),
             USER.to_string(),
-            addr.ip().to_string(),
-            addr.port(),
-            auth_method(&root, auth)?,
+            self.addr.ip().to_string(),
+            self.addr.port(),
+            auth_method,
             &BackendOptions {
                 repo_path: String::new(),
                 ssh_privatekey: None,
@@ -148,35 +236,38 @@ pub async fn build_with(auth: SftpAuth) -> Result<Fixture> {
             },
         )
         .await
-        .context("connecting to the in-process SFTP server")?,
-    );
+        .context("connecting to the in-process SFTP server")?;
 
-    backend
-        .create()
-        .await
-        .context("initializing the SFTP backend")?;
+        Ok(Arc::new(backend))
+    }
 
-    Ok(Fixture::new(
-        backend,
+    /// Builds the `AuthMethod` for the requested scheme, materializing the client
+    /// key on disk for public-key authentication.
+    fn auth_method(&self, base_path: &str, auth: SftpAuth) -> Result<AuthMethod> {
+        Ok(match auth {
+            SftpAuth::Password => AuthMethod::Password(Zeroizing::new(PASSWORD.to_string())),
+            SftpAuth::PublicKey => {
+                let key_path = self
+                    .root
+                    .join(format!("client_key-{}", sanitize(base_path)));
+                fs::write(&key_path, CLIENT_KEY).context("writing the test client key")?;
+                AuthMethod::PubKey {
+                    private_key: key_path,
+                    passphrase: None,
+                }
+            }
+        })
+    }
+
+    fn into_guards(self) -> Vec<Box<dyn Any + Send>> {
         // Abort the server before removing its backing directory.
-        vec![Box::new(AbortOnDrop::new(task)), Box::new(dir)],
-    ))
+        vec![Box::new(self.task), Box::new(self.dir)]
+    }
 }
 
-/// Builds the `AuthMethod` for the requested scheme, materializing the client
-/// key on disk for public-key authentication.
-fn auth_method(root: &Path, auth: SftpAuth) -> Result<AuthMethod> {
-    Ok(match auth {
-        SftpAuth::Password => AuthMethod::Password(Zeroizing::new(PASSWORD.to_string())),
-        SftpAuth::PublicKey => {
-            let key_path = root.join("client_key");
-            fs::write(&key_path, CLIENT_KEY).context("writing the test client key")?;
-            AuthMethod::PubKey {
-                private_key: key_path,
-                passphrase: None,
-            }
-        }
-    })
+/// Turns a repository path into a safe file-name fragment.
+fn sanitize(path: &str) -> String {
+    path.replace('/', "_")
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +277,7 @@ fn auth_method(root: &Path, auth: SftpAuth) -> Result<AuthMethod> {
 #[derive(Clone)]
 struct Server {
     root: PathBuf,
+    policy: AuthPolicy,
 }
 
 impl russh::server::Server for Server {
@@ -194,6 +286,7 @@ impl russh::server::Server for Server {
     fn new_client(&mut self, _peer_addr: Option<SocketAddr>) -> SshSession {
         SshSession {
             root: self.root.clone(),
+            policy: self.policy.clone(),
             channels: HashMap::new(),
         }
     }
@@ -201,22 +294,39 @@ impl russh::server::Server for Server {
 
 struct SshSession {
     root: PathBuf,
+    policy: AuthPolicy,
     channels: HashMap<ChannelId, Channel<Msg>>,
 }
 
 impl russh::server::Handler for SshSession {
     type Error = anyhow::Error;
 
-    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
-        Ok(Auth::Accept)
+    async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
+        let accepted = match &self.policy {
+            AuthPolicy::Password(expected) => password == expected,
+            AuthPolicy::PublicKey(_) => false,
+        };
+        Ok(if accepted {
+            Auth::Accept
+        } else {
+            Auth::reject()
+        })
     }
 
     async fn auth_publickey(
         &mut self,
         _user: &str,
-        _public_key: &russh::keys::PublicKey,
+        public_key: &PublicKey,
     ) -> Result<Auth, Self::Error> {
-        Ok(Auth::Accept)
+        let accepted = match &self.policy {
+            AuthPolicy::Password(_) => false,
+            AuthPolicy::PublicKey(expected) => public_key.to_bytes()? == expected.to_bytes()?,
+        };
+        Ok(if accepted {
+            Auth::Accept
+        } else {
+            Auth::reject()
+        })
     }
 
     async fn channel_open_session(
@@ -547,8 +657,8 @@ impl russh_sftp::server::Handler for SftpHandler {
 }
 
 /// Public-key authentication against the in-process server: the backend
-/// connects with [`CLIENT_KEY`] and the server accepts the key, so the whole
-/// data path is exercised over a key-authenticated session.
+/// connects with [`CLIENT_KEY`] and the server accepts *only* that key, so the
+/// whole data path is exercised over a key-authenticated session.
 #[tokio::test]
 async fn public_key_authentication() -> Result<()> {
     let fixture = build_with(SftpAuth::PublicKey).await?;
@@ -565,5 +675,103 @@ async fn public_key_authentication() -> Result<()> {
         .read(&BackendHandle::new(Path::new("pubkey.txt")), 0, 0)
         .await?;
     ensure!(data == b"authenticated with a key");
+    Ok(())
+}
+
+/// The correct password authenticates; a wrong one is rejected.
+#[tokio::test]
+async fn rejects_wrong_password() -> Result<()> {
+    let server = TestServer::start(AuthPolicy::Password(PASSWORD.to_string())).await?;
+
+    let accepted = server.connect(BASE_DIR, SftpAuth::Password).await;
+    ensure!(accepted.is_ok(), "the correct password must authenticate");
+
+    let rejected = server
+        .connect_with(
+            BASE_DIR,
+            AuthMethod::Password(Zeroizing::new("not-the-password".to_string())),
+        )
+        .await;
+    ensure!(rejected.is_err(), "a wrong password must be rejected");
+    Ok(())
+}
+
+/// A public key the server does not trust must be rejected.
+#[tokio::test]
+async fn rejects_unknown_public_key() -> Result<()> {
+    // The server trusts the *host* key; the client authenticates with `CLIENT_KEY`.
+    let trusted = PrivateKey::from_openssh(HOST_KEY)
+        .context("parsing the test host key")?
+        .public_key()
+        .clone();
+    let server = TestServer::start(AuthPolicy::PublicKey(trusted)).await?;
+
+    let rejected = server.connect(BASE_DIR, SftpAuth::PublicKey).await;
+    ensure!(rejected.is_err(), "an unknown public key must be rejected");
+    Ok(())
+}
+
+/// A backend whose repository lives in a nested server directory must only see
+/// its own files, and must map repository-relative paths correctly.
+#[tokio::test]
+async fn non_empty_base_path_isolation() -> Result<()> {
+    let server = TestServer::start(AuthPolicy::Password(PASSWORD.to_string())).await?;
+
+    let nested = server.connect("nested/repo", SftpAuth::Password).await?;
+    let sibling = server.connect("sibling", SftpAuth::Password).await?;
+    nested.create().await?;
+    sibling.create().await?;
+
+    nested
+        .write(
+            &BackendHandle::new(Path::new("packs/a.pack")),
+            WriteContents::Borrowed(b"data"),
+        )
+        .await?;
+
+    ensure!(
+        nested
+            .read(&BackendHandle::new(Path::new("packs/a.pack")), 0, 0)
+            .await?
+            == b"data"
+    );
+
+    // Listing returns repository-relative paths, not server paths.
+    let entries = nested.list_dir(Path::new("packs")).await?;
+    ensure!(
+        entries.len() == 1 && entries[0].path() == Path::new("packs/a.pack"),
+        "unexpected entries: {entries:?}"
+    );
+    ensure!(nested.is_dir(Path::new("packs")).await);
+
+    // A sibling base path on the same server must not see it.
+    ensure!(!sibling.path_exists(Path::new("packs/a.pack")).await);
+    ensure!(sibling.list_dir(Path::new("")).await?.is_empty());
+    Ok(())
+}
+
+/// `lstat` must expose the POSIX permission bits applied by the backend's
+/// read-only post-processing, so that repository immutability is observable.
+#[tokio::test]
+async fn lstat_reports_readonly_permissions() -> Result<()> {
+    let fixture = build().await?;
+    let backend = fixture.backend();
+
+    backend
+        .write(
+            &BackendHandle::new(Path::new("ro.bin")),
+            WriteContents::Borrowed(b"1234"),
+        )
+        .await?;
+
+    let attr = backend.lstat(Path::new("ro.bin")).await?;
+    ensure!(attr.size == Some(4), "unexpected size: {:?}", attr.size);
+
+    #[cfg(any(unix, windows))]
+    ensure!(
+        attr.perm.map(|perm| perm & 0o777) == Some(0o400),
+        "a written file should be read-only, got {:?}",
+        attr.perm
+    );
     Ok(())
 }

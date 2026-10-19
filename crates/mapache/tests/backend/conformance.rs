@@ -139,6 +139,21 @@ pub async fn read_with_negative_offset_before_start_reads_whole_file(
     Ok(())
 }
 
+pub async fn read_past_eof_returns_empty(backend: &dyn StorageBackend) -> Result<()> {
+    put(backend, "r.txt", b"abc").await?;
+
+    // A read starting exactly at EOF is empty.
+    ensure!(get_range(backend, "r.txt", 3, 0).await?.is_empty());
+    // A read entirely past EOF is empty, not an error.
+    ensure!(get_range(backend, "r.txt", 10, 5).await?.is_empty());
+
+    // Any range on a zero-length object is empty.
+    put(backend, "empty.txt", b"").await?;
+    ensure!(get_range(backend, "empty.txt", 0, 10).await?.is_empty());
+    ensure!(get_range(backend, "empty.txt", -1, 0).await?.is_empty());
+    Ok(())
+}
+
 pub async fn read_missing_file_fails(backend: &dyn StorageBackend) -> Result<()> {
     ensure!(
         backend
@@ -229,6 +244,32 @@ pub async fn remove_file_is_idempotent(backend: &dyn StorageBackend) -> Result<(
     ensure!(!backend.path_exists(Path::new("r.txt")).await);
     // Removing an already-absent path must not fail.
     backend.remove(Path::new("r.txt")).await?;
+    Ok(())
+}
+
+pub async fn remove_directory_is_recursive(backend: &dyn StorageBackend) -> Result<()> {
+    put(backend, "tree/a.txt", b"a").await?;
+    put(backend, "tree/sub/b.txt", b"b").await?;
+    put(backend, "tree/sub/deep/c.txt", b"c").await?;
+    // A sibling that merely shares the textual prefix must survive.
+    put(backend, "treehouse/keep.txt", b"k").await?;
+
+    backend.remove(Path::new("tree")).await?;
+
+    ensure!(!backend.path_exists(Path::new("tree")).await);
+    ensure!(!backend.path_exists(Path::new("tree/a.txt")).await);
+    ensure!(!backend.path_exists(Path::new("tree/sub/b.txt")).await);
+    ensure!(
+        !backend.path_exists(Path::new("tree/sub/deep/c.txt")).await,
+        "recursive removal must delete nested files"
+    );
+    ensure!(
+        backend.path_exists(Path::new("treehouse/keep.txt")).await,
+        "recursive removal must not touch a sibling with a shared prefix"
+    );
+
+    // Removing an already-absent directory must not fail.
+    backend.remove(Path::new("tree")).await?;
     Ok(())
 }
 

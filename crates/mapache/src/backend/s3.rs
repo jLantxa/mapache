@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use s3::{Bucket, Region, creds::Credentials};
+use s3::{Bucket, Region, creds::Credentials, serde_types::ObjectIdentifier};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -96,13 +96,7 @@ impl S3Backend {
             .retry(|| async {
                 let (res, code) = self
                     .bucket
-                    .list_page(
-                        prefix.clone(),
-                        Some("/".to_string()),
-                        None,
-                        Some("1".to_string()),
-                        None,
-                    )
+                    .list_page(prefix.clone(), Some("/".to_string()), None, None, Some(1))
                     .await?;
                 Ok((res, code))
             })
@@ -151,6 +145,45 @@ impl S3Backend {
             .parse::<u16>()
             .is_ok_and(|code| (400..500).contains(&code))
     }
+
+    /// Deletes a single object, treating a missing object as success.
+    async fn remove_object(&self, key: &str) -> Result<()> {
+        self.retry(|| async {
+            let resp = self.bucket.delete_object(key).await?;
+            let code = resp.status_code();
+            if code >= 400 && code != 404 {
+                return Err(MapacheError::Backend(format!(
+                    "S3 remove failed: HTTP {}",
+                    code
+                )));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Deletes a batch of objects with the bulk `DeleteObjects` API. The S3
+    /// client splits the list into requests of at most 1000 keys, the API
+    /// maximum.
+    async fn delete_objects(&self, keys: &[ObjectIdentifier]) -> Result<()> {
+        // Retry transport/HTTP failures, but surface per-key errors (access
+        // denied, object lock, ...) immediately: they are deterministic and
+        // retrying the batch would only repeat them.
+        let result = self
+            .retry(|| async {
+                let result = self.bucket.delete_objects(keys.to_vec()).await?;
+                Ok(result)
+            })
+            .await?;
+
+        if let Some(error) = result.errors.first() {
+            return Err(MapacheError::Backend(format!(
+                "S3 bulk remove failed for '{}': {} ({})",
+                error.key, error.message, error.code
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -198,10 +231,17 @@ impl StorageBackend for S3Backend {
                 self.bucket.get_object_range(&key, start, end).await?
             };
 
-            if response.status_code() >= 400 {
+            let status = response.status_code();
+            if status >= 400 {
+                // A range whose start is at or past EOF (including any range on
+                // a zero-length object) is "not satisfiable" (416). LocalFS and
+                // SFTP return an empty buffer for such reads, so mirror that
+                // instead of surfacing an error.
+                if status == 416 {
+                    return Ok(Vec::new());
+                }
                 return Err(MapacheError::Backend(format!(
-                    "S3 read failed: HTTP {}",
-                    response.status_code()
+                    "S3 read failed: HTTP {status}"
                 )));
             }
             Ok(response.into_bytes().to_vec())
@@ -316,6 +356,12 @@ impl StorageBackend for S3Backend {
         let dest_key = self.key_from_path(to);
         tracing::debug!(target: "backend", "S3: rename {:?} -> {:?}", from, to);
 
+        if src_key == dest_key {
+            // S3 rejects copying an object onto itself; a no-op rename matches
+            // the behaviour of the local and SFTP backends.
+            return Ok(());
+        }
+
         // S3 rename is COPY + DELETE (not atomic).
         // If the process crashes between the copy and delete, both copies will
         // exist until garbage collection cleans up the orphaned source. This is
@@ -354,20 +400,86 @@ impl StorageBackend for S3Backend {
     }
 
     async fn remove(&self, path: &Path) -> Result<()> {
-        let key = self.key_from_path(path);
+        // S3 has no real directories: a "directory" is just the set of objects
+        // sharing a key prefix. If `path` names an object, delete just that
+        // object; otherwise delete every object stored underneath `path/`, so
+        // that `remove` is recursive on every backend, as the `StorageBackend`
+        // contract requires.
         tracing::debug!(target: "backend", "S3: remove {:?}", path);
 
-        self.retry(|| async {
-            let resp = self.bucket.delete_object(&key).await?;
-            if resp.status_code() >= 400 && resp.status_code() != 404 {
+        let key = self.key_from_path(path);
+
+        // Distinguish a real object from a key prefix. Unlike `is_file`, this
+        // surfaces probe errors instead of reporting "does not exist", so a
+        // transient failure cannot silently turn a removal into a no-op. The
+        // extra HEAD is deliberate: some S3 implementations reject a DELETE
+        // aimed at a key that maps to a populated directory.
+        let is_object = self
+            .retry(|| async {
+                let (_head, code) = self.bucket.head_object(&key).await?;
+                match code {
+                    200 => Ok(true),
+                    404 => Ok(false),
+                    _ => Err(MapacheError::Backend(format!(
+                        "S3 remove (head) failed: HTTP {code}"
+                    ))),
+                }
+            })
+            .await?;
+
+        if is_object {
+            return self.remove_object(&key).await;
+        }
+
+        let mut prefix = key;
+        if !prefix.is_empty() && !prefix.ends_with('/') {
+            prefix.push('/');
+        }
+
+        // List and delete one page at a time, resuming after the last key we
+        // saw. Unlike a continuation token, `start_after` stays correct even
+        // though the listing changes while we delete from it, and it lets us
+        // discard each page instead of holding every key in memory.
+        let mut start_after: Option<String> = None;
+        loop {
+            let (result, status_code) = self
+                .retry(|| async {
+                    let (res, code) = self
+                        .bucket
+                        .list_page(prefix.clone(), None, None, start_after.clone(), Some(1000))
+                        .await?;
+                    Ok((res, code))
+                })
+                .await?;
+
+            if status_code >= 400 {
                 return Err(MapacheError::Backend(format!(
-                    "S3 remove failed: HTTP {}",
-                    resp.status_code()
+                    "S3 remove (list) failed with status {}",
+                    status_code
                 )));
             }
-            Ok(())
-        })
-        .await
+
+            let mut keys = Vec::with_capacity(result.contents.len());
+            let mut last_key = None;
+            for object in &result.contents {
+                keys.push(ObjectIdentifier::new(object.key.clone()));
+                last_key = Some(object.key.clone());
+            }
+
+            let Some(last_key) = last_key else {
+                break;
+            };
+
+            // One request per 1000 objects instead of one per object.
+            self.delete_objects(&keys).await?;
+
+            if !result.is_truncated {
+                break;
+            }
+            start_after = Some(last_key);
+        }
+
+        Ok(())
     }
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
@@ -389,8 +501,8 @@ impl StorageBackend for S3Backend {
                             prefix.clone(),
                             Some("/".to_string()),
                             continuation_token.clone(),
-                            Some("1000".to_string()),
                             None,
+                            Some(1000),
                         )
                         .await?;
                     Ok((res, code))
@@ -478,13 +590,7 @@ impl StorageBackend for S3Backend {
             .retry(|| async {
                 let (result, code) = self
                     .bucket
-                    .list_page(
-                        prefix.clone(),
-                        Some("/".to_string()),
-                        None,
-                        Some("1".to_string()),
-                        None,
-                    )
+                    .list_page(prefix.clone(), Some("/".to_string()), None, None, Some(1))
                     .await?;
                 if code == 404 {
                     Ok(false)
@@ -493,7 +599,11 @@ impl StorageBackend for S3Backend {
                         "S3 access forbidden (403)".to_string(),
                     ))
                 } else if code == 200 {
-                    Ok(!result.contents.is_empty() || result.common_prefixes.is_some())
+                    Ok(!result.contents.is_empty()
+                        || result
+                            .common_prefixes
+                            .as_ref()
+                            .is_some_and(|prefixes| !prefixes.is_empty()))
                 } else {
                     Err(MapacheError::Backend(format!(
                         "S3 is_dir failed: HTTP {}",
@@ -526,12 +636,7 @@ impl StorageBackend for S3Backend {
             Ok(NodeAttr {
                 size: head.content_length.map(|s| s as u64),
                 atime: None,
-                mtime: head.last_modified.map(|s| {
-                    use chrono::DateTime;
-                    DateTime::parse_from_rfc2822(&s)
-                        .map(|dt| dt.into())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-                }),
+                mtime: head.last_modified.as_deref().and_then(parse_http_date),
                 uid: None,
                 gid: None,
                 perm: None,
@@ -559,8 +664,8 @@ impl StorageBackend for S3Backend {
                             prefix.clone(),
                             None, // No delimiter = recursive listing
                             continuation_token.clone(),
-                            Some("1000".to_string()),
                             None,
+                            Some(1000),
                         )
                         .await?;
                     Ok((res, code))
@@ -594,6 +699,18 @@ impl StorageBackend for S3Backend {
         nodes.dedup();
         Ok(nodes)
     }
+}
+
+/// Parses an HTTP `Date`/`Last-Modified` header value (RFC 2822, with an
+/// RFC 3339 fallback for non-AWS S3-compatible servers) into a
+/// [`SystemTime`](std::time::SystemTime). Returns `None` when the value is
+/// missing or unrecognized, rather than claiming an inaccurate epoch time.
+fn parse_http_date(value: &str) -> Option<std::time::SystemTime> {
+    use chrono::DateTime;
+    DateTime::parse_from_rfc2822(value)
+        .or_else(|_| DateTime::parse_from_rfc3339(value))
+        .ok()
+        .map(Into::into)
 }
 
 impl From<s3::error::S3Error> for MapacheError {

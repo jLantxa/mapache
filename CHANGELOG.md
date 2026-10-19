@@ -47,6 +47,11 @@
 
 ### Fixed
 
+- `s3://` backends: `remove` now recursively deletes key prefixes using bulk
+  `DeleteObjects`, listing pagination no longer skips keys sorting before
+  `1000`, reads at or past EOF return an empty buffer instead of a `416` error,
+  same-path renames are no-ops, and `is_dir`/`lstat` handle edge cases more
+  robustly.
 - Restore wildcard includes expand against the snapshot's tree ID, fixing
   filtered restores from the CLI and TUI.
 - Terminal UI: screens close and quit with correct session-lock and operation

@@ -96,7 +96,10 @@ impl ProgressBar {
             .add_modifier(Modifier::BOLD);
         let empty_style = Style::default().fg(theme::THEME.progress_empty);
 
-        let (bar_spans, info_text) = if self.scanning {
+        // Without a known total (either still scanning or no scan available)
+        // there is no percentage to show, so only display the processed size.
+        let total_unknown = self.scanning || self.expected_bytes == 0;
+        let (bar_spans, info_text) = if total_unknown {
             let spans = vec![Span::styled("\u{2500}".repeat(BAR_WIDTH), empty_style)];
             (spans, utils::format_size_binary(self.processed_bytes, 3))
         } else {
@@ -123,7 +126,7 @@ impl ProgressBar {
         };
 
         let mut line_spans = bar_spans;
-        let info_style = if self.scanning {
+        let info_style = if total_unknown {
             Style::default()
         } else {
             Style::default()
@@ -236,14 +239,18 @@ mod tests {
     }
 
     #[test]
-    fn rendered_percentage_without_expected_bytes_stays_zero() {
+    fn rendered_without_expected_bytes_shows_only_processed_size() {
         let bar = ProgressBar::new().bytes(50, 0);
         let rendered = crate::ui::tui::test_support::render_text(60, 5, |frame| {
             frame.render_widget(bar.render(), frame.area());
         });
         assert!(
-            rendered.contains("0.0%"),
-            "bar must default to 0% without expected bytes: {rendered:?}"
+            rendered.contains("50 B"),
+            "bar must show the processed size: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("/ 0 B") && !rendered.contains("0.0%"),
+            "bar must not show a total size or percentage when it is unknown: {rendered:?}"
         );
     }
 }

@@ -236,14 +236,14 @@ mod imp {
 
     use windows_sys::{
         Win32::{
-            Foundation::{CloseHandle, GetLastError, RPC_E_CHANGED_MODE, SysStringLen},
+            Foundation::{CloseHandle, GetLastError, RPC_E_CHANGED_MODE},
             Storage::FileSystem::GetVolumeNameForVolumeMountPointW,
             System::Com::{
                 COINIT_MULTITHREADED, CoInitializeEx, CoInitializeSecurity, CoUninitialize,
                 EOAC_NONE, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE,
             },
         },
-        core::{BSTR, GUID, HRESULT},
+        core::{GUID, HRESULT},
     };
 
     use crate::{
@@ -339,20 +339,36 @@ mod imp {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    /// Reads a BSTR into a `String`, replacing invalid units.
-    fn bstr_to_string(bstr: BSTR) -> String {
-        if bstr.is_null() {
+    /// Upper bound for scanning a `VSS_PWSZ` string. Device paths are far
+    /// shorter; the bound only keeps a corrupted or unterminated string from
+    /// being scanned past its allocation.
+    const MAX_PWSZ_UNITS: usize = 32 * 1024;
+
+    /// Reads a NUL-terminated wide string (`VSS_PWSZ`) into a `String`,
+    /// replacing invalid units.
+    ///
+    /// The string members of `VSS_SNAPSHOT_PROP` are `VSS_PWSZ` — plain
+    /// NUL-terminated `WCHAR` strings, *not* BSTRs — so their length has to be
+    /// found by scanning for the terminator. `SysStringLen` would instead read
+    /// the BSTR length prefix in front of the allocation, which such a string
+    /// does not have, and return an arbitrary length that overruns the buffer.
+    fn pwsz_to_string(pwsz: *const u16) -> String {
+        if pwsz.is_null() {
             return String::new();
         }
-        // SAFETY: `SysStringLen` is valid for every BSTR and yields the exact
-        // number of UTF-16 units (excluding the terminator).
-        let len = unsafe { SysStringLen(bstr) } as usize;
-        if len == 0 {
-            return String::new();
+        let mut len = 0;
+        // SAFETY: `pwsz` points to a NUL-terminated string owned by the
+        // snapshot property structure; the scan stops at the terminator or at
+        // the conservative bound above.
+        unsafe {
+            while len < MAX_PWSZ_UNITS && *pwsz.add(len) != 0 {
+                len += 1;
+            }
+            if len == MAX_PWSZ_UNITS {
+                return String::new();
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(pwsz, len))
         }
-        // SAFETY: a BSTR owns `len` initialized UTF-16 units at its pointer.
-        let units = unsafe { std::slice::from_raw_parts(bstr, len) };
-        String::from_utf16_lossy(units)
     }
 
     // -----------------------------------------------------------------------
@@ -364,6 +380,10 @@ mod imp {
         #![allow(non_camel_case_types)]
 
         use windows_sys::core::{BSTR, GUID, HRESULT, PCWSTR};
+
+        /// `VSS_PWSZ`: a plain NUL-terminated `WCHAR` string. Note the
+        /// difference from a `BSTR`, which carries a byte-length prefix.
+        pub type VssPwsz = *const u16;
 
         /// `IVssBackupComponents` raw pointer (`IUnknown`-like layout).
         #[repr(C)]
@@ -580,7 +600,7 @@ mod imp {
                 *mut IVssBackupComponentsRaw,
                 GUID,
                 i32,
-                u8,
+                i32,
                 *mut i32,
                 *mut GUID,
             ) -> HRESULT,
@@ -606,7 +626,7 @@ mod imp {
                 *mut IVssBackupComponentsRaw,
                 GUID,
                 PCWSTR,
-                *mut u8,
+                *mut i32,
             ) -> HRESULT,
             pub DisableWriterClasses: unsafe extern "system" fn(
                 *mut IVssBackupComponentsRaw,
@@ -662,21 +682,21 @@ mod imp {
                 unsafe extern "system" fn(*mut IVssAsyncRaw, *mut HRESULT, *mut i32) -> HRESULT,
         }
 
-        /// Mirrors `VSS_SNAPSHOT_PROP` (`vss.h`). String members are BSTRs
-        /// owned by `vssapi`'s allocator and must be released with
-        /// `VssFreeSnapshotProperties`; freeing them with `SysFreeString`
-        /// individually corrupts the heap.
+        /// Mirrors `VSS_SNAPSHOT_PROP` (`vss.h`). The string members are
+        /// `VSS_PWSZ` owned by `vssapi` and released as a whole with
+        /// `VssFreeSnapshotPropertiesInternal`; they must not be freed
+        /// individually with `SysFreeString`/`CoTaskMemFree`.
         #[repr(C)]
         pub struct VssSnapshotProp {
             pub m_SnapshotId: GUID,
             pub m_SnapshotSetId: GUID,
             pub m_lSnapshotsCount: i32,
-            pub m_pwszSnapshotDeviceObject: BSTR,
-            pub m_pwszOriginalVolumeName: BSTR,
-            pub m_pwszOriginatingMachine: BSTR,
-            pub m_pwszServiceMachine: BSTR,
-            pub m_pwszExposedName: BSTR,
-            pub m_pwszExposedPath: BSTR,
+            pub m_pwszSnapshotDeviceObject: VssPwsz,
+            pub m_pwszOriginalVolumeName: VssPwsz,
+            pub m_pwszOriginatingMachine: VssPwsz,
+            pub m_pwszServiceMachine: VssPwsz,
+            pub m_pwszExposedName: VssPwsz,
+            pub m_pwszExposedPath: VssPwsz,
             pub m_ProviderId: GUID,
             pub m_lSnapshotAttributes: i32,
             /// `VSS_TIMESTAMP` is a `LONGLONG` (8-byte aligned). Declaring it
@@ -699,10 +719,10 @@ mod imp {
         pub fn CreateVssBackupComponentsInternal(
             ppbackup: *mut *mut ffi::IVssBackupComponentsRaw,
         ) -> HRESULT;
-        /// Frees the BSTR members of a `VSS_SNAPSHOT_PROP` returned by
-        /// `GetSnapshotProperties`. The strings are owned by `vssapi`'s
-        /// allocator, so `SysFreeString` per member is not the way to
-        /// release them.
+        /// Frees the `VSS_PWSZ` members of a `VSS_SNAPSHOT_PROP` returned by
+        /// `GetSnapshotProperties` and zeroes the structure. The strings are
+        /// owned by `vssapi`'s allocator, so they must not be freed
+        /// individually.
         pub fn VssFreeSnapshotPropertiesInternal(pProp: *mut ffi::VssSnapshotProp);
     }
 
@@ -1196,9 +1216,10 @@ mod imp {
     /// failure is reported by `AddToSnapshotSet` instead of being masked.
     fn is_volume_supported(raw: *mut ffi::IVssBackupComponentsRaw, volume_name: &str) -> bool {
         let name = wide_zero_terminated(volume_name);
-        let mut supported: u8 = 0;
+        // `IsVolumeSupported`'s out-parameter is a Win32 `BOOL` (4 bytes).
+        let mut supported: i32 = 0;
         // SAFETY: vtable slot method call as in `initialize_for_backup`; the
-        // out-parameter is a valid `BOOLEAN` (one byte) target.
+        // out-parameter is a valid `BOOL` target.
         let call = unsafe {
             ((*(*raw).vtbl).IsVolumeSupported)(raw, GUID::default(), name.as_ptr(), &mut supported)
         };
@@ -1389,12 +1410,13 @@ mod imp {
         };
         hr(call, "GetSnapshotProperties")?;
 
-        // All string members are BSTRs owned by the requester: copy the device
-        // path out, then free every one of them.
-        let mut device = bstr_to_string(prop.m_pwszSnapshotDeviceObject);
-        // SAFETY: `VssFreeSnapshotProperties` is the documented way to release
-        // the property structure from `GetSnapshotProperties`: it frees every
-        // BSTR member with `vssapi`'s allocator and zeroes the struct once.
+        // All string members are `VSS_PWSZ` owned by the property structure:
+        // copy the device path out, then release the structure as a whole.
+        let mut device = pwsz_to_string(prop.m_pwszSnapshotDeviceObject);
+        // SAFETY: `VssFreeSnapshotPropertiesInternal` is the documented way to
+        // release the property structure from `GetSnapshotProperties`: it
+        // frees every string member with `vssapi`'s allocator and zeroes the
+        // struct once.
         unsafe {
             VssFreeSnapshotPropertiesInternal(&mut prop);
         }
@@ -1412,8 +1434,8 @@ mod imp {
     fn delete_snapshot_set(raw: *mut ffi::IVssBackupComponentsRaw, set_id: GUID) -> Result<()> {
         let mut deleted: i32 = 0;
         let mut not_deleted = GUID::default();
-        // SAFETY: `DeleteSnapshots` writes the out parameters below. The
-        // force-delete argument is a `BOOLEAN` (one byte).
+        // SAFETY: `DeleteSnapshots` writes the out parameters below. Both the
+        // object type and the force flag are 4-byte values.
         let call = unsafe {
             let method = (*(*raw).vtbl).DeleteSnapshots;
             method(
@@ -1531,6 +1553,26 @@ mod imp {
                 112
             );
             assert_eq!(std::mem::offset_of!(ffi::VssSnapshotProp, m_eStatus), 120);
+        }
+
+        /// Guards the `VSS_PWSZ` reading path: the string members of
+        /// `VSS_SNAPSHOT_PROP` are plain NUL-terminated strings with **no**
+        /// length prefix in front of the allocation, so treating them as BSTRs
+        /// (`SysStringLen`) reads unrelated bytes and can overrun the buffer.
+        #[test]
+        fn reads_vss_pwsz_strings_without_a_length_prefix() {
+            let units: Vec<u16> = "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\\"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            assert_eq!(
+                pwsz_to_string(units.as_ptr()),
+                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\\"
+            );
+
+            let empty: Vec<u16> = vec![0];
+            assert_eq!(pwsz_to_string(empty.as_ptr()), "");
+            assert_eq!(pwsz_to_string(std::ptr::null()), "");
         }
 
         /// End-to-end check against a real shadow copy. Ignored by default:

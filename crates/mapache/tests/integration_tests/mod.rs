@@ -544,6 +544,7 @@ impl SnapshotBuilder {
         self
     }
 
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn use_fs_snapshot(mut self, use_fs_snapshot: bool) -> Self {
         self.args.use_fs_snapshot = Some(use_fs_snapshot);
         self

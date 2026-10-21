@@ -44,6 +44,35 @@ mod tests {
         Ok(())
     }
 
+    /// On Windows CI the runner is elevated, so `--use-fs-snapshot` really
+    /// starts a VSS session. The translation table is process-global, so
+    /// running it inside the test harness would silently redirect every other
+    /// concurrently running test on the same drive to the frozen shadow copy.
+    /// Exercise it out of process instead.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_snapshot_use_fs_snapshot() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+        ctx.init_repo().await?;
+
+        let source = backup_data_tmp_path.to_string_lossy().into_owned();
+        ctx.run_mapache_ok(&["snapshot", &source, "--as-root", "--use-fs-snapshot"])?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore_use_fs_snapshot");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert!(restore_path.join("file.txt").exists());
+        assert!(restore_path.join("0/file0.txt").exists());
+
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn test_snapshot_use_fs_snapshot_degrades_gracefully() -> Result<()> {
         let mut ctx = TestContext::new().await?;
@@ -53,8 +82,8 @@ mod tests {
         ctx.init_repo().await?;
 
         // `--use-fs-snapshot` is a Windows opt-in. Where VSS is unavailable
-        // (always on Unix, or Windows without elevation) mapache must warn and
-        // fall back to live reads instead of failing the snapshot.
+        // mapache must warn and fall back to live reads instead of failing
+        // the snapshot.
         ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
             .root(true)
             .use_fs_snapshot(true)

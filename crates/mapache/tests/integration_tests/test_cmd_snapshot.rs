@@ -44,30 +44,75 @@ mod tests {
         Ok(())
     }
 
-    /// On Windows CI the runner is elevated, so `--use-fs-snapshot` really
-    /// starts a VSS session. The translation table is process-global, so
-    /// running it inside the test harness would silently redirect every other
-    /// concurrently running test on the same drive to the frozen shadow copy.
-    /// Exercise it out of process instead.
+    /// Acceptance test for the feature: a file held open with no sharing
+    /// (unreadable by any other handle) is captured through the VSS shadow
+    /// copy, and skipped without it.
+    ///
+    /// Runs out of process because the translation table is process-global:
+    /// a session created inside the harness would redirect every other
+    /// concurrently running test on the same drive to the frozen copy.
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_snapshot_use_fs_snapshot() -> Result<()> {
+    async fn test_snapshot_use_fs_snapshot_captures_locked_file() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
         let synthetic = SyntheticData::new(dataset);
         let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
         ctx.init_repo().await?;
 
-        let source = backup_data_tmp_path.to_string_lossy().into_owned();
-        ctx.run_mapache_ok(&["snapshot", &source, "--as-root", "--use-fs-snapshot"])?;
+        // `share_mode(0)` denies every other open, so a plain backup cannot
+        // read the file. The handle is bound (not dropped) for the whole test.
+        let locked = backup_data_tmp_path.join("locked.txt");
+        std::fs::write(&locked, b"locked contents")?;
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)?;
+        assert!(
+            std::fs::read(&locked).is_err(),
+            "the probe file is not actually locked"
+        );
 
-        let restore_path = ctx._tmp_dir.path().join("restore_use_fs_snapshot");
-        ctx.restore_builder(restore_path.clone())
+        let source = backup_data_tmp_path.to_string_lossy().into_owned();
+
+        // Control: without the shadow copy the locked file is skipped.
+        ctx.run_mapache_ok(&["snapshot", &source, "--as-root"])?;
+        let live_restore = ctx._tmp_dir.path().join("restore_locked_live");
+        ctx.restore_builder(live_restore.clone())
             .run(&ctx.global)
             .await?;
+        assert!(
+            !live_restore.join("locked.txt").exists(),
+            "a plain backup must not capture the locked file"
+        );
+        assert!(live_restore.join("file.txt").exists());
 
-        assert!(restore_path.join("file.txt").exists());
-        assert!(restore_path.join("0/file0.txt").exists());
+        // With the shadow copy the live handle does not block the read.
+        let stdout =
+            ctx.run_mapache_ok(&["snapshot", &source, "--as-root", "--use-fs-snapshot"])?;
+        if stdout.contains("Continuing without a filesystem snapshot") {
+            // Not elevated or VSS unavailable. Keep the suite usable on
+            // developer machines, but never let CI skip the real check.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "VSS is unavailable on CI; the shadow copy was not verified"
+            );
+            eprintln!("VSS unavailable in this environment; shadow copy not verified");
+            return Ok(());
+        }
+
+        let shadow_restore = ctx._tmp_dir.path().join("restore_locked_shadow");
+        ctx.restore_builder(shadow_restore.clone())
+            .run(&ctx.global)
+            .await?;
+        assert_eq!(
+            std::fs::read(shadow_restore.join("locked.txt"))?,
+            b"locked contents"
+        );
+        assert!(shadow_restore.join("file.txt").exists());
+        assert!(shadow_restore.join("0/file0.txt").exists());
 
         Ok(())
     }

@@ -367,7 +367,7 @@ mod imp {
             if len == MAX_PWSZ_UNITS {
                 return String::new();
             }
-            String::from_utf16_lossy(std::slice::from_raw_parts(pwsz, len))
+            read_wide_buffer(std::slice::from_raw_parts(pwsz, len))
         }
     }
 
@@ -1499,42 +1499,45 @@ mod imp {
         use super::*;
 
         #[test]
-        fn translates_drive_paths() {
-            let table = ShadowMapping::new(vec![VolumeShadow {
-                key: 'C',
-                device_utf16: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\"
-                    .encode_utf16()
-                    .collect(),
-            }]);
+        fn translation_maps_the_matching_volume_only() {
+            let table = ShadowMapping::new(vec![
+                VolumeShadow {
+                    key: 'C',
+                    device_utf16: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\"
+                        .encode_utf16()
+                        .collect(),
+                },
+                VolumeShadow {
+                    key: 'D',
+                    device_utf16: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\"
+                        .encode_utf16()
+                        .collect(),
+                },
+            ]);
 
-            let translated = table.translate(Path::new("C:\\Users\\me\\a.txt"));
+            // Mapped drives match case-insensitively, including the root.
             assert_eq!(
-                translated.to_str(),
+                table.translate(Path::new("c:\\Users\\me\\a.txt")).to_str(),
                 Some("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\a.txt")
             );
             assert_eq!(
                 table.translate(Path::new("C:\\")).to_str(),
                 Some("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\")
             );
-        }
+            assert_eq!(
+                table.translate(Path::new("D:\\x")).to_str(),
+                Some("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\x")
+            );
 
-        #[test]
-        fn passes_through_unmapped_paths() {
-            let table = ShadowMapping::new(vec![VolumeShadow {
-                key: 'D',
-                device_utf16: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\"
-                    .encode_utf16()
-                    .collect(),
-            }]);
-
+            // Unmapped drives and non-drive paths are returned unallocated.
             assert!(matches!(
                 table.translate(Path::new("Z:\\x")),
                 Cow::Borrowed(_)
             ));
-            assert_eq!(
-                table.translate(Path::new("d:\\x")).to_str(),
-                Some("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\x")
-            );
+            assert!(matches!(
+                table.translate(Path::new("\\\\server\\share\\x")),
+                Cow::Borrowed(_)
+            ));
         }
 
         /// Guards the hand-written `VSS_SNAPSHOT_PROP` layout: VSS writes the
@@ -1575,45 +1578,35 @@ mod imp {
             assert_eq!(pwsz_to_string(std::ptr::null()), "");
         }
 
-        /// End-to-end check against a real shadow copy. Ignored by default:
-        /// it requires Windows with administrator privileges, and while the
-        /// session is registered *every* path on the snapshotted drive in
-        /// this process reads the frozen copy, so it must not run alongside
-        /// the rest of the test suite.
-        #[tokio::test]
-        #[ignore = "requires Windows, administrator privileges and no concurrent tests"]
-        async fn session_covers_a_temp_directory() {
-            use super::super::{VssSession, translate};
-
-            let dir = std::env::temp_dir().join(format!("mapache-vss-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).expect("create probe directory");
-            let probe = dir.join("probe.txt");
-            std::fs::write(&probe, b"shadow probe").expect("write probe file");
-
-            let session = VssSession::start(std::slice::from_ref(&dir)).await;
-            let translated = translate(&probe);
-            if &*translated == probe.as_path() {
-                // Not elevated or VSS unavailable: degraded to live reads.
-                eprintln!("VSS unavailable in this environment; skipping");
-                let _ = std::fs::remove_dir_all(&dir);
-                return;
+        /// Only one session may own the global table, and a session clears it
+        /// only while it is still the registered one.
+        #[test]
+        fn registration_is_single_session_and_owner_scoped() {
+            /// Restores the global state even if an assertion panics.
+            struct Clear;
+            impl Drop for Clear {
+                fn drop(&mut self) {
+                    *ACTIVE.write() = None;
+                    ACTIVE_SET.store(false, Ordering::Release);
+                }
             }
+            let _clear = Clear;
+
+            let first = Arc::new(ShadowMapping::new(Vec::new()));
+            let second = Arc::new(ShadowMapping::new(Vec::new()));
+
+            assert!(register(&first));
             assert!(
-                translated
-                    .to_string_lossy()
-                    .starts_with("\\\\?\\GLOBALROOT\\"),
-                "unexpected shadow path: {}",
-                translated.display()
+                !register(&second),
+                "a second concurrent session must be rejected"
             );
-            assert_eq!(
-                std::fs::read(&*translated).expect("read through the shadow copy"),
-                b"shadow probe".to_vec()
+            deregister(&second);
+            assert!(
+                active_mapping().is_some(),
+                "a stale session must not clear the table"
             );
-
-            session.close().await;
-            assert_eq!(&*translate(&probe), probe.as_path());
-
-            let _ = std::fs::remove_dir_all(&dir);
+            deregister(&first);
+            assert!(active_mapping().is_none());
         }
     }
 }
@@ -1627,33 +1620,23 @@ mod tests {
     }
 
     #[test]
-    fn split_drive_accepts_drive_absolute_paths() {
-        let path = wide("C:\\Users\\me");
-        let (key, remainder) = split_drive(&path).expect("drive path");
-        assert_eq!(key, 'C');
-        assert_eq!(String::from_utf16(remainder).unwrap(), "Users\\me");
-    }
-
-    #[test]
-    fn split_drive_is_case_insensitive_and_normalizes_the_key() {
-        let (key, _) = split_drive(&wide("d:\\x")).expect("drive path");
-        assert_eq!(key, 'D');
-    }
-
-    #[test]
-    fn split_drive_accepts_forward_slashes() {
-        let path = wide("C:/Users/me");
-        let (key, remainder) = split_drive(&path).expect("drive path");
-        assert_eq!(key, 'C');
-        assert_eq!(String::from_utf16(remainder).unwrap(), "Users/me");
-    }
-
-    #[test]
-    fn split_drive_accepts_verbatim_drive_paths() {
-        let path = wide("\\\\?\\C:\\Users\\me");
-        let (key, remainder) = split_drive(&path).expect("drive path");
-        assert_eq!(key, 'C');
-        assert_eq!(String::from_utf16(remainder).unwrap(), "Users\\me");
+    fn split_drive_parses_drive_absolute_paths() {
+        for (input, expected_key, expected_remainder) in [
+            ("C:\\Users\\me", 'C', "Users\\me"),
+            ("d:\\x", 'D', "x"),
+            ("C:/Users/me", 'C', "Users/me"),
+            ("\\\\?\\C:\\Users\\me", 'C', "Users\\me"),
+        ] {
+            let units = wide(input);
+            let (key, remainder) =
+                split_drive(&units).unwrap_or_else(|| panic!("{input} is a drive path"));
+            assert_eq!(key, expected_key, "{input}");
+            assert_eq!(
+                String::from_utf16(remainder).unwrap(),
+                expected_remainder,
+                "{input}"
+            );
+        }
     }
 
     #[test]
@@ -1673,18 +1656,6 @@ mod tests {
         assert_eq!(
             String::from_utf16(&joined).unwrap(),
             "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\a.txt"
-        );
-    }
-
-    #[test]
-    fn verbatim_prefix_is_stripped_only_once() {
-        assert_eq!(
-            String::from_utf16(strip_verbatim_prefix(&wide("\\\\?\\C:\\x"))).unwrap(),
-            "C:\\x"
-        );
-        assert_eq!(
-            String::from_utf16(strip_verbatim_prefix(&wide("C:\\x"))).unwrap(),
-            "C:\\x"
         );
     }
 }

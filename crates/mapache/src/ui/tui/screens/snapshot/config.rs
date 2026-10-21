@@ -295,6 +295,7 @@ impl SnapshotForm {
                 .get_toggle_by_label("With atime:")
                 .unwrap_or(false),
             stdin: false,
+            use_fs_snapshot: false,
             num_readers: self
                 .form
                 .get_number_by_label("Readers:")

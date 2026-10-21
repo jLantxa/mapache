@@ -15,6 +15,7 @@ pub mod filter;
 pub mod node;
 pub mod scanner;
 pub mod tree;
+pub mod vss;
 
 #[cfg(windows)]
 fn convert_msys_path(path: &Path) -> Option<PathBuf> {

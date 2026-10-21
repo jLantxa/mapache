@@ -363,6 +363,7 @@ files-from = "~/.mapache/paths.txt"
 hostname = "backup-host"
 tags = "work,important"
 one-file-system = false
+use-fs-snapshot = false
 fail-on-skipped = false
 skip-if-unchanged = false
 readers = 4
@@ -754,6 +755,7 @@ shared content across all of them.
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
 | `--no-scan` | Skip the initial file system scan |
 | `--one-file-system` | Do not descend into entries on another filesystem (errors if device IDs cannot be determined) |
+| `--use-fs-snapshot` | Windows: read sources through a VSS shadow copy, so files held open by running programs are captured (requires administrator privileges) |
 | `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
@@ -768,6 +770,34 @@ filesystem boundary. Entries on another device are not traversed. The option
 requires filesystem device IDs: the device ID from `lstat` on Unix, the volume
 serial number on Windows. Snapshot creation fails if they cannot be determined
 for a source path.
+
+### Filesystem Snapshots (Windows VSS)
+
+`--use-fs-snapshot` (TOML: `use-fs-snapshot = true`) tells mapache to create a
+Volume Shadow Copy Service (VSS) shadow copy of every local volume holding a
+source path before reading anything, and to read all file contents and
+directory listings from the shadow copy. A file that a running program keeps
+open for exclusive access — something that is normally skipped — is then
+captured like any other file.
+
+VSS writers take part in the standard full-backup protocol: they flush their
+in-memory state before the copy is frozen, so the shadow copies reflect a
+consistent moment (at least crash-consistent, and effectively
+application-consistent for applications whose writers cooperate). mapache
+selects no writer components and consumes no writer metadata. The recorded snapshot paths stay the original ones (`C:\Users\...`),
+so restores, `--parent` diffing and `--one-file-system` behave exactly as
+without the flag.
+
+The feature is best effort. When a shadow copy cannot be created — the
+session is not running as administrator, the Volume Shadow Copy service is
+disabled, or a volume is unsupported (network shares, for example) — mapache
+logs a warning and takes the snapshot with ordinary live reads instead of
+failing. Non-Windows platforms ignore the flag with a warning.
+
+Shadow copies are deleted when the snapshot finishes (successfully or not).
+If the process is killed outright, Windows reclaims them when the system
+reclaims volume shadow copies on its own; they can also be removed manually
+with `vssadmin delete shadows /all`.
 
 ### Exclusions
 
@@ -1939,6 +1969,7 @@ mapache snapshot [PATHS...] -r <URL>
   --no-parent             Force complete analysis (no parent diff)
   --no-scan               Skip the initial file system scan
   --one-file-system       Do not descend into a different filesystem
+  --use-fs-snapshot       Windows: read sources through a VSS shadow copy
   --fail-on-skipped       Fail if any source item is skipped
   --skip-if-unchanged     Skip saving if no changes detected
   --parent <ID|latest>    Use specific parent snapshot

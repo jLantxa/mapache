@@ -340,7 +340,11 @@ impl FSNodeStream {
                     let children_res = tokio::task::spawn_blocking(move || {
                         use rayon::prelude::*;
 
-                        let entries = std::fs::read_dir(&path_clone)?
+                        // Enumerate the shadow copy when a VSS session is
+                        // active; child paths are joined in the original path
+                        // space and translate again at their own syscalls.
+                        let read_dir_path = crate::fs::vss::translate(&path_clone);
+                        let entries = std::fs::read_dir(&read_dir_path)?
                             .map(|entry| entry.map(|entry| entry.file_name()))
                             .collect::<std::io::Result<Vec<_>>>()?;
 

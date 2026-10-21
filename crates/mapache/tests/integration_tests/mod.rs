@@ -471,6 +471,7 @@ impl SnapshotBuilder {
                 skip_if_unchanged: Some(false),
                 no_scan: Some(false),
                 one_file_system: Some(false),
+                use_fs_snapshot: Some(false),
                 fail_on_skipped: Some(false),
                 parent: Some(UseSnapshot::Latest),
                 num_readers: Some(2),

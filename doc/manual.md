@@ -784,20 +784,35 @@ VSS writers take part in the standard full-backup protocol: they flush their
 in-memory state before the copy is frozen, so the shadow copies reflect a
 consistent moment (at least crash-consistent, and effectively
 application-consistent for applications whose writers cooperate). mapache
-selects no writer components and consumes no writer metadata. The recorded snapshot paths stay the original ones (`C:\Users\...`),
-so restores, `--parent` diffing and `--one-file-system` behave exactly as
-without the flag.
+selects no writer components and consumes no writer metadata. The recorded
+snapshot paths stay the original ones (`C:\Users\...`), so restores,
+`--parent` diffing and `--one-file-system` behave exactly as without the
+flag.
 
-The feature is best effort. When a shadow copy cannot be created — the
-session is not running as administrator, the Volume Shadow Copy service is
-disabled, or a volume is unsupported (network shares, for example) — mapache
-logs a warning and takes the snapshot with ordinary live reads instead of
-failing. Non-Windows platforms ignore the flag with a warning.
+The feature is best effort, and per volume. When no shadow copy can be
+created at all — mapache is not running as administrator or the Volume
+Shadow Copy service is disabled — mapache logs a warning and takes the
+snapshot with ordinary live reads instead of failing. When only some volumes
+can be shadowed, the unsupported ones (network or `SUBST` drives, for
+example) are skipped with a warning and read from the live filesystem while
+the remaining volumes still use their shadow copies. Non-Windows platforms
+ignore the flag with a warning.
 
-Shadow copies are deleted when the snapshot finishes (successfully or not).
-If the process is killed outright, Windows reclaims them when the system
-reclaims volume shadow copies on its own; they can also be removed manually
-with `vssadmin delete shadows /all`.
+VSS snapshots are taken per volume, so a source path on a volume mounted
+inside a snapshotted drive (a directory mount point) is not covered by that
+drive's shadow copy; such layouts need their own entry in the source path
+list. Only one snapshot session can be active per mapache process; a second
+concurrent snapshot warns and falls back to live reads.
+
+Each VSS operation has a time limit (15 minutes). If a provider or writer
+stops responding, mapache cancels the operation, logs a warning and
+continues with live reads instead of hanging forever.
+
+Shadow copies are deleted as soon as the source reads are done, before the
+repository is flushed, so they only hold copy-on-write space for a short
+time. If the process is killed outright, Windows reclaims them when the
+system reclaims volume shadow copies on its own; they can also be removed
+manually with `vssadmin delete shadows /all`.
 
 ### Exclusions
 

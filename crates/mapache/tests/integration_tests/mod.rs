@@ -544,6 +544,11 @@ impl SnapshotBuilder {
         self
     }
 
+    pub fn use_fs_snapshot(mut self, use_fs_snapshot: bool) -> Self {
+        self.args.use_fs_snapshot = Some(use_fs_snapshot);
+        self
+    }
+
     pub fn root(mut self, as_root: bool) -> Self {
         self.args.as_root = Some(as_root);
         self

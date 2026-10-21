@@ -438,8 +438,10 @@ impl Node {
         with_atime: bool,
     ) -> Result<(Metadata, NodeType)> {
         // Query metadata on the shadow copy when a VSS session is active (the
-        // translation is a no-op otherwise and on non-Windows platforms).
-        let path = &crate::fs::vss::translate(path);
+        // translation borrows the path unchanged otherwise and on non-Windows
+        // platforms).
+        let translated = crate::fs::vss::translate(path);
+        let path = &*translated;
 
         #[cfg(target_os = "linux")]
         {
@@ -584,7 +586,8 @@ impl Node {
         // Read the link target from the shadow copy when a VSS session is
         // active. The target string that is recorded stays in original path
         // space; the probe below goes through the translation on its own.
-        let path = &crate::fs::vss::translate(path);
+        let translated = crate::fs::vss::translate(path);
+        let path = &*translated;
         let target = std::fs::read_link(path)?;
 
         let mut info = SymlinkInfo {

@@ -16,9 +16,20 @@
 //! cooperate). mapache selects no writer components and consumes no writer
 //! metadata.
 //!
-//! Everything here is best-effort: if VSS is unavailable (not elevated, the
-//! service is disabled, a volume is unsupported) the session degrades to
-//! ordinary live reads with a warning instead of failing the snapshot.
+//! Everything here is best-effort and per volume: if VSS is unavailable (not
+//! elevated, the service is disabled) the whole session degrades to ordinary
+//! live reads with a warning, and a volume that cannot be shadowed (a network
+//! drive, a `SUBST` drive, a provider that refuses it) is skipped on its own
+//! with a warning while the remaining volumes are still shadowed. Only one
+//! session can be active per process: the translation table is global, so a
+//! second concurrent session is rejected instead of silently disabling the
+//! first one.
+//!
+//! Known limitation: VSS snapshots are taken per volume. A source path that
+//! lives on a volume mounted inside a snapshotted drive (a directory mount
+//! point) is not part of that drive's shadow copy, so its reads either fail
+//! or resolve through the live mount point. Such layouts need their own
+//! volume in the source path list.
 //!
 //! Implementation notes: the `windows-sys` bindings do not expose the
 //! requester-side `IVssBackupComponents` interface (microsoft/win32metadata
@@ -27,40 +38,40 @@
 //! declaration order). All COM traffic — creation and deletion — runs on a
 //! single dedicated worker thread with an MTA apartment.
 
-use std::path::{Path, PathBuf};
+use std::{borrow::Cow, path::Path};
 
 #[cfg(windows)]
-use crate::common::error::MapacheError;
-
-use crate::common::error::Result;
+use std::path::PathBuf;
 
 /// Translates `path` to its shadow-copy path when a VSS session is active and
 /// the path lives on one of the snapshotted volumes.
 ///
-/// Returns the path unchanged in every other case: no active session, an
-/// already translated path (`\\?\GLOBALROOT\...` matches no drive prefix), or
-/// a path whose volume has no shadow copy.
+/// Returns the path unchanged, without allocating, in every other case: no
+/// active session, an already translated path (`\\?\GLOBALROOT\...` matches no
+/// drive prefix), or a path whose volume has no shadow copy. This is on the
+/// hot path of the scanner, so the borrow matters.
 #[inline]
 #[must_use]
-pub fn translate(path: &Path) -> PathBuf {
+pub fn translate(path: &Path) -> Cow<'_, Path> {
     #[cfg(windows)]
     {
         match imp::active_mapping() {
             Some(mapping) => mapping.translate(path),
-            None => path.to_path_buf(),
+            None => Cow::Borrowed(path),
         }
     }
     #[cfg(not(windows))]
     {
-        path.to_path_buf()
+        Cow::Borrowed(path)
     }
 }
 
 /// A session that redirects source reads to a set of shadow-copied volumes.
 ///
 /// Created before source paths are walked; the translation stays registered
-/// until the session is dropped, at which point the shadow copies are deleted
-/// (best effort) and reads fall back to the live filesystem.
+/// until the session is dropped or [`VssSession::close`] is awaited, at which
+/// point the shadow copies are deleted (best effort) and reads fall back to
+/// the live filesystem.
 pub struct VssSession {
     inner: Option<imp::SessionInner>,
 }
@@ -78,26 +89,30 @@ impl VssSession {
     /// Starts a VSS session covering the volumes of `source_paths`.
     ///
     /// Relative paths are resolved against the current directory. This never
-    /// fails on invalid VSS state: it logs a warning and returns an inert
-    /// session (ordinary live reads). The shadow copies may take a few
-    /// seconds to create; the wait happens on the blocking pool.
-    pub async fn start<P>(source_paths: &[P]) -> Result<Self>
+    /// fails: on invalid VSS state it logs a warning and returns an inert
+    /// session (ordinary live reads). The shadow copies may take a few seconds
+    /// to create; the wait happens on the blocking pool.
+    pub async fn start<P>(source_paths: &[P]) -> Self
     where
         P: AsRef<Path>,
-        Self: Sized,
     {
         #[cfg(windows)]
         {
             let paths: Vec<PathBuf> = source_paths
                 .iter()
-                .map(|p| p.as_ref().to_path_buf())
+                .map(|path| path.as_ref().to_path_buf())
                 .collect();
 
             match tokio::task::spawn_blocking(move || imp::start_sync(&paths)).await {
-                Ok(inner) => Ok(VssSession { inner: Some(inner) }),
-                Err(e) => Err(MapacheError::Internal(format!(
-                    "VSS session task panicked: {e}"
-                ))),
+                Ok(Some(inner)) => VssSession { inner: Some(inner) },
+                Ok(None) => VssSession::inert(),
+                Err(error) => {
+                    crate::ui::cli::warning!(
+                        "the VSS setup task failed: {error}; continuing with \
+                         ordinary live reads"
+                    );
+                    VssSession::inert()
+                }
             }
         }
         #[cfg(not(windows))]
@@ -107,16 +122,27 @@ impl VssSession {
                  with ordinary live reads"
             );
             let _ = source_paths;
-            Ok(VssSession { inner: None })
+            VssSession::inert()
         }
     }
-}
 
-impl Drop for VssSession {
-    fn drop(&mut self) {
-        // `SessionInner::drop` deregisters the mapping and deletes the
-        // snapshot set.
-        self.inner = None;
+    /// Releases the shadow copies, running the (blocking) teardown on the
+    /// blocking pool so the async executor is never stalled by VSS.
+    ///
+    /// Call this as soon as the source reads are done: a shadow copy keeps
+    /// consuming copy-on-write space until it is deleted. Dropping the session
+    /// without calling `close` still cleans up, but does so synchronously.
+    pub async fn close(self) {
+        if self.inner.is_none() {
+            return;
+        }
+        // The inner value's destructor joins the VSS worker (which deletes
+        // the snapshot set), so let it run on the blocking pool instead of
+        // stalling the async executor.
+        let _ = tokio::task::spawn_blocking(move || {
+            let _session = self;
+        })
+        .await;
     }
 }
 
@@ -127,45 +153,143 @@ mod imp {
     pub(super) struct SessionInner;
 }
 
+/// Splits `C:\rest` into `(drive-key, "rest")` on the UTF-16 form.
+///
+/// A leading `\\?\` verbatim prefix is ignored, so verbatim drive paths are
+/// translated like their plain counterparts. Returns `None` for anything that
+/// is not a drive-letter absolute path: UNC paths, already translated paths,
+/// drive-relative forms without a separator, and malformed input.
+#[cfg(any(windows, test))]
+fn split_drive(wide: &[u16]) -> Option<(char, &[u16])> {
+    let wide = strip_verbatim_prefix(wide);
+
+    // `X:\...` — three units minimum, and the drive letter must be ASCII.
+    if wide.len() < 3 || wide[1] != u16::from(b':') || wide[0] > 0x7F {
+        return None;
+    }
+    if wide[2] != u16::from(b'\\') && wide[2] != u16::from(b'/') {
+        return None;
+    }
+    let key = (wide[0] as u8 as char).to_ascii_uppercase();
+    if !key.is_ascii_alphabetic() {
+        return None;
+    }
+    Some((key, &wide[3..]))
+}
+
+/// Strips a leading `\\?\` from a UTF-16 path, if present.
+#[cfg(any(windows, test))]
+fn strip_verbatim_prefix(wide: &[u16]) -> &[u16] {
+    const PREFIX: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    if wide.starts_with(&PREFIX) {
+        &wide[PREFIX.len()..]
+    } else {
+        wide
+    }
+}
+
+/// Prefixes `remainder` with the shadow device path, normalizing `/` to `\`.
+///
+/// The shadow device path is `\\?\`-prefixed, so the Win32 layer performs no
+/// path normalization: separators must already be canonical.
+#[cfg(any(windows, test))]
+fn join_device_path(device: &[u16], remainder: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(device.len() + remainder.len());
+    out.extend_from_slice(device);
+    out.extend(remainder.iter().map(|&unit| {
+        if unit == u16::from(b'/') {
+            u16::from(b'\\')
+        } else {
+            unit
+        }
+    }));
+    out
+}
+
+/// Reads a NUL-terminated UTF-16 buffer into a `String`, replacing invalid
+/// units. The search is bounded by the buffer length.
+#[cfg(windows)]
+fn read_wide_buffer(buffer: &[u16]) -> String {
+    let len = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..len])
+}
+
 /// Windows implementation: COM plumbing, snapshot-set lifecycle and the
 /// active path-translation table.
 #[cfg(windows)]
 mod imp {
     use std::{
+        borrow::Cow,
         ffi::OsString,
         os::windows::ffi::{OsStrExt, OsStringExt},
         path::{Path, PathBuf},
-        sync::{Arc, mpsc},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        time::{Duration, Instant},
     };
 
     use windows_sys::{
         Win32::{
-            Foundation::{CloseHandle, GetLastError, RPC_E_CHANGED_MODE},
+            Foundation::{CloseHandle, GetLastError, RPC_E_CHANGED_MODE, SysStringLen},
             Storage::FileSystem::GetVolumeNameForVolumeMountPointW,
             System::Com::{
                 COINIT_MULTITHREADED, CoInitializeEx, CoInitializeSecurity, CoUninitialize,
                 EOAC_NONE, RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IMPERSONATE,
             },
         },
-        core::{GUID, HRESULT},
+        core::{BSTR, GUID, HRESULT},
     };
 
     use crate::{
         common::error::{MapacheError, Result},
         fs::get_absolute_normalized_path,
-        ui::{self},
+        ui,
     };
+
+    use super::{join_device_path, read_wide_buffer, split_drive};
 
     /// Translation table registered for the duration of `VssSession`.
     static ACTIVE: parking_lot::RwLock<Option<Arc<ShadowMapping>>> = parking_lot::RwLock::new(None);
+    /// Fast, lock-free "is a session active?" probe for the scanner hot path.
+    static ACTIVE_SET: AtomicBool = AtomicBool::new(false);
 
     #[inline]
     pub(super) fn active_mapping() -> Option<Arc<ShadowMapping>> {
+        if !ACTIVE_SET.load(Ordering::Acquire) {
+            return None;
+        }
         ACTIVE.read().clone()
     }
 
-    fn set_active(mapping: Option<Arc<ShadowMapping>>) {
-        *ACTIVE.write() = mapping;
+    /// Registers the mapping as the active one. Fails when another session
+    /// already owns the global table (only one session can be active).
+    fn register(mapping: &Arc<ShadowMapping>) -> bool {
+        let mut slot = ACTIVE.write();
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(mapping.clone());
+        ACTIVE_SET.store(true, Ordering::Release);
+        true
+    }
+
+    /// Clears the table, but only if `mapping` is still the active one, so a
+    /// stale session can never disable a newer one.
+    fn deregister(mapping: &Arc<ShadowMapping>) {
+        let mut slot = ACTIVE.write();
+        if slot
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, mapping))
+        {
+            *slot = None;
+            ACTIVE_SET.store(false, Ordering::Release);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -195,65 +319,40 @@ mod imp {
         /// Drive-relative paths (`C:file`) are never translated: they resolve
         /// against the current directory and are outside the snapshot's
         /// absolute source paths.
-        pub(super) fn translate(&self, path: &Path) -> PathBuf {
+        pub(super) fn translate<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
             let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-            let (key, remainder) = match split_drive(&wide) {
-                Some(split) => split,
-                None => return path.to_path_buf(),
+            let Some((key, remainder)) = split_drive(&wide) else {
+                return Cow::Borrowed(path);
             };
-            let volume = match self.volumes.iter().find(|v| v.key == key) {
-                Some(volume) => volume,
-                None => return path.to_path_buf(),
+            let Some(volume) = self.volumes.iter().find(|volume| volume.key == key) else {
+                return Cow::Borrowed(path);
             };
 
-            let mut out = volume.device_utf16.clone();
-            out.extend_from_slice(remainder);
-            PathBuf::from(OsString::from_wide(&out))
+            Cow::Owned(PathBuf::from(OsString::from_wide(&join_device_path(
+                &volume.device_utf16,
+                remainder,
+            ))))
         }
-    }
-
-    /// Splits `C:\rest` into `(drive-key, "rest")` on the UTF-16 form.
-    ///
-    /// Returns `None` for anything that is not a drive-letter absolute path:
-    /// UNC paths, `\\?\`-prefixed and already translated paths, drive-relative
-    /// forms without a separator, and malformed input.
-    fn split_drive(wide: &[u16]) -> Option<(char, &[u16])> {
-        // `X:\...` — three units minimum, and the drive letter must be ASCII.
-        if wide.len() < 3 || wide[1] != u16::from(b':') || wide[0] > 0x7F {
-            return None;
-        }
-        if wide[2] != u16::from(b'\\') && wide[2] != u16::from(b'/') {
-            return None;
-        }
-        let key = (wide[0] as u8 as char).to_ascii_uppercase();
-        if !key.is_ascii_alphabetic() {
-            return None;
-        }
-        Some((key, &wide[3..]))
-    }
-
-    /// Reads a NUL-terminated UTF-16 string into a `String`, replacing
-    /// invalid units; a null pointer reads as empty. Works for plain buffers
-    /// and for BSTR contents alike.
-    fn read_wide_until_nul(ptr: *const u16) -> String {
-        if ptr.is_null() {
-            return String::new();
-        }
-        let mut units: Vec<u16> = Vec::new();
-        let mut index = 0usize;
-        // SAFETY: `ptr` refers to a null-terminated UTF-16 sequence, which is
-        // what the walk below stays inside of.
-        unsafe {
-            while *ptr.add(index) != 0 {
-                units.push(*ptr.add(index));
-                index += 1;
-            }
-        }
-        String::from_utf16_lossy(&units)
     }
 
     fn wide_zero_terminated(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Reads a BSTR into a `String`, replacing invalid units.
+    fn bstr_to_string(bstr: BSTR) -> String {
+        if bstr.is_null() {
+            return String::new();
+        }
+        // SAFETY: `SysStringLen` is valid for every BSTR and yields the exact
+        // number of UTF-16 units (excluding the terminator).
+        let len = unsafe { SysStringLen(bstr) } as usize;
+        if len == 0 {
+            return String::new();
+        }
+        // SAFETY: a BSTR owns `len` initialized UTF-16 units at its pointer.
+        let units = unsafe { std::slice::from_raw_parts(bstr, len) };
+        String::from_utf16_lossy(units)
     }
 
     // -----------------------------------------------------------------------
@@ -273,7 +372,9 @@ mod imp {
         }
 
         /// Declaration order follows `VsBackup.h` (vtable order follows IDL
-        /// declaration order); every slot is typed for clarity.
+        /// declaration order); every slot is typed for clarity. VSS `BOOLEAN`
+        /// parameters are one byte in the IDL (`u8` here), while Win32 `BOOL`
+        /// parameters are four bytes (`i32`).
         #[repr(C)]
         pub struct IVssBackupComponentsVtbl {
             // IUnknown
@@ -295,8 +396,16 @@ mod imp {
             ) -> HRESULT,
             pub InitializeForBackup:
                 unsafe extern "system" fn(*mut IVssBackupComponentsRaw, BSTR) -> HRESULT,
-            pub SetBackupState:
-                unsafe extern "system" fn(*mut IVssBackupComponentsRaw, u8, u8, i32, u8) -> HRESULT,
+            // `SetBackupState` uses Win32 `BOOL` (4 bytes) for its first,
+            // second and fourth parameters, unlike the `BOOLEAN` (1 byte)
+            // parameters elsewhere in this interface.
+            pub SetBackupState: unsafe extern "system" fn(
+                *mut IVssBackupComponentsRaw,
+                i32,
+                i32,
+                i32,
+                i32,
+            ) -> HRESULT,
             pub InitializeForRestore:
                 unsafe extern "system" fn(*mut IVssBackupComponentsRaw, BSTR) -> HRESULT,
             pub SetRestoreState:
@@ -471,7 +580,7 @@ mod imp {
                 *mut IVssBackupComponentsRaw,
                 GUID,
                 i32,
-                i32,
+                u8,
                 *mut i32,
                 *mut GUID,
             ) -> HRESULT,
@@ -497,7 +606,7 @@ mod imp {
                 *mut IVssBackupComponentsRaw,
                 GUID,
                 PCWSTR,
-                *mut i32,
+                *mut u8,
             ) -> HRESULT,
             pub DisableWriterClasses: unsafe extern "system" fn(
                 *mut IVssBackupComponentsRaw,
@@ -570,17 +679,21 @@ mod imp {
             pub m_pwszExposedPath: BSTR,
             pub m_ProviderId: GUID,
             pub m_lSnapshotAttributes: i32,
-            pub m_tsCreationTimestamp: windows_sys::Win32::Foundation::FILETIME,
+            /// `VSS_TIMESTAMP` is a `LONGLONG` (8-byte aligned). Declaring it
+            /// as `FILETIME` (8 bytes, but 4-byte aligned) would shrink this
+            /// structure, and VSS writes the full `VSS_SNAPSHOT_PROP` into the
+            /// caller's buffer.
+            pub m_tsCreationTimestamp: i64,
             pub m_eStatus: i32,
         }
     }
 
-    // SAFETY: `CreateVssBackupComponentsInternal` is exported by
-    // `vssapi.dll` — the unmangled alias of `CreateVssBackupComponents` — and
-    // links against the SDK import library `vssapi.lib`, which MSVC toolchains
-    // resolve automatically. Both exports point to the same entry point; the
-    // documented plain-C name is not present unmangled in either the DLL or
-    // any SDK import library.
+    // SAFETY: `CreateVssBackupComponentsInternal` and
+    // `VssFreeSnapshotPropertiesInternal` are the unmangled exports of
+    // `vssapi.dll`, declared in `VsBackup.h`; the SDK import library
+    // `vssapi.lib` resolves them for MSVC toolchains. The plain-C names in
+    // the SDK headers (`CreateVssBackupComponents`,
+    // `VssFreeSnapshotProperties`) are `static inline` wrappers around these.
     #[link(name = "vssapi")]
     unsafe extern "system" {
         pub fn CreateVssBackupComponentsInternal(
@@ -590,10 +703,6 @@ mod imp {
         /// `GetSnapshotProperties`. The strings are owned by `vssapi`'s
         /// allocator, so `SysFreeString` per member is not the way to
         /// release them.
-        ///
-        /// This is the SDK import-library alias of the unmangled
-        /// `VssFreeSnapshotProperties` export (both resolve to the same
-        /// address in `vssapi.dll`).
         pub fn VssFreeSnapshotPropertiesInternal(pProp: *mut ffi::VssSnapshotProp);
     }
 
@@ -608,8 +717,16 @@ mod imp {
     const VSS_S_ASYNC_CANCELLED: HRESULT = 0x0004_230B;
     /// `VSS_S_ASYNC_PENDING`: the async operation has not completed.
     const VSS_S_ASYNC_PENDING: HRESULT = 0x0004_2309;
-    /// No timeout for `IVssAsync::Wait`.
-    const WAIT_FOREVER_MS: u32 = u32::MAX;
+    /// `S_FALSE`, accepted from `IVssAsync::Wait` as "the wait timed out".
+    const S_FALSE: HRESULT = 1;
+    /// Granularity of the async wait loop, so a stuck operation is noticed
+    /// and cancelled instead of blocking forever.
+    const WAIT_SLICE_MS: u32 = 30_000;
+    /// Upper bound for a single VSS async operation. Generous enough for the
+    /// initial copy of a large volume, but bounded so a wedged provider or a
+    /// stuck writer cannot hang the snapshot indefinitely; on expiry the
+    /// operation is cancelled and the snapshot falls back to live reads.
+    const ASYNC_OPERATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
     fn hr(result: HRESULT, operation: &str) -> Result<()> {
         if result == 0 {
@@ -627,7 +744,7 @@ mod imp {
         match status {
             VSS_S_ASYNC_FINISHED => Ok(()),
             VSS_S_ASYNC_PENDING => Err(MapacheError::Backend(format!(
-                "VSS {operation} is still pending after Wait"
+                "VSS {operation} is still pending"
             ))),
             VSS_S_ASYNC_CANCELLED => Err(MapacheError::Backend(format!(
                 "VSS {operation} was cancelled"
@@ -733,7 +850,7 @@ mod imp {
     // Worker thread: create, serve, delete
     // -----------------------------------------------------------------------
 
-    /// Distinct volumes to shadow.
+    /// Distinct volume to shadow.
     struct VolumePlan {
         /// `AddToSnapshotSet` name, e.g. `\\?\Volume{1a2b-...}\`.
         volume_name: String,
@@ -742,6 +859,8 @@ mod imp {
     }
 
     pub(super) struct SessionInner {
+        /// Kept so teardown can clear *this* mapping only.
+        mapping: Arc<ShadowMapping>,
         /// Signals the worker to delete the snapshot set and exit.
         shutdown: Option<mpsc::Sender<()>>,
         worker: Option<std::thread::JoinHandle<()>>,
@@ -749,7 +868,7 @@ mod imp {
 
     impl Drop for SessionInner {
         fn drop(&mut self) {
-            set_active(None);
+            deregister(&self.mapping);
             if let Some(shutdown) = self.shutdown.take() {
                 let _ = shutdown.send(());
             }
@@ -763,24 +882,26 @@ mod imp {
 
     /// Entry point run on the blocking pool. Never fails outward: any error
     /// becomes a warning and an inert session (live reads).
-    pub(super) fn start_sync(source_paths: &[PathBuf]) -> SessionInner {
+    pub(super) fn start_sync(source_paths: &[PathBuf]) -> Option<SessionInner> {
         match create_session(source_paths) {
-            Ok(inner) => inner,
+            Ok(inner) => Some(inner),
             Err(error) => {
                 ui::cli::warning!(
                     "Continuing without a filesystem snapshot (files that a \
                      running program keeps open for exclusive access may be \
                      skipped): {error}"
                 );
-                SessionInner {
-                    shutdown: None,
-                    worker: None,
-                }
+                None
             }
         }
     }
 
     fn create_session(source_paths: &[PathBuf]) -> Result<SessionInner> {
+        // Cheap fast path for overlapping snapshots: the set creation below
+        // is expensive, and only one session can own the global table anyway.
+        if active_mapping().is_some() {
+            return Err(session_already_active());
+        }
         if !is_elevated() {
             return Err(MapacheError::Backend(
                 "--use-fs-snapshot requires administrator privileges (shadow \
@@ -789,8 +910,8 @@ mod imp {
             ));
         }
 
-        let plan = plan_volumes(source_paths)?;
-        if plan.is_empty() {
+        let volumes = plan_volumes(source_paths);
+        if volumes.is_empty() {
             return Err(MapacheError::Backend(
                 "no local drive among the source paths supports a VSS shadow \
                  copy (non-drive paths are read from the live filesystem)"
@@ -801,37 +922,61 @@ mod imp {
         let (ready_tx, ready_rx) = mpsc::channel();
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
-        let volumes = plan;
         let worker = std::thread::spawn(move || {
             worker_run(volumes, ready_tx, shutdown_rx);
         });
 
-        match ready_rx.recv() {
-            Ok(Ok(mapping)) => {
-                set_active(Some(mapping));
-            }
-            Ok(Err(error)) => {
-                // Dropping `shutdown_tx` at scope end releases the worker,
-                // which cleans up and exits.
-                return Err(error);
-            }
+        let mapping = match ready_rx.recv() {
+            Ok(Ok(mapping)) => mapping,
+            Ok(Err(error)) => return Err(error),
             Err(_) => {
                 return Err(MapacheError::Backend(
                     "the VSS worker thread died unexpectedly".to_string(),
                 ));
             }
+        };
+
+        if !register(&mapping) {
+            // Another session won the race and owns the global translation
+            // table. Release this worker so it deletes the set it just
+            // created, and wait for the cleanup before reporting the failure.
+            drop(shutdown_tx);
+            let _ = worker.join();
+            return Err(session_already_active());
         }
 
         Ok(SessionInner {
+            mapping,
             shutdown: Some(shutdown_tx),
             worker: Some(worker),
         })
     }
 
-    fn plan_volumes(source_paths: &[PathBuf]) -> Result<Vec<VolumePlan>> {
+    fn session_already_active() -> MapacheError {
+        MapacheError::Backend(
+            "another filesystem snapshot session is already active; these \
+             sources will be read from the live filesystem"
+                .to_string(),
+        )
+    }
+
+    /// Resolves the volumes to shadow, skipping (with a warning) any source
+    /// path or drive that VSS cannot cover, so one unsupported path never
+    /// disables the shadow copy for the others.
+    fn plan_volumes(source_paths: &[PathBuf]) -> Vec<VolumePlan> {
         let mut keys: Vec<char> = Vec::new();
         for path in source_paths {
-            let normalized = get_absolute_normalized_path(path)?;
+            let normalized = match get_absolute_normalized_path(path) {
+                Ok(normalized) => normalized,
+                Err(error) => {
+                    ui::cli::warning!(
+                        "cannot resolve {}: {error}; it will be read from the \
+                         live filesystem",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             let wide: Vec<u16> = normalized.as_os_str().encode_wide().collect();
             match split_drive(&wide) {
                 Some((key, _)) => {
@@ -851,18 +996,22 @@ mod imp {
 
         let mut plan = Vec::with_capacity(keys.len());
         for key in keys {
-            plan.push(VolumePlan {
-                volume_name: volume_guid_path(key)?,
-                key,
-            });
+            match volume_guid_path(key) {
+                Ok(volume_name) => plan.push(VolumePlan { volume_name, key }),
+                Err(error) => {
+                    ui::cli::warning!(
+                        "{error}; paths on drive {key} will be read from the \
+                         live filesystem"
+                    );
+                }
+            }
         }
-        Ok(plan)
+        plan
     }
 
     /// `\\?\Volume{GUID}\` for a local drive letter.
     fn volume_guid_path(key: char) -> Result<String> {
-        // `GetVolumeNameForVolumeMountPointW` requires a trailing separator,
-        // and a volume GUID path fits comfortably in 128 UTF-16 units.
+        // `GetVolumeNameForVolumeMountPointW` requires a trailing separator.
         let mount = format!("{key}:\\");
         let mut buffer = vec![0u16; 128];
         // SAFETY: the mount-point string is null-terminated UTF-16 and the
@@ -878,10 +1027,10 @@ mod imp {
             // SAFETY: `GetLastError` has no preconditions.
             let code = unsafe { GetLastError() };
             return Err(MapacheError::Backend(format!(
-                "cannot resolve the volume path of drive {key}: (error {code})"
+                "cannot resolve the volume path of drive {key} (error {code})"
             )));
         }
-        Ok(read_wide_until_nul(buffer.as_ptr()))
+        Ok(read_wide_buffer(&buffer))
     }
 
     /// Creates the snapshot set and serves the session until told to stop.
@@ -942,15 +1091,16 @@ mod imp {
         configure_backup_state(raw)?;
         gather_writer_metadata(raw)?;
         let set_id = start_snapshot_set(raw)?;
-        let added = add_volumes(raw, volumes);
 
-        let shadows = match added {
-            Ok(snapshot_ids) => {
-                prepare_for_backup(raw)?;
-                gather_shadows(raw, volumes, &snapshot_ids)
-            }
-            Err(error) => Err(error),
-        };
+        // Every step past this point may fail after the snapshot set exists,
+        // so route the error through the abort/delete path below. This
+        // includes `PrepareForBackup`, where writer errors surface.
+        let shadows = (|| {
+            let added = add_volumes(raw, volumes)?;
+            prepare_for_backup(raw)?;
+            gather_shadows(raw, &added)
+        })();
+
         match shadows {
             Ok(shadows) => Ok((components, set_id, Arc::new(ShadowMapping::new(shadows)))),
             Err(error) => {
@@ -991,31 +1141,72 @@ mod imp {
         Ok(set_id)
     }
 
-    /// Adds each planned volume to the set, returning the snapshot ids in
-    /// the same order.
+    /// Adds each planned volume to the set, returning the snapshot ids paired
+    /// with the volumes that were actually accepted. A volume the provider
+    /// refuses is skipped with a warning instead of failing the whole set.
     fn add_volumes(
         raw: *mut ffi::IVssBackupComponentsRaw,
         volumes: &[VolumePlan],
-    ) -> Result<Vec<GUID>> {
-        let mut snapshot_ids: Vec<GUID> = Vec::with_capacity(volumes.len());
+    ) -> Result<Vec<(&VolumePlan, GUID)>> {
+        let mut added: Vec<(&VolumePlan, GUID)> = Vec::with_capacity(volumes.len());
         for volume in volumes {
+            if !is_volume_supported(raw, &volume.volume_name) {
+                ui::cli::warning!(
+                    "drive {} does not support VSS shadow copies; its paths \
+                     will be read from the live filesystem",
+                    volume.key
+                );
+                continue;
+            }
+
             let name = wide_zero_terminated(&volume.volume_name);
             let mut snapshot_id = GUID::default();
             // SAFETY: vtable slot method call as in `initialize_for_backup`;
             // `name` is a null-terminated UTF-16 temporary alive until the
             // end of the call and the out-parameter is a valid `GUID` target.
-            unsafe {
-                let call = ((*(*raw).vtbl).AddToSnapshotSet)(
+            let call = unsafe {
+                ((*(*raw).vtbl).AddToSnapshotSet)(
                     raw,
                     name.as_ptr(),
                     GUID::default(),
                     &mut snapshot_id,
-                );
-                hr(call, "AddToSnapshotSet")?;
+                )
+            };
+            match hr(call, "AddToSnapshotSet") {
+                Ok(()) => added.push((volume, snapshot_id)),
+                Err(error) => ui::cli::warning!(
+                    "{error}; paths on drive {} will be read from the live \
+                     filesystem",
+                    volume.key
+                ),
             }
-            snapshot_ids.push(snapshot_id);
         }
-        Ok(snapshot_ids)
+
+        if added.is_empty() {
+            return Err(MapacheError::Backend(
+                "no volume could be added to the VSS snapshot set".to_string(),
+            ));
+        }
+        Ok(added)
+    }
+
+    /// Whether the default provider can shadow `volume_name`.
+    ///
+    /// Queries are treated as "supported" when the call itself fails, so the
+    /// failure is reported by `AddToSnapshotSet` instead of being masked.
+    fn is_volume_supported(raw: *mut ffi::IVssBackupComponentsRaw, volume_name: &str) -> bool {
+        let name = wide_zero_terminated(volume_name);
+        let mut supported: u8 = 0;
+        // SAFETY: vtable slot method call as in `initialize_for_backup`; the
+        // out-parameter is a valid `BOOLEAN` (one byte) target.
+        let call = unsafe {
+            ((*(*raw).vtbl).IsVolumeSupported)(raw, GUID::default(), name.as_ptr(), &mut supported)
+        };
+        if call != 0 {
+            tracing::debug!(target: "vss", "IsVolumeSupported({volume_name}) failed: 0x{call:08X}");
+            return true;
+        }
+        supported != 0
     }
 
     /// Sets the writer-relevant backup state: no components selected, no
@@ -1059,7 +1250,7 @@ mod imp {
         // out-parameter.
         let call = unsafe { ((*(*raw).vtbl).BackupComplete)(raw, &mut async_raw) };
         if let Err(error) =
-            hr(call, "BackupComplete").and_then(|_| wait_async(async_raw, "BackupComplete"))
+            hr(call, "BackupComplete").and_then(|()| wait_async(async_raw, "BackupComplete"))
         {
             tracing::debug!(target: "vss", "BackupComplete: {error}");
         }
@@ -1077,16 +1268,15 @@ mod imp {
         }
     }
 
-    /// Commits the set and collects one device string per planned volume.
+    /// Commits the set and collects one device string per added volume.
     fn gather_shadows(
         raw: *mut ffi::IVssBackupComponentsRaw,
-        volumes: &[VolumePlan],
-        snapshot_ids: &[GUID],
+        added: &[(&VolumePlan, GUID)],
     ) -> Result<Vec<VolumeShadow>> {
         do_snapshot_set(raw)?;
 
-        let mut shadows: Vec<VolumeShadow> = Vec::with_capacity(snapshot_ids.len());
-        for (volume, &snapshot_id) in volumes.iter().zip(snapshot_ids) {
+        let mut shadows: Vec<VolumeShadow> = Vec::with_capacity(added.len());
+        for (volume, snapshot_id) in added.iter().copied() {
             let device = snapshot_device(raw, snapshot_id)?;
             shadows.push(VolumeShadow {
                 key: volume.key,
@@ -1110,6 +1300,10 @@ mod imp {
     }
 
     /// Blocks until the async operation finished, then checks its status.
+    ///
+    /// The wait is bounded: it polls in slices and gives up (cancelling the
+    /// operation) once `ASYNC_OPERATION_TIMEOUT` elapses, so a wedged
+    /// provider or writer cannot hang the snapshot forever.
     fn wait_async(async_raw: *mut ffi::IVssAsyncRaw, operation: &str) -> Result<()> {
         if async_raw.is_null() {
             return Err(MapacheError::Backend(
@@ -1129,23 +1323,55 @@ mod imp {
         }
         let _guard = ReleaseGuard(async_raw);
 
-        // SAFETY: `Wait` call on the async handle held by the guard above;
-        // live interface and correct slot signature.
-        let call_wait = unsafe {
-            let method = (*(*async_raw).vtbl).Wait;
-            method(async_raw, WAIT_FOREVER_MS)
-        };
-        hr(call_wait, "IVssAsync::Wait")?;
+        let deadline = Instant::now() + ASYNC_OPERATION_TIMEOUT;
+        loop {
+            // SAFETY: `Wait` call on the async handle held by the guard above;
+            // live interface and correct slot signature.
+            let call_wait = unsafe {
+                let method = (*(*async_raw).vtbl).Wait;
+                method(async_raw, WAIT_SLICE_MS)
+            };
+            // S_OK and S_FALSE both mean "the wait returned"; the operation's
+            // own result is read from `QueryStatus` below.
+            if call_wait != 0 && call_wait != S_FALSE {
+                cancel_async(async_raw);
+                return Err(MapacheError::Backend(format!(
+                    "VSS IVssAsync::Wait failed: 0x{call_wait:08X}"
+                )));
+            }
 
-        let mut status: HRESULT = 0;
-        // SAFETY: `QueryStatus` call as `Wait` above; the out-parameter points
-        // to a valid `HRESULT` and `pReserved` must be null.
-        let call_status = unsafe {
-            let method = (*(*async_raw).vtbl).QueryStatus;
-            method(async_raw, &mut status, std::ptr::null_mut())
-        };
-        hr(call_status, "IVssAsync::QueryStatus")?;
-        hr_async_status(status, operation)
+            let mut status: HRESULT = 0;
+            // SAFETY: `QueryStatus` call as `Wait` above; the out-parameter
+            // points to a valid `HRESULT` and `pReserved` must be null.
+            let call_status = unsafe {
+                let method = (*(*async_raw).vtbl).QueryStatus;
+                method(async_raw, &mut status, std::ptr::null_mut())
+            };
+            hr(call_status, "IVssAsync::QueryStatus")?;
+
+            match status {
+                VSS_S_ASYNC_FINISHED => return Ok(()),
+                VSS_S_ASYNC_PENDING => {
+                    if Instant::now() >= deadline {
+                        cancel_async(async_raw);
+                        return Err(MapacheError::Backend(format!(
+                            "VSS {operation} did not finish within {} seconds",
+                            ASYNC_OPERATION_TIMEOUT.as_secs()
+                        )));
+                    }
+                }
+                _ => return hr_async_status(status, operation),
+            }
+        }
+    }
+
+    /// Asks VSS to cancel an async operation that timed out or failed.
+    fn cancel_async(async_raw: *mut ffi::IVssAsyncRaw) {
+        // SAFETY: `Cancel` is a vtable slot on the live handle.
+        let call = unsafe { ((*(*async_raw).vtbl).Cancel)(async_raw) };
+        if call != 0 {
+            tracing::debug!(target: "vss", "IVssAsync::Cancel: 0x{call:08X}");
+        }
     }
 
     /// Reads `m_pwszSnapshotDeviceObject` for `snapshot_id`.
@@ -1165,14 +1391,19 @@ mod imp {
 
         // All string members are BSTRs owned by the requester: copy the device
         // path out, then free every one of them.
-        let mut device = read_wide_until_nul(prop.m_pwszSnapshotDeviceObject);
+        let mut device = bstr_to_string(prop.m_pwszSnapshotDeviceObject);
         // SAFETY: `VssFreeSnapshotProperties` is the documented way to release
         // the property structure from `GetSnapshotProperties`: it frees every
         // BSTR member with `vssapi`'s allocator and zeroes the struct once.
         unsafe {
             VssFreeSnapshotPropertiesInternal(&mut prop);
         }
-        if !device.is_empty() && !device.ends_with('\\') {
+        if device.is_empty() {
+            return Err(MapacheError::Backend(
+                "VSS returned an empty snapshot device path".to_string(),
+            ));
+        }
+        if !device.ends_with('\\') {
             device.push('\\');
         }
         Ok(device)
@@ -1181,19 +1412,26 @@ mod imp {
     fn delete_snapshot_set(raw: *mut ffi::IVssBackupComponentsRaw, set_id: GUID) -> Result<()> {
         let mut deleted: i32 = 0;
         let mut not_deleted = GUID::default();
-        // SAFETY: `DeleteSnapshots` writes the out parameters below.
+        // SAFETY: `DeleteSnapshots` writes the out parameters below. The
+        // force-delete argument is a `BOOLEAN` (one byte).
         let call = unsafe {
             let method = (*(*raw).vtbl).DeleteSnapshots;
             method(
                 raw,
                 set_id,
                 VSS_OBJECT_SNAPSHOT_SET,
-                1, // force delete
+                1,
                 &mut deleted,
                 &mut not_deleted,
             )
         };
-        hr(call, "DeleteSnapshots")
+        hr(call, "DeleteSnapshots")?;
+        if deleted <= 0 {
+            return Err(MapacheError::Backend(
+                "VSS DeleteSnapshots did not delete the snapshot set".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Whether the running token allows creating shadow copies.
@@ -1234,26 +1472,18 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use std::borrow::Cow;
 
-        fn mapping(pairs: &[(&str, &str)]) -> ShadowMapping {
-            ShadowMapping::new(
-                pairs
-                    .iter()
-                    .map(|&(key, device)| VolumeShadow {
-                        key: key.chars().next().unwrap_or('!'),
-                        device_utf16: device.encode_utf16().collect(),
-                    })
-                    .collect(),
-            )
-        }
+        use super::*;
 
         #[test]
         fn translates_drive_paths() {
-            let table = mapping(&[(
-                "C",
-                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\",
-            )]);
+            let table = ShadowMapping::new(vec![VolumeShadow {
+                key: 'C',
+                device_utf16: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\"
+                    .encode_utf16()
+                    .collect(),
+            }]);
 
             let translated = table.translate(Path::new("C:\\Users\\me\\a.txt"));
             assert_eq!(
@@ -1267,35 +1497,152 @@ mod imp {
         }
 
         #[test]
-        fn transcribes_case_and_passthrough() {
-            let table = mapping(&[(
-                "D",
-                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\",
-            )]);
+        fn passes_through_unmapped_paths() {
+            let table = ShadowMapping::new(vec![VolumeShadow {
+                key: 'D',
+                device_utf16: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\"
+                    .encode_utf16()
+                    .collect(),
+            }]);
 
-            // Case-insensitive volume keys.
+            assert!(matches!(
+                table.translate(Path::new("Z:\\x")),
+                Cow::Borrowed(_)
+            ));
             assert_eq!(
                 table.translate(Path::new("d:\\x")).to_str(),
                 Some("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\x")
             );
-            // Unmapped volume passes through.
-            assert_eq!(table.translate(Path::new("Z:\\x")).to_str(), Some("Z:\\x"));
-            // UNC and drive-relative forms pass through unmapped.
-            assert_eq!(
-                table.translate(Path::new("\\\\server\\share\\x")).to_str(),
-                Some("\\\\server\\share\\x")
-            );
-            assert_eq!(
-                table.translate(Path::new("D:relative")).to_str(),
-                Some("D:relative")
-            );
-            // Already translated paths pass through unchanged.
-            assert_eq!(
-                table
-                    .translate(Path::new("\\\\?\\GLOBALROOT\\Device\\Other\\x"))
-                    .to_str(),
-                Some("\\\\?\\GLOBALROOT\\Device\\Other\\x")
-            );
         }
+
+        /// Guards the hand-written `VSS_SNAPSHOT_PROP` layout: VSS writes the
+        /// whole structure into the caller's buffer, so a missing field or a
+        /// differently aligned timestamp would overflow the stack object.
+        #[test]
+        #[cfg(target_pointer_width = "64")]
+        fn snapshot_prop_layout_matches_vss() {
+            assert_eq!(std::mem::size_of::<ffi::VssSnapshotProp>(), 128);
+            assert_eq!(
+                std::mem::offset_of!(ffi::VssSnapshotProp, m_pwszSnapshotDeviceObject),
+                40
+            );
+            assert_eq!(
+                std::mem::offset_of!(ffi::VssSnapshotProp, m_tsCreationTimestamp),
+                112
+            );
+            assert_eq!(std::mem::offset_of!(ffi::VssSnapshotProp, m_eStatus), 120);
+        }
+
+        /// End-to-end check against a real shadow copy. Ignored by default:
+        /// it requires Windows with administrator privileges, and while the
+        /// session is registered *every* path on the snapshotted drive in
+        /// this process reads the frozen copy, so it must not run alongside
+        /// the rest of the test suite.
+        #[tokio::test]
+        #[ignore = "requires Windows, administrator privileges and no concurrent tests"]
+        async fn session_covers_a_temp_directory() {
+            use super::super::{VssSession, translate};
+
+            let dir = std::env::temp_dir().join(format!("mapache-vss-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create probe directory");
+            let probe = dir.join("probe.txt");
+            std::fs::write(&probe, b"shadow probe").expect("write probe file");
+
+            let session = VssSession::start(std::slice::from_ref(&dir)).await;
+            let translated = translate(&probe);
+            if &*translated == probe.as_path() {
+                // Not elevated or VSS unavailable: degraded to live reads.
+                eprintln!("VSS unavailable in this environment; skipping");
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+            assert!(
+                translated
+                    .to_string_lossy()
+                    .starts_with("\\\\?\\GLOBALROOT\\"),
+                "unexpected shadow path: {}",
+                translated.display()
+            );
+            assert_eq!(
+                std::fs::read(&*translated).expect("read through the shadow copy"),
+                b"shadow probe".to_vec()
+            );
+
+            session.close().await;
+            assert_eq!(&*translate(&probe), probe.as_path());
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn split_drive_accepts_drive_absolute_paths() {
+        let path = wide("C:\\Users\\me");
+        let (key, remainder) = split_drive(&path).expect("drive path");
+        assert_eq!(key, 'C');
+        assert_eq!(String::from_utf16(remainder).unwrap(), "Users\\me");
+    }
+
+    #[test]
+    fn split_drive_is_case_insensitive_and_normalizes_the_key() {
+        let (key, _) = split_drive(&wide("d:\\x")).expect("drive path");
+        assert_eq!(key, 'D');
+    }
+
+    #[test]
+    fn split_drive_accepts_forward_slashes() {
+        let path = wide("C:/Users/me");
+        let (key, remainder) = split_drive(&path).expect("drive path");
+        assert_eq!(key, 'C');
+        assert_eq!(String::from_utf16(remainder).unwrap(), "Users/me");
+    }
+
+    #[test]
+    fn split_drive_accepts_verbatim_drive_paths() {
+        let path = wide("\\\\?\\C:\\Users\\me");
+        let (key, remainder) = split_drive(&path).expect("drive path");
+        assert_eq!(key, 'C');
+        assert_eq!(String::from_utf16(remainder).unwrap(), "Users\\me");
+    }
+
+    #[test]
+    fn split_drive_rejects_non_drive_paths() {
+        assert!(split_drive(&wide("\\\\server\\share\\x")).is_none());
+        assert!(split_drive(&wide("\\\\?\\GLOBALROOT\\Device\\Other\\x")).is_none());
+        assert!(split_drive(&wide("C:relative")).is_none());
+        assert!(split_drive(&wide("C:")).is_none());
+        assert!(split_drive(&wide("1:\\x")).is_none());
+        assert!(split_drive(&wide("")).is_none());
+    }
+
+    #[test]
+    fn join_device_path_normalizes_separators() {
+        let device = wide("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\");
+        let joined = join_device_path(&device, &wide("Users/me/a.txt"));
+        assert_eq!(
+            String::from_utf16(&joined).unwrap(),
+            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\a.txt"
+        );
+    }
+
+    #[test]
+    fn verbatim_prefix_is_stripped_only_once() {
+        assert_eq!(
+            String::from_utf16(strip_verbatim_prefix(&wide("\\\\?\\C:\\x"))).unwrap(),
+            "C:\\x"
+        );
+        assert_eq!(
+            String::from_utf16(strip_verbatim_prefix(&wide("C:\\x"))).unwrap(),
+            "C:\\x"
+        );
     }
 }

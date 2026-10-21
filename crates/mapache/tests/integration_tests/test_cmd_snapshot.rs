@@ -45,6 +45,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_snapshot_use_fs_snapshot_degrades_gracefully() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+        ctx.init_repo().await?;
+
+        // `--use-fs-snapshot` is a Windows opt-in. Where VSS is unavailable
+        // (always on Unix, or Windows without elevation) mapache must warn and
+        // fall back to live reads instead of failing the snapshot.
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .root(true)
+            .use_fs_snapshot(true)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore_use_fs_snapshot");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        assert!(restore_path.join("file.txt").exists());
+        assert!(restore_path.join("0/file0.txt").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_snapshot() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);

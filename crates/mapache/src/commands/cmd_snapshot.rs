@@ -601,20 +601,18 @@ pub(crate) async fn run_with_repo(
     // volumes, so files kept open by running programs are captured. The
     // session must be created before the source enumeration below. It is
     // best-effort: when VSS is unavailable it warns and the snapshot proceeds
-    // with ordinary live reads. The binding lives until the end of this
-    // function (including interrupt and error paths) and then deletes the
-    // shadow copies; with no session, reads go to the live filesystem. Dry
-    // runs read files too, so the session applies to them the same way.
-    let _vss_session = if options.use_fs_snapshot && !options.stdin {
-        fs::vss::VssSession::start(&options.paths)
-            .await
-            .map_err(|e| {
-                SnapshotError::SnapshotFailed(format!(
-                    "failed to start a filesystem snapshot (VSS): {}",
-                    e.inner()
-                ))
-            })?
+    // with ordinary live reads (the same applies per volume when only some
+    // drives can be shadowed). The session is released as soon as the source
+    // reads are done, and its teardown deletes the shadow copies.
+    let vss_session = if options.use_fs_snapshot && !options.stdin {
+        fs::vss::VssSession::start(&options.paths).await
     } else {
+        if options.use_fs_snapshot {
+            ui::cli::warning!(
+                "--use-fs-snapshot has no effect with --stdin; reading the \
+                 backup stream from standard input"
+            );
+        }
         fs::vss::VssSession::inert()
     };
 
@@ -627,16 +625,20 @@ pub(crate) async fn run_with_repo(
             ));
         }
         let root = &options.paths[0];
-        if !root.is_dir() {
+        // Enumerate the shadow copy when a session is active so the child
+        // list matches the frozen volume. Child paths are joined onto the
+        // original root: the walk stays in the original path space.
+        let translated_root = fs::vss::translate(root);
+        if !translated_root.is_dir() {
             return Err(SnapshotError::SourcePathError(
                 "the snapshot root must be a directory".to_string(),
             ));
         }
 
-        let mut dir = tokio::fs::read_dir(root).await?;
+        let mut dir = tokio::fs::read_dir(&*translated_root).await?;
         let mut paths = Vec::new();
         while let Some(entry) = dir.next_entry().await? {
-            paths.push(entry.path());
+            paths.push(root.join(entry.file_name()));
         }
         paths
     };
@@ -780,6 +782,11 @@ pub(crate) async fn run_with_repo(
         cleanup_handler.interrupted.clone(),
     )
     .await;
+
+    // The source reads are done: release the shadow copies now instead of
+    // holding them through the (possibly long) repository flush and snapshot
+    // save. Teardown is blocking, so it runs on the blocking pool.
+    vss_session.close().await;
 
     // Flush repo and finalize pack saver
     tracing::info!(target: "snapshot", "Flushing and finalizing repository");

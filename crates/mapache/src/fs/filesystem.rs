@@ -55,7 +55,8 @@ fn volume_serial_number(path: &Path) -> Option<u64> {
     // Read the volume serial from the shadow copy when a VSS session is
     // active: shadow copies preserve the volume serial, so
     // `--one-file-system` behaves identically over the shadowed volume.
-    let path = &crate::fs::vss::translate(path);
+    let translated = crate::fs::vss::translate(path);
+    let path = &*translated;
 
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
@@ -104,8 +105,10 @@ fn volume_serial_number(path: &Path) -> Option<u64> {
 /// Opens a file with platform-specific sequential-read and access-time flags.
 pub fn open_for_sequential_read(path: &Path) -> io::Result<std::fs::File> {
     // When a VSS session is active, read file contents from the shadow copy
-    // (a no-op translation when no session is registered).
-    let path = &crate::fs::vss::translate(path);
+    // (the translation borrows the path unchanged when no session is
+    // registered).
+    let translated = crate::fs::vss::translate(path);
+    let path = &*translated;
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;

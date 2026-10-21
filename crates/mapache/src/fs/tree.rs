@@ -344,7 +344,7 @@ impl FSNodeStream {
                         // active; child paths are joined in the original path
                         // space and translate again at their own syscalls.
                         let read_dir_path = crate::fs::vss::translate(&path_clone);
-                        let entries = std::fs::read_dir(&read_dir_path)?
+                        let entries = std::fs::read_dir(&*read_dir_path)?
                             .map(|entry| entry.map(|entry| entry.file_name()))
                             .collect::<std::io::Result<Vec<_>>>()?;
 

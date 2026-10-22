@@ -47,6 +47,9 @@
 
 ### Fixed
 
+- Harden restore and bundle path confinement, validate tree nodes, preserve
+  symlink restore strategies and metadata handling, and secure bundle and
+  key-file writes with owner-only key permissions on Unix.
 - `s3://` backends: `remove` now recursively deletes key prefixes using bulk
   `DeleteObjects`, listing pagination no longer skips keys sorting before
   `1000`, reads at or past EOF return an empty buffer instead of a `416` error,

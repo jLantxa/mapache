@@ -783,11 +783,6 @@ pub(crate) async fn run_with_repo(
     )
     .await;
 
-    // The source reads are done: release the shadow copies now instead of
-    // holding them through the (possibly long) repository flush and snapshot
-    // save. Teardown is blocking, so it runs on the blocking pool.
-    vss_session.close().await;
-
     // Flush repo and finalize pack saver
     tracing::info!(target: "snapshot", "Flushing and finalizing repository");
     let repo_stats = repo.flush_and_finalize_pack_saver().await.map_err(|e| {
@@ -880,6 +875,7 @@ pub(crate) async fn run_with_repo(
     };
 
     tracing::info!(target: "snapshot", "Snapshot command completed in {:?}", start.elapsed());
+    vss_session.close(true).await;
     Ok(completion)
 }
 

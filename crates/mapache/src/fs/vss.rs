@@ -126,23 +126,14 @@ impl VssSession {
         }
     }
 
-    /// Releases the shadow copies, running the (blocking) teardown on the
-    /// blocking pool so the async executor is never stalled by VSS.
-    ///
-    /// Call this as soon as the source reads are done: a shadow copy keeps
-    /// consuming copy-on-write space until it is deleted. Dropping the session
-    /// without calling `close` still cleans up, but does so synchronously.
-    pub async fn close(self) {
-        if self.inner.is_none() {
+    /// Ends the backup session and releases its shadow copies on the blocking
+    /// pool. Writers are told the backup completed only when `backup_succeeded`
+    /// is true; dropping the session without closing it aborts the backup.
+    pub async fn close(self, backup_succeeded: bool) {
+        let Some(inner) = self.inner else {
             return;
-        }
-        // The inner value's destructor joins the VSS worker (which deletes
-        // the snapshot set), so let it run on the blocking pool instead of
-        // stalling the async executor.
-        let _ = tokio::task::spawn_blocking(move || {
-            let _session = self;
-        })
-        .await;
+        };
+        let _ = tokio::task::spawn_blocking(move || inner.close(backup_succeeded)).await;
     }
 }
 
@@ -151,6 +142,10 @@ impl VssSession {
 #[cfg(not(windows))]
 mod imp {
     pub(super) struct SessionInner;
+
+    impl SessionInner {
+        pub(super) fn close(self, _backup_succeeded: bool) {}
+    }
 }
 
 /// Splits `C:\rest` into `(drive-key, "rest")` on the UTF-16 form.
@@ -161,49 +156,33 @@ mod imp {
 /// drive-relative forms without a separator, and malformed input.
 #[cfg(any(windows, test))]
 fn split_drive(wide: &[u16]) -> Option<(char, &[u16])> {
-    let wide = strip_verbatim_prefix(wide);
+    let (key, remainder_start) = split_drive_prefix(wide)?;
+    Some((key, &wide[remainder_start..]))
+}
+
+/// Parses a drive prefix from at most the first seven UTF-16 units.
+#[cfg(any(windows, test))]
+fn split_drive_prefix(wide: &[u16]) -> Option<(char, usize)> {
+    const VERBATIM_PREFIX: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    let prefix_len = if wide.starts_with(&VERBATIM_PREFIX) {
+        4
+    } else {
+        0
+    };
+    let drive = wide.get(prefix_len..)?;
 
     // `X:\...` — three units minimum, and the drive letter must be ASCII.
-    if wide.len() < 3 || wide[1] != u16::from(b':') || wide[0] > 0x7F {
+    if drive.len() < 3 || drive[1] != u16::from(b':') || drive[0] > 0x7F {
         return None;
     }
-    if wide[2] != u16::from(b'\\') && wide[2] != u16::from(b'/') {
+    if drive[2] != u16::from(b'\\') && drive[2] != u16::from(b'/') {
         return None;
     }
-    let key = (wide[0] as u8 as char).to_ascii_uppercase();
+    let key = (drive[0] as u8 as char).to_ascii_uppercase();
     if !key.is_ascii_alphabetic() {
         return None;
     }
-    Some((key, &wide[3..]))
-}
-
-/// Strips a leading `\\?\` from a UTF-16 path, if present.
-#[cfg(any(windows, test))]
-fn strip_verbatim_prefix(wide: &[u16]) -> &[u16] {
-    const PREFIX: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
-    if wide.starts_with(&PREFIX) {
-        &wide[PREFIX.len()..]
-    } else {
-        wide
-    }
-}
-
-/// Prefixes `remainder` with the shadow device path, normalizing `/` to `\`.
-///
-/// The shadow device path is `\\?\`-prefixed, so the Win32 layer performs no
-/// path normalization: separators must already be canonical.
-#[cfg(any(windows, test))]
-fn join_device_path(device: &[u16], remainder: &[u16]) -> Vec<u16> {
-    let mut out = Vec::with_capacity(device.len() + remainder.len());
-    out.extend_from_slice(device);
-    out.extend(remainder.iter().map(|&unit| {
-        if unit == u16::from(b'/') {
-            u16::from(b'\\')
-        } else {
-            unit
-        }
-    }));
-    out
+    Some((key, prefix_len + 3))
 }
 
 /// Reads a NUL-terminated UTF-16 buffer into a `String`, replacing invalid
@@ -252,7 +231,7 @@ mod imp {
         ui,
     };
 
-    use super::{join_device_path, read_wide_buffer, split_drive};
+    use super::{read_wide_buffer, split_drive, split_drive_prefix};
 
     /// Translation table registered for the duration of `VssSession`.
     static ACTIVE: parking_lot::RwLock<Option<Arc<ShadowMapping>>> = parking_lot::RwLock::new(None);
@@ -320,18 +299,39 @@ mod imp {
         /// against the current directory and are outside the snapshot's
         /// absolute source paths.
         pub(super) fn translate<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
-            let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-            let Some((key, remainder)) = split_drive(&wide) else {
+            let mut prefix = [0u16; 7];
+            let mut prefix_len = 0;
+            for unit in path.as_os_str().encode_wide().take(prefix.len()) {
+                prefix[prefix_len] = unit;
+                prefix_len += 1;
+            }
+            let Some((key, remainder_start)) = split_drive_prefix(&prefix[..prefix_len]) else {
                 return Cow::Borrowed(path);
             };
             let Some(volume) = self.volumes.iter().find(|volume| volume.key == key) else {
                 return Cow::Borrowed(path);
             };
 
-            Cow::Owned(PathBuf::from(OsString::from_wide(&join_device_path(
-                &volume.device_utf16,
-                remainder,
-            ))))
+            let remainder_len = path
+                .as_os_str()
+                .encode_wide()
+                .count()
+                .saturating_sub(remainder_start);
+            let mut translated = Vec::with_capacity(volume.device_utf16.len() + remainder_len);
+            translated.extend_from_slice(&volume.device_utf16);
+            translated.extend(
+                path.as_os_str()
+                    .encode_wide()
+                    .skip(remainder_start)
+                    .map(|unit| {
+                        if unit == u16::from(b'/') {
+                            u16::from(b'\\')
+                        } else {
+                            unit
+                        }
+                    }),
+            );
+            Cow::Owned(PathBuf::from(OsString::from_wide(&translated)))
         }
     }
 
@@ -882,21 +882,41 @@ mod imp {
         /// Kept so teardown can clear *this* mapping only.
         mapping: Arc<ShadowMapping>,
         /// Signals the worker to delete the snapshot set and exit.
-        shutdown: Option<mpsc::Sender<()>>,
+        shutdown: Option<mpsc::Sender<WorkerShutdown>>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
-    impl Drop for SessionInner {
-        fn drop(&mut self) {
+    #[derive(Debug, PartialEq, Eq)]
+    enum WorkerShutdown {
+        Complete,
+        Abort,
+    }
+
+    impl SessionInner {
+        pub(super) fn close(mut self, backup_succeeded: bool) {
+            self.finish(if backup_succeeded {
+                WorkerShutdown::Complete
+            } else {
+                WorkerShutdown::Abort
+            });
+        }
+
+        fn finish(&mut self, outcome: WorkerShutdown) {
             deregister(&self.mapping);
             if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
+                let _ = shutdown.send(outcome);
             }
             if let Some(worker) = self.worker.take()
                 && worker.join().is_err()
             {
                 ui::cli::warning!("the VSS worker thread panicked");
             }
+        }
+    }
+
+    impl Drop for SessionInner {
+        fn drop(&mut self) {
+            self.finish(WorkerShutdown::Abort);
         }
     }
 
@@ -1057,7 +1077,7 @@ mod imp {
     fn worker_run(
         volumes: Vec<VolumePlan>,
         ready: mpsc::Sender<Result<Arc<ShadowMapping>>>,
-        shutdown: mpsc::Receiver<()>,
+        shutdown: mpsc::Receiver<WorkerShutdown>,
     ) {
         let fail_with = |error| {
             let _ = ready.send(Err(error));
@@ -1073,15 +1093,14 @@ mod imp {
             Ok((components, set_id, mapping)) => {
                 let _ = ready.send(Ok(mapping));
 
-                // Serve until the session is dropped, then close the writer
-                // protocol and delete the set.
-                let _ = shutdown.recv();
-                complete_backup(components.raw);
+                // A dropped sender means the caller unwound before confirming
+                // persistence, so never report that backup as complete.
+                match shutdown.recv() {
+                    Ok(WorkerShutdown::Complete) => complete_backup(components.raw),
+                    Ok(WorkerShutdown::Abort) | Err(_) => abort_backup(components.raw),
+                }
                 if let Err(error) = delete_snapshot_set(components.raw, set_id) {
-                    ui::cli::warning!(
-                        "{error}; the shadow copies are reclaimed when this process \
-                         exits, or with `vssadmin delete shadows /all`"
-                    );
+                    warn_delete_failure(error);
                 }
             }
             Err(error) => fail_with(error),
@@ -1125,10 +1144,19 @@ mod imp {
             Ok(shadows) => Ok((components, set_id, Arc::new(ShadowMapping::new(shadows)))),
             Err(error) => {
                 abort_backup(raw);
-                let _ = delete_snapshot_set(raw, set_id);
+                if let Err(cleanup_error) = delete_snapshot_set(raw, set_id) {
+                    warn_delete_failure(cleanup_error);
+                }
                 Err(error)
             }
         }
+    }
+
+    fn warn_delete_failure(error: MapacheError) {
+        ui::cli::warning!(
+            "{error}; the shadow copies are reclaimed when this process exits, \
+             or with `vssadmin delete shadows /all`"
+        );
     }
 
     /// Calls `InitializeForBackup` with no writer metadata document.
@@ -1498,6 +1526,25 @@ mod imp {
 
         use super::*;
 
+        fn test_session() -> (
+            SessionInner,
+            mpsc::Receiver<std::result::Result<WorkerShutdown, mpsc::RecvError>>,
+        ) {
+            let (shutdown_tx, shutdown_rx) = mpsc::channel();
+            let (outcome_tx, outcome_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _ = outcome_tx.send(shutdown_rx.recv());
+            });
+            (
+                SessionInner {
+                    mapping: Arc::new(ShadowMapping::new(Vec::new())),
+                    shutdown: Some(shutdown_tx),
+                    worker: Some(worker),
+                },
+                outcome_rx,
+            )
+        }
+
         #[test]
         fn translation_maps_the_matching_volume_only() {
             let table = ShadowMapping::new(vec![
@@ -1608,6 +1655,20 @@ mod imp {
             deregister(&first);
             assert!(active_mapping().is_none());
         }
+
+        #[test]
+        fn explicit_success_closes_backup_as_complete() {
+            let (session, outcome) = test_session();
+            session.close(true);
+            assert_eq!(outcome.recv().unwrap().unwrap(), WorkerShutdown::Complete);
+        }
+
+        #[test]
+        fn dropping_session_aborts_backup() {
+            let (session, outcome) = test_session();
+            drop(session);
+            assert_eq!(outcome.recv().unwrap().unwrap(), WorkerShutdown::Abort);
+        }
     }
 }
 
@@ -1647,15 +1708,5 @@ mod tests {
         assert!(split_drive(&wide("C:")).is_none());
         assert!(split_drive(&wide("1:\\x")).is_none());
         assert!(split_drive(&wide("")).is_none());
-    }
-
-    #[test]
-    fn join_device_path_normalizes_separators() {
-        let device = wide("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\");
-        let joined = join_device_path(&device, &wide("Users/me/a.txt"));
-        assert_eq!(
-            String::from_utf16(&joined).unwrap(),
-            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Users\\me\\a.txt"
-        );
     }
 }

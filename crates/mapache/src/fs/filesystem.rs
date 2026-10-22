@@ -22,6 +22,44 @@ pub fn scan_metadata(path: &Path) -> Result<ScanMetadata> {
     })
 }
 
+/// Opens a file for writing without following a symlink or reparse-point leaf.
+pub(crate) fn open_for_write_no_follow(
+    path: &Path,
+    create: bool,
+    private: bool,
+) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if create {
+        options.create(true).truncate(true);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+        if private {
+            options.mode(0o600);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 /// Fills `dev` with a filesystem device identifier when it is not known yet.
 ///
 /// On Unix the device ID is part of every `lstat` result, so this is a no-op.
@@ -155,6 +193,9 @@ mod tests {
 
     use super::{ScanMetadata, open_for_sequential_read, scan_metadata};
 
+    #[cfg(unix)]
+    use super::open_for_write_no_follow;
+
     #[cfg(windows)]
     use super::fill_device_id;
 
@@ -199,6 +240,29 @@ mod tests {
         file.read_to_end(&mut contents)?;
 
         assert_eq!(contents, b"filesystem test");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_open_rejects_symlink_and_can_create_private_files() -> std::io::Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir()?;
+        let outside = dir.path().join("outside");
+        let link = dir.path().join("link");
+        std::fs::write(&outside, b"leave unchanged")?;
+        symlink(&outside, &link)?;
+
+        assert!(open_for_write_no_follow(&link, true, false).is_err());
+        assert_eq!(std::fs::read(&outside)?, b"leave unchanged");
+
+        let private = dir.path().join("private-keyfile");
+        open_for_write_no_follow(&private, true, true)?;
+        assert_eq!(
+            std::fs::metadata(private)?.permissions().mode() & 0o777,
+            0o600
+        );
         Ok(())
     }
 

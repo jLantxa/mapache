@@ -555,7 +555,34 @@ pub fn count_files(dir_path: &Path) -> Result<usize> {
 
 // --- Tests ---
 /// Joins a relative path to a base path, ensuring the result is within the base path.
-/// This prevents path traversal attacks.
+/// This prevents lexical traversal and existing symlink escapes.
+fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut missing = Vec::new();
+
+    loop {
+        match std::fs::symlink_metadata(&existing) {
+            Ok(_) => {
+                let mut canonical = std::fs::canonicalize(&existing)?;
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name() else {
+                    return Err(MapacheError::Io(error));
+                };
+                missing.push(name.to_os_string());
+                if !existing.pop() {
+                    return Err(MapacheError::Io(error));
+                }
+            }
+            Err(error) => return Err(MapacheError::Io(error)),
+        }
+    }
+}
+
 pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
     if relative.is_absolute() {
         return Err(MapacheError::Config(format!(
@@ -576,7 +603,24 @@ pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
         )));
     }
 
-    Ok(normalized)
+    let canonical_base = canonicalize_with_missing_tail(&normalized_base)?;
+    let canonical_joined = canonicalize_with_missing_tail(&normalized)?;
+    if !canonical_joined.starts_with(&canonical_base) {
+        return Err(MapacheError::Integrity(format!(
+            "Path traverses a symlink outside of {}: {}",
+            normalized_base.display(),
+            normalized.display()
+        )));
+    }
+
+    Ok(canonical_joined)
+}
+
+pub(crate) fn secure_join_symlink(base: &Path, relative: &Path) -> Result<PathBuf> {
+    match (relative.parent(), relative.file_name()) {
+        (Some(parent), Some(name)) => Ok(secure_join(base, parent)?.join(name)),
+        _ => secure_join(base, relative),
+    }
 }
 
 #[cfg(test)]
@@ -1059,7 +1103,11 @@ mod tests {
         let base = test_base();
         let relative = PathBuf::from("dir/file.txt");
         let result = secure_join(&base, &relative).unwrap();
-        assert_eq!(result, base.join("dir/file.txt"));
+        assert_eq!(secure_join_symlink(&base, &relative).unwrap(), result);
+        assert_eq!(
+            result,
+            canonicalize_with_missing_tail(&base.join("dir/file.txt")).unwrap()
+        );
     }
 
     #[test]
@@ -1067,7 +1115,10 @@ mod tests {
         let base = test_base();
         let relative = PathBuf::from("./file.txt");
         let result = secure_join(&base, &relative).unwrap();
-        assert_eq!(result, base.join("file.txt"));
+        assert_eq!(
+            result,
+            canonicalize_with_missing_tail(&base.join("file.txt")).unwrap()
+        );
     }
 
     #[test]
@@ -1078,6 +1129,7 @@ mod tests {
         #[cfg(windows)]
         let relative = PathBuf::from("C:\\etc\\passwd");
         assert!(secure_join(&base, &relative).is_err());
+        assert!(secure_join_symlink(&base, &relative).is_err());
     }
 
     #[test]
@@ -1085,6 +1137,7 @@ mod tests {
         let base = test_base();
         let relative = PathBuf::from("../etc/passwd");
         assert!(secure_join(&base, &relative).is_err());
+        assert!(secure_join_symlink(&base, &relative).is_err());
     }
 
     #[test]
@@ -1092,6 +1145,7 @@ mod tests {
         let base = test_base().join("data");
         let relative = PathBuf::from("sub/../../etc/passwd");
         assert!(secure_join(&base, &relative).is_err());
+        assert!(secure_join_symlink(&base, &relative).is_err());
     }
 
     #[test]
@@ -1099,6 +1153,7 @@ mod tests {
         let base = test_base();
         let relative = PathBuf::from("a/b/c/../../../../etc/shadow");
         assert!(secure_join(&base, &relative).is_err());
+        assert!(secure_join_symlink(&base, &relative).is_err());
     }
 
     #[test]
@@ -1106,7 +1161,11 @@ mod tests {
         let base = test_base().join("data");
         let relative = PathBuf::from("sub/../other.txt");
         let result = secure_join(&base, &relative).unwrap();
-        assert_eq!(result, base.join("other.txt"));
+        assert_eq!(secure_join_symlink(&base, &relative).unwrap(), result);
+        assert_eq!(
+            result,
+            canonicalize_with_missing_tail(&base.join("other.txt")).unwrap()
+        );
     }
 
     #[test]
@@ -1114,6 +1173,44 @@ mod tests {
         let base = test_base();
         let relative = PathBuf::from("");
         let result = secure_join(&base, &relative).unwrap();
-        assert_eq!(result, base);
+        assert_eq!(secure_join_symlink(&base, &relative).unwrap(), result);
+        assert_eq!(result, canonicalize_with_missing_tail(&base).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_secure_join_rejects_symlink_escape() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().join("target");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&base)?;
+        std::fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, base.join("link"))?;
+
+        assert!(secure_join(&base, Path::new("link/file.txt")).is_err());
+        assert!(secure_join_symlink(&base, Path::new("link/file.txt")).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_secure_join_symlink_preserves_leaf() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().join("target");
+        std::fs::create_dir_all(&base)?;
+        let expected = std::fs::canonicalize(&base)?.join("link");
+        let existing_target = base.join("existing.txt");
+        std::fs::write(&existing_target, b"target")?;
+
+        for target in [
+            base.join("missing.txt"),
+            existing_target,
+            temp.path().to_path_buf(),
+        ] {
+            std::os::unix::fs::symlink(target, base.join("link"))?;
+            assert_eq!(secure_join_symlink(&base, Path::new("link"))?, expected);
+            std::fs::remove_file(base.join("link"))?;
+        }
+        Ok(())
     }
 }

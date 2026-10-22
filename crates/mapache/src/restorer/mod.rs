@@ -20,7 +20,7 @@ use std::io::{Seek, Write};
 use std::os::unix::io::AsRawFd;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io,
     path::{Path, PathBuf},
     sync::{
@@ -255,12 +255,7 @@ impl FileHandleCache {
     }
 
     fn open_file_for_restore(path: &Path, create: bool) -> io::Result<std::fs::File> {
-        let mut opts = OpenOptions::new();
-        opts.write(true);
-        if create {
-            opts.create(true).truncate(true);
-        }
-        opts.open(path)
+        crate::fs::filesystem::open_for_write_no_follow(path, create, false)
     }
 }
 
@@ -559,7 +554,12 @@ impl Restorer {
                 };
             }
 
-            let restore_path = match utils::secure_join(&self.target_path, &path) {
+            let joined_path = if node.is_symlink() {
+                utils::secure_join_symlink(&self.target_path, &path)
+            } else {
+                utils::secure_join(&self.target_path, &path)
+            };
+            let restore_path = match joined_path {
                 Ok(p) => p,
                 Err(e) => {
                     emit_event(

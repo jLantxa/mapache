@@ -846,6 +846,7 @@ mod tests {
         let mut root = Tree::new(Vec::new());
         root.nodes.push(Node {
             name: "subdir".into(),
+            node_type: crate::fs::node::NodeType::Directory,
             tree: Some(sub_id),
             ..Default::default()
         });

@@ -199,7 +199,7 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<(), KeyErro
 
     match &args.output_keyfile_path {
         Some(path) => {
-            std::fs::write(path, &new_keyfile_json)?;
+            write_local_keyfile(path, &new_keyfile_json)?;
         }
         None => {
             let path = Path::new(KEYS_DIR).join(new_keyfile_id.to_hex());
@@ -323,7 +323,7 @@ async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<(), K
         .await
         .map_err(|e| KeyError::RepoOpenFail(format!("failed to load key file: {e}")))?;
 
-    std::fs::write(&args.output_path, &raw_keyfile)?;
+    write_local_keyfile(&args.output_path, &raw_keyfile)?;
 
     ui::cli::log!(
         "Exported key {} to {}",
@@ -332,6 +332,13 @@ async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<(), K
     );
 
     Ok(())
+}
+
+fn write_local_keyfile(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+
+    let mut file = crate::fs::filesystem::open_for_write_no_follow(path, true, true)?;
+    file.write_all(contents)
 }
 
 /// Prompts the user for a yes/no confirmation. Anything other than "y"/"yes"

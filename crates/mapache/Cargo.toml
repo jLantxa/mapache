@@ -30,7 +30,7 @@ futures = "0.3"
 indicatif = "0.18"
 libc = { version = "0.2" }
 mapache-chunker = { version = "0.3.1", path = "../chunker" }
-parking_lot = "0.12"
+parking_lot = "0.13"
 percent-encoding = "2.3"
 rand = "0.10"
 ratatui = "0.30"

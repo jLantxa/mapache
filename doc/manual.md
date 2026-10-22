@@ -363,6 +363,7 @@ files-from = "~/.mapache/paths.txt"
 hostname = "backup-host"
 tags = "work,important"
 one-file-system = false
+use-fs-snapshot = false
 fail-on-skipped = false
 skip-if-unchanged = false
 readers = 4
@@ -754,6 +755,7 @@ shared content across all of them.
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
 | `--no-scan` | Skip the initial file system scan |
 | `--one-file-system` | Do not descend into entries on another filesystem (errors if device IDs cannot be determined) |
+| `--use-fs-snapshot` | Windows: read sources through a VSS shadow copy, so files held open by running programs are captured (requires administrator privileges) |
 | `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
@@ -768,6 +770,49 @@ filesystem boundary. Entries on another device are not traversed. The option
 requires filesystem device IDs: the device ID from `lstat` on Unix, the volume
 serial number on Windows. Snapshot creation fails if they cannot be determined
 for a source path.
+
+### Filesystem Snapshots (Windows VSS)
+
+`--use-fs-snapshot` (TOML: `use-fs-snapshot = true`) tells mapache to create a
+Volume Shadow Copy Service (VSS) shadow copy of every local volume holding a
+source path before reading anything, and to read all file contents and
+directory listings from the shadow copy. A file that a running program keeps
+open for exclusive access — something that is normally skipped — is then
+captured like any other file.
+
+VSS writers take part in the standard full-backup protocol: they flush their
+in-memory state before the copy is frozen, so the shadow copies reflect a
+consistent moment (at least crash-consistent, and effectively
+application-consistent for applications whose writers cooperate). mapache
+selects no writer components and consumes no writer metadata. The recorded
+snapshot paths stay the original ones (`C:\Users\...`), so restores,
+`--parent` diffing and `--one-file-system` behave exactly as without the
+flag.
+
+The feature is best effort, and per volume. When no shadow copy can be
+created at all — mapache is not running as administrator or the Volume
+Shadow Copy service is disabled — mapache logs a warning and takes the
+snapshot with ordinary live reads instead of failing. When only some volumes
+can be shadowed, the unsupported ones (network or `SUBST` drives, for
+example) are skipped with a warning and read from the live filesystem while
+the remaining volumes still use their shadow copies. Non-Windows platforms
+ignore the flag with a warning.
+
+VSS snapshots are taken per volume, so a source path on a volume mounted
+inside a snapshotted drive (a directory mount point) is not covered by that
+drive's shadow copy; such layouts need their own entry in the source path
+list. Only one snapshot session can be active per mapache process; a second
+concurrent snapshot warns and falls back to live reads.
+
+Each VSS operation has a time limit (15 minutes). If a provider or writer
+stops responding, mapache cancels the operation, logs a warning and
+continues with live reads instead of hanging forever.
+
+Shadow copies are deleted as soon as the source reads are done, before the
+repository is flushed, so they only hold copy-on-write space for a short
+time. If the process is killed outright, Windows reclaims them when the
+system reclaims volume shadow copies on its own; they can also be removed
+manually with `vssadmin delete shadows /all`.
 
 ### Exclusions
 
@@ -1939,6 +1984,7 @@ mapache snapshot [PATHS...] -r <URL>
   --no-parent             Force complete analysis (no parent diff)
   --no-scan               Skip the initial file system scan
   --one-file-system       Do not descend into a different filesystem
+  --use-fs-snapshot       Windows: read sources through a VSS shadow copy
   --fail-on-skipped       Fail if any source item is skipped
   --skip-if-unchanged     Skip saving if no changes detected
   --parent <ID|latest>    Use specific parent snapshot

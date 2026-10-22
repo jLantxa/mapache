@@ -83,7 +83,11 @@ where
                 );
 
                 if node.node_type == NodeType::Directory {
-                    match std::fs::read_dir(&current).and_then(|entries| {
+                    // Enumerate the shadow copy when a VSS session is active;
+                    // child names are identical, and the walk itself stays in
+                    // the original path space.
+                    let read_dir_path = crate::fs::vss::translate(&current);
+                    match std::fs::read_dir(&*read_dir_path).and_then(|entries| {
                         entries
                             .map(|entry| entry.map(|entry| entry.file_name()))
                             .collect::<std::io::Result<Vec<_>>>()

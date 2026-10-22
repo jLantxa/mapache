@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Filesystem snapshots on Windows (VSS)**: `--use-fs-snapshot` creates a
+  Volume Shadow Copy Service shadow copy of each local volume holding a
+  source path, and reads all file contents and directory listings from it, so
+  files kept open by running programs are captured. VSS writers flush their
+  state before the copy is frozen, recorded paths stay the original ones, and
+  the session is best effort and per volume: without administrator privileges
+  or an available VSS service, mapache warns and takes the snapshot with
+  ordinary live reads, and a volume that cannot be shadowed (a network or
+  `SUBST` drive, for example) is skipped with a warning while the remaining
+  volumes still use their shadow copies. Shadow copies are released as soon
+  as the source reads finish, and every VSS operation is time-limited so a
+  stuck provider or writer cannot hang the snapshot.
 - **Compression policy**: content that is already compressed is stored
   uncompressed. `--skip-compression <GLOB>` and `--force-compression <GLOB>`
   override the per-file decision, and `--skip-incompressible`

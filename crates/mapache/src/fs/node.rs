@@ -437,6 +437,12 @@ impl Node {
         follow_symlinks: bool,
         with_atime: bool,
     ) -> Result<(Metadata, NodeType)> {
+        // Query metadata on the shadow copy when a VSS session is active (the
+        // translation borrows the path unchanged otherwise and on non-Windows
+        // platforms).
+        let translated = crate::fs::vss::translate(path);
+        let path = &*translated;
+
         #[cfg(target_os = "linux")]
         {
             let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -577,6 +583,11 @@ impl Node {
     }
 
     fn populate_symlink_info_sync(&mut self, path: &Path) -> Result<()> {
+        // Read the link target from the shadow copy when a VSS session is
+        // active. The target string that is recorded stays in original path
+        // space; the probe below goes through the translation on its own.
+        let translated = crate::fs::vss::translate(path);
+        let path = &*translated;
         let target = std::fs::read_link(path)?;
 
         let mut info = SymlinkInfo {

@@ -162,6 +162,13 @@ pub struct CmdArgs {
     #[clap(long, action = clap::ArgAction::SetTrue)]
     pub one_file_system: Option<bool>,
 
+    /// Use a filesystem snapshot (VSS shadow copy) as the read source on
+    /// Windows, so files kept open by running programs can be captured.
+    /// Requires administrator privileges; falls back to live reads with a
+    /// warning when unavailable.
+    #[clap(long = "use-fs-snapshot", action = clap::ArgAction::SetTrue)]
+    pub use_fs_snapshot: Option<bool>,
+
     /// Fail instead of saving a snapshot when source items are skipped
     #[clap(long, action = clap::ArgAction::SetTrue)]
     pub fail_on_skipped: Option<bool>,
@@ -221,6 +228,7 @@ impl CmdArgs {
             no_parent: false,
             no_scan: Some(false),
             one_file_system: Some(false),
+            use_fs_snapshot: Some(false),
             fail_on_skipped: Some(false),
             skip_if_unchanged: Some(false),
             parent: Some(crate::commands::UseSnapshot::Latest),
@@ -257,6 +265,7 @@ impl Merge for CmdArgs {
 
         merge_flag(&mut self.no_scan, other.no_scan);
         merge_flag(&mut self.one_file_system, other.one_file_system);
+        merge_flag(&mut self.use_fs_snapshot, other.use_fs_snapshot);
         merge_flag(&mut self.fail_on_skipped, other.fail_on_skipped);
         merge_flag(&mut self.skip_if_unchanged, other.skip_if_unchanged);
         merge_opt(&mut self.parent, other.parent);
@@ -300,6 +309,8 @@ pub struct SnapshotRunOptions {
     pub num_packers: usize,
     pub stdin: bool,
     pub hostname: Option<String>,
+    /// Read sources through a VSS shadow copy (Windows, opt-in).
+    pub use_fs_snapshot: bool,
     /// Compression preset override for this snapshot. `None` keeps the
     /// repository default (the global `--compression` preset).
     pub compression: Option<Compression>,
@@ -332,6 +343,7 @@ impl From<&CmdArgs> for SnapshotRunOptions {
                 .unwrap_or(common::defaults::DEFAULT_SNAPSHOT_PACKERS),
             stdin: args.stdin,
             hostname: args.hostname.clone(),
+            use_fs_snapshot: args.use_fs_snapshot.unwrap_or(false),
             compression: None,
         }
     }
@@ -583,6 +595,27 @@ pub(crate) async fn run_with_repo(
 
     // Get source paths from arguments or readdir root path
     tracing::info!(target: "snapshot", "Processing source paths: {:?}", options.paths);
+
+    // Windows VSS session (opt-in via --use-fs-snapshot): every source-reading
+    // syscall transparently reads a writer-flushed shadow copy of the source
+    // volumes, so files kept open by running programs are captured. The
+    // session must be created before the source enumeration below. It is
+    // best-effort: when VSS is unavailable it warns and the snapshot proceeds
+    // with ordinary live reads (the same applies per volume when only some
+    // drives can be shadowed). The session is released as soon as the source
+    // reads are done, and its teardown deletes the shadow copies.
+    let vss_session = if options.use_fs_snapshot && !options.stdin {
+        fs::vss::VssSession::start(&options.paths).await
+    } else {
+        if options.use_fs_snapshot {
+            ui::cli::warning!(
+                "--use-fs-snapshot has no effect with --stdin; reading the \
+                 backup stream from standard input"
+            );
+        }
+        fs::vss::VssSession::inert()
+    };
+
     let source_paths = if !as_root {
         options.paths.clone()
     } else {
@@ -592,16 +625,20 @@ pub(crate) async fn run_with_repo(
             ));
         }
         let root = &options.paths[0];
-        if !root.is_dir() {
+        // Enumerate the shadow copy when a session is active so the child
+        // list matches the frozen volume. Child paths are joined onto the
+        // original root: the walk stays in the original path space.
+        let translated_root = fs::vss::translate(root);
+        if !translated_root.is_dir() {
             return Err(SnapshotError::SourcePathError(
                 "the snapshot root must be a directory".to_string(),
             ));
         }
 
-        let mut dir = tokio::fs::read_dir(root).await?;
+        let mut dir = tokio::fs::read_dir(&*translated_root).await?;
         let mut paths = Vec::new();
         while let Some(entry) = dir.next_entry().await? {
-            paths.push(entry.path());
+            paths.push(root.join(entry.file_name()));
         }
         paths
     };
@@ -838,6 +875,7 @@ pub(crate) async fn run_with_repo(
     };
 
     tracing::info!(target: "snapshot", "Snapshot command completed in {:?}", start.elapsed());
+    vss_session.close(true).await;
     Ok(completion)
 }
 

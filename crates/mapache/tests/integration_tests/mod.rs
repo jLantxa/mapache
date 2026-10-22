@@ -471,6 +471,7 @@ impl SnapshotBuilder {
                 skip_if_unchanged: Some(false),
                 no_scan: Some(false),
                 one_file_system: Some(false),
+                use_fs_snapshot: Some(false),
                 fail_on_skipped: Some(false),
                 parent: Some(UseSnapshot::Latest),
                 num_readers: Some(2),
@@ -540,6 +541,12 @@ impl SnapshotBuilder {
 
     pub fn one_file_system(mut self, one_file_system: bool) -> Self {
         self.args.one_file_system = Some(one_file_system);
+        self
+    }
+
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn use_fs_snapshot(mut self, use_fs_snapshot: bool) -> Self {
+        self.args.use_fs_snapshot = Some(use_fs_snapshot);
         self
     }
 

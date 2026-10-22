@@ -77,6 +77,8 @@ tikv-jemallocator = "0.7"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
+  "Win32_Security",
+  "Win32_System_Com",
   "Win32_System_Console",
   "Win32_System_Pipes",
   "Win32_System_SystemInformation",

@@ -83,6 +83,10 @@ impl SnapshotForm {
                     config_defaults
                         .and_then(|cfg| cfg.one_file_system)
                         .unwrap_or(false)).help("Do not cross filesystem boundaries while traversing paths."),
+            FormField::toggle("FS snapshot:",
+                    config_defaults
+                        .and_then(|cfg| cfg.use_fs_snapshot)
+                        .unwrap_or(false)).help("Windows only: read sources through a VSS shadow copy (requires administrator privileges)."),
             FormField::toggle("Fail on skipped:",
                     config_defaults
                         .and_then(|cfg| cfg.fail_on_skipped)
@@ -295,6 +299,10 @@ impl SnapshotForm {
                 .get_toggle_by_label("With atime:")
                 .unwrap_or(false),
             stdin: false,
+            use_fs_snapshot: self
+                .form
+                .get_toggle_by_label("FS snapshot:")
+                .unwrap_or(false),
             num_readers: self
                 .form
                 .get_number_by_label("Readers:")

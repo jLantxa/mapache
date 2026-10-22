@@ -554,7 +554,12 @@ impl Restorer {
                 };
             }
 
-            let restore_path = match utils::secure_join(&self.target_path, &path) {
+            let joined_path = if node.is_symlink() {
+                utils::secure_join_symlink(&self.target_path, &path)
+            } else {
+                utils::secure_join(&self.target_path, &path)
+            };
+            let restore_path = match joined_path {
                 Ok(p) => p,
                 Err(e) => {
                     emit_event(

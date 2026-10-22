@@ -108,9 +108,13 @@ pub async fn delete_nodes(
             _ => path,
         };
 
-        let local_dir = &target_path.join(local_path);
+        let local_dir = crate::utils::secure_join(&target_path, &local_path).map_err(|error| {
+            MapacheError::Integrity(format!(
+                "refusing to delete outside the restore target: {error}"
+            ))
+        })?;
         process_local_directory(
-            local_dir,
+            &local_dir,
             &snapshot_node_names,
             opts.dry_run,
             opts.event_sender.clone(),

@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::HashSet,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
@@ -29,10 +30,63 @@ use crate::{
     repository::repo::Repository,
 };
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Tree {
     pub nodes: Vec<Node>,
+}
+
+impl<'de> Deserialize<'de> for Tree {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct RawTree {
+            nodes: Vec<Node>,
+        }
+
+        let raw = RawTree::deserialize(deserializer)?;
+        validate_tree_nodes(&raw.nodes).map_err(serde::de::Error::custom)?;
+        Ok(Self { nodes: raw.nodes })
+    }
+}
+
+fn validate_tree_nodes(nodes: &[Node]) -> Result<()> {
+    let mut names = HashSet::with_capacity(nodes.len());
+    for node in nodes {
+        if Path::new(&node.name).is_absolute() {
+            return Err(MapacheError::Integrity(format!(
+                "tree node path cannot be absolute: {:?}",
+                node.name
+            )));
+        }
+        let mut components = Path::new(&node.name).components();
+        let is_one_normal_component = matches!(
+            components.next(),
+            Some(std::path::Component::Normal(component))
+                if component == std::ffi::OsStr::new(&node.name)
+        ) && components.next().is_none();
+        if !is_one_normal_component {
+            return Err(MapacheError::Integrity(format!(
+                "Path traversal or invalid tree node name: {:?}",
+                node.name
+            )));
+        }
+        if !names.insert(node.name.as_str()) {
+            return Err(MapacheError::Integrity(format!(
+                "duplicate tree node name: {:?}",
+                node.name
+            )));
+        }
+        if node.tree.is_some() && !node.is_dir() {
+            return Err(MapacheError::Integrity(format!(
+                "non-directory tree node {:?} has a subtree",
+                node.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl Tree {
@@ -41,6 +95,7 @@ impl Tree {
     }
 
     pub async fn save_to_store(&mut self, blob_saver: Arc<dyn BlobSaver>) -> Result<ID> {
+        validate_tree_nodes(&self.nodes)?;
         let mut owned = std::mem::take(self);
 
         let (tree_id, owned_back) = tokio::task::spawn_blocking(move || {
@@ -810,7 +865,9 @@ impl SerializedTreeStream {
                 // This ensures lexicographical pre-order traversal
                 let shared_parent = Arc::new((*current_path).clone());
                 for node in tree.nodes.iter().rev() {
-                    if let Some(subtree_id) = &node.tree {
+                    if node.is_dir()
+                        && let Some(subtree_id) = &node.tree
+                    {
                         let child_path = shared_parent.join(&node.name);
 
                         if state.filter.allow(&child_path) {
@@ -1043,6 +1100,17 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn tree_deserialization_rejects_path_traversal_names() {
+        for name in ["../escape", "dir/file", "/absolute", ""] {
+            let encoded = serde_json::json!({
+                "nodes": [{ "name": name }]
+            });
+            let result = serde_json::from_value::<Tree>(encoded);
+            assert!(result.is_err(), "accepted unsafe tree node name {name:?}");
+        }
     }
 
     #[tokio::test]

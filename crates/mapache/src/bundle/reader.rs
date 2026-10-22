@@ -355,11 +355,8 @@ impl BundleReader {
 
         // Write repaired data to a `.repaired` file (never overwrite the original).
         let repaired_path = self.path.with_extension("repaired");
-        let mut repaired_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&repaired_path)?;
+        let mut repaired_file =
+            crate::fs::filesystem::open_for_write_no_follow(&repaired_path, true, false)?;
 
         // Copy header from original.
         let mut file = self.file.lock();
@@ -583,22 +580,23 @@ where
                         }
                     };
 
-                    let mut file = match std::fs::File::create(&path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            sender(Event::Backup(BackupEvent::Error(format!(
-                                "failed to create file {}: {}",
-                                path.display(),
-                                e
-                            ))));
-                            sender(Event::Backup(BackupEvent::NodeProcessed {
-                                path: path.clone(),
-                                diff: NodeDiff::New,
-                                size_hint: Some(node.metadata.size),
-                            }));
-                            return;
-                        }
-                    };
+                    let mut file =
+                        match crate::fs::filesystem::open_for_write_no_follow(&path, true, false) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                sender(Event::Backup(BackupEvent::Error(format!(
+                                    "failed to create file {}: {}",
+                                    path.display(),
+                                    e
+                                ))));
+                                sender(Event::Backup(BackupEvent::NodeProcessed {
+                                    path: path.clone(),
+                                    diff: NodeDiff::New,
+                                    size_hint: Some(node.metadata.size),
+                                }));
+                                return;
+                            }
+                        };
 
                     let mut success = true;
                     for blob_id in blobs {

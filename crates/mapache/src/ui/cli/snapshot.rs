@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Once,
         atomic::{AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
@@ -10,7 +10,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender};
-use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::{
@@ -140,19 +140,16 @@ pub fn make_event_sender(
 ) -> EventSender {
     let verbosity = GlobalOpts::verbosity();
     let refresh_interval = GlobalOpts::progress_refresh_interval();
-    let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
     let error_counter = Arc::new(AtomicU64::new(0));
     let warning_counter = Arc::new(AtomicU64::new(0));
 
+    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
     let progress_bar = match expected_size_val {
         Some(size) => mp.add(ProgressBar::new(size)),
         None => mp.add(ProgressBar::no_length()),
     };
-    progress_bar.enable_steady_tick(refresh_interval);
-
     let companion_bar = mp.add(ProgressBar::no_length());
-    companion_bar.enable_steady_tick(refresh_interval);
     if let Some(items) = expected_items_val {
         companion_bar.set_length(items);
     }
@@ -277,8 +274,14 @@ pub fn make_event_sender(
                 .expect("invalid progress bar template for snapshot spinner")
                 .tick_chars(SPINNER_TICK_CHARS),
         );
-        s.enable_steady_tick(refresh_interval);
         file_spinners.push(s);
+    }
+
+    for bar in [&progress_bar, &companion_bar]
+        .into_iter()
+        .chain(file_spinners.iter())
+    {
+        bar.enable_steady_tick(refresh_interval);
     }
 
     let (ui_tx, ui_rx) = crossbeam_channel::unbounded::<UiEvent>();
@@ -316,8 +319,13 @@ pub fn make_event_sender(
         ui_thread,
     });
 
+    let start_drawing = Once::new();
     Arc::new(move |event: Event| {
         let Event::Backup(ev) = event else { return };
+        // VSS preparation finishes before archival events begin.
+        if !matches!(&ev, BackupEvent::Finished(_)) {
+            start_drawing.call_once(|| state.mp.set_draw_target(default_bar_draw_target()));
+        }
         match ev {
             BackupEvent::ScanProgress { items, bytes } => {
                 state

@@ -13,8 +13,18 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{config::CommandHooks, defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
-    repository::{gc, lock::LockHandle, repo::Repository},
+    common::{
+        config::CommandHooks,
+        defaults::{DEFAULT_GC_TOLERANCE, DEFAULT_LRU_MAX_BLOBS},
+        error::MapacheError,
+        hooks,
+    },
+    repository::{
+        gc,
+        index::{IndexMode, MasterIndex},
+        lock::LockHandle,
+        repo::Repository,
+    },
     ui::{
         self,
         cli::{color::Colorize, gc as cli_gc},
@@ -22,6 +32,17 @@ use crate::{
     },
     utils::{self},
 };
+
+struct RestoreIndexMode {
+    index: Arc<MasterIndex>,
+    mode: IndexMode,
+}
+
+impl Drop for RestoreIndexMode {
+    fn drop(&mut self) {
+        self.index.set_index_mode(self.mode);
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CleanError {
@@ -332,13 +353,23 @@ pub async fn run_scan_and_execute<F>(
 where
     F: FnOnce(&gc::Plan),
 {
-    // `reload_master_index` uses the configured mode, so `--index-mode lazy`
-    // (or `index_mode = "lazy"` in the config) applies to the GC too. `cleanup`
-    // streams cold indices into the rewritten index, so nothing is dropped.
-    tracing::info!(target: "clean", "Reloading master index");
-    repo.reload_master_index().await.map_err(|e| {
-        CleanError::ExecuteFailed(format!("failed to reload master index: {}", e.inner()))
-    })?;
+    let master_index = repo.index();
+    let previous_mode = master_index.index_mode();
+    let clean_mode = match previous_mode {
+        IndexMode::Eager => IndexMode::Lazy(DEFAULT_LRU_MAX_BLOBS),
+        lazy_mode => lazy_mode,
+    };
+    let _restore_index_mode = RestoreIndexMode {
+        index: master_index,
+        mode: previous_mode,
+    };
+
+    tracing::info!(target: "clean", "Reloading master index for GC ({clean_mode:?})");
+    repo.reload_master_index_with_mode(clean_mode)
+        .await
+        .map_err(|e| {
+            CleanError::ExecuteFailed(format!("failed to reload master index: {}", e.inner()))
+        })?;
 
     let start = Instant::now();
 

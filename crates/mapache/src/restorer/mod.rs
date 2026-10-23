@@ -81,7 +81,7 @@ pub struct RestoreOptions {
     pub verify: bool,
     pub include: Option<Vec<PathBuf>>,
     pub exclude: Option<Vec<PathBuf>>,
-    /// Maximum number of files per plan chunk (None = no limit, all at once).
+    /// Maximum number of files per plan chunk (None = no limit).
     pub batch_size: Option<usize>,
 }
 

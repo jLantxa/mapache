@@ -35,7 +35,12 @@ impl ShardedIdSet {
     }
 
     pub fn remove(&self, id: &ID) -> bool {
-        self.get_shard(id).write().remove(id)
+        let mut shard = self.get_shard(id).write();
+        let removed = shard.remove(id);
+        if removed && shard.capacity() >= 256 && shard.len() < shard.capacity() / 4 {
+            shard.shrink_to_fit();
+        }
+        removed
     }
 
     pub fn clear(&self) {

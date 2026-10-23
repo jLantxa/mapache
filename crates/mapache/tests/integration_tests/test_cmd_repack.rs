@@ -37,7 +37,7 @@ mod tests {
         let mut has_compressed_blob = false;
         repo.index()
             .for_each_id(|_, locator| has_compressed_blob |= locator.compressed)
-            .await;
+            .await?;
         assert!(has_compressed_blob, "repack must honor --compression fast");
 
         ctx.global.compression_level = Compression::None;
@@ -56,7 +56,7 @@ mod tests {
         let mut has_compressed_blob = false;
         repo.index()
             .for_each_id(|_, locator| has_compressed_blob |= locator.compressed)
-            .await;
+            .await?;
         assert!(!has_compressed_blob, "repack must honor --compression none");
 
         Ok(())

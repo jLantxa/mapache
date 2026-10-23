@@ -1679,12 +1679,11 @@ impl Repository {
         let mut files = self.list_files(ContentIdType::Index).await?;
         files.sort_unstable(); // Ensure deterministic order
 
-        self.master_index.clear();
         // The requested mode has to govern the pool itself, otherwise it is only
         // an initial budget hint: `add_index` enforces `MasterIndex`'s own mode
         // and would happily evict indices right back to cold, which is what made
         // the GC believe it had a fully resident index when it did not.
-        self.master_index.set_index_mode(index_mode);
+        let staged_index = MasterIndex::new(index_mode);
 
         let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
         let budget = match index_mode {
@@ -1692,83 +1691,69 @@ impl Repository {
             IndexMode::Lazy(budget) => budget,
         };
 
-        let indices = stream::iter(files)
-            .map(|file_path| {
-                let backend = self.backend.clone();
-                let secure_storage = self.secure_storage.clone();
-
-                async move {
-                    let Some(file_name) = file_path.file_name() else {
-                        return Ok(None);
-                    };
-                    let file_name = file_name.to_string_lossy().to_string();
-
-                    let id = match ID::from_hex(&file_name) {
-                        Ok(id) => id,
-                        Err(_) => return Ok(None), // Ignore invalid ID names
-                    };
-
-                    let index_data = backend
-                        .read(
-                            &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
-                            0,
-                            0,
-                        )
-                        .await?;
-
-                    let index = tokio::task::spawn_blocking(move || {
-                        id.verify_content(&index_data)?;
-                        let decoded = secure_storage.decode_owned(index_data)?;
-                        let index_file = index::IndexFile::deserialize(&decoded, repo_version)
-                            .map_err(|e| {
-                                MapacheError::Format(format!(
-                                    "failed to load index file {}: {e}",
-                                    id.to_short_hex(4)
-                                ))
-                            })?;
-                        Ok::<_, MapacheError>((
-                            Index::from_index_file(index_file.clone(), id),
-                            index_file,
-                            id,
-                        ))
-                    })
-                    .await
-                    .map_err(|e| MapacheError::task_panicked("index loading", e))??;
-
-                    Ok(Some(index))
-                }
-            })
-            .buffered(16)
-            .collect::<Vec<Result<Option<(Index, index::IndexFile, ID)>>>>()
-            .await;
-
         let mut num_hot = 0;
         let mut num_cold = 0;
         let mut resident_blobs: u64 = 0;
+        let mut loaded_indices = 0usize;
 
-        // Process newest index files first so the most recent ones stay hot;
-        // under a blob budget the oldest indices fall back to cold metadata.
+        // Process newest index files first and release each decoded file before
+        // reading the next. Lazy mode therefore keeps only the hot pool plus one
+        // transient decoded index resident in memory.
         // At least one index is always loaded hot (its own per-index blob limit
         // may exceed a small budget; `enforce_blob_budget` accepts that single
         // oversized index resident).
-        for (i, res) in indices.into_iter().rev().enumerate() {
-            if let Some((index, index_file, file_id)) = res? {
-                let index_blobs = index.num_blobs() as u64;
-                let is_newest = i == 0;
-                let fits = resident_blobs.saturating_add(index_blobs) <= budget;
+        for file_path in files.into_iter().rev() {
+            let Some(file_name) = file_path.file_name() else {
+                continue;
+            };
+            let file_name = file_name.to_string_lossy().to_string();
+            let Ok(file_id) = ID::from_hex(&file_name) else {
+                continue;
+            };
 
-                if is_newest || fits {
-                    // Hot: load fully into RAM
-                    self.master_index.add_index(index);
-                    resident_blobs = resident_blobs.saturating_add(index_blobs);
-                    num_hot += 1;
-                } else {
-                    // Cold: only store metadata for lazy loading
-                    let bf = index::IndexMetadata::bloom_filter_from_index_file(&index_file);
-                    let meta = index::IndexMetadata::from_index_file(index_file, bf, file_id);
-                    self.master_index.add_cold_metadata(meta);
-                    num_cold += 1;
-                }
+            let index_data = self
+                .backend
+                .read(
+                    &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
+                    0,
+                    0,
+                )
+                .await?;
+            let secure_storage = self.secure_storage.clone();
+            let index_file = tokio::task::spawn_blocking(move || {
+                file_id.verify_content(&index_data)?;
+                let decoded = secure_storage.decode_owned(index_data)?;
+                index::IndexFile::deserialize(&decoded, repo_version).map_err(|e| {
+                    MapacheError::Format(format!(
+                        "failed to load index file {}: {e}",
+                        file_id.to_short_hex(4)
+                    ))
+                })
+            })
+            .await
+            .map_err(|e| MapacheError::task_panicked("index loading", e))??;
+
+            let index_blobs = index_file
+                .packs
+                .iter()
+                .flat_map(|pack| &pack.blobs)
+                .filter(|blob| !matches!(blob.blob_type, BlobType::Padding))
+                .count();
+            let is_newest = loaded_indices == 0;
+            let fits = resident_blobs.saturating_add(index_blobs as u64) <= budget;
+            loaded_indices += 1;
+
+            if is_newest || fits {
+                let index = Index::from_index_file(index_file, file_id);
+                staged_index.add_index(index);
+                resident_blobs = resident_blobs.saturating_add(index_blobs as u64);
+                num_hot += 1;
+            } else {
+                let bloom_filter = index::IndexMetadata::bloom_filter_from_index_file(&index_file);
+                let metadata =
+                    index::IndexMetadata::from_index_file(index_file, bloom_filter, file_id);
+                staged_index.add_cold_metadata(metadata);
+                num_cold += 1;
             }
         }
 
@@ -1777,11 +1762,13 @@ impl Repository {
 
         // The master bloom filter only ever holds resident blobs (cold indices keep
         // their own per-file filters), so size it from the resident count.
-        let resident_blobs = self.master_index.num_resident_blobs();
+        let resident_blobs = staged_index.num_resident_blobs();
         if resident_blobs > 0 {
             tracing::debug!(target: "repo", "Initializing Bloom Filter for {} blobs", resident_blobs);
-            self.master_index.initialize_bloom_filter(resident_blobs);
+            staged_index.initialize_bloom_filter(resident_blobs);
         }
+
+        self.master_index.replace_with(staged_index).await;
 
         Ok(())
     }
@@ -2237,6 +2224,7 @@ mod tests {
         let loc = uncompressed
             .index()
             .get_data(&id)
+            .await?
             .expect("blob must be indexed");
         assert!(!loc.compressed, "'none' override must skip zstd");
 
@@ -2295,7 +2283,11 @@ mod tests {
         )?;
         repo.flush_and_finalize_pack_saver().await?;
 
-        let loc = repo.index().get_data(&id).expect("blob must be indexed");
+        let loc = repo
+            .index()
+            .get_data(&id)
+            .await?
+            .expect("blob must be indexed");
         assert!(!loc.compressed, "Store hint must skip zstd");
         assert_eq!(loc.raw_length as usize, data.len());
         assert_eq!(repo.load_blob(&id).await?, data);
@@ -2342,7 +2334,11 @@ mod tests {
         )?;
         repo.flush_and_finalize_pack_saver().await?;
 
-        let loc = repo.index().get_data(&id).expect("blob must be indexed");
+        let loc = repo
+            .index()
+            .get_data(&id)
+            .await?
+            .expect("blob must be indexed");
         assert!(
             !loc.compressed,
             "raw-store fallback must trigger when zstd expands the data"
@@ -2386,7 +2382,7 @@ mod tests {
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
         repo2.reload_master_index().await?;
 
-        assert!(repo2.index().contains_exact(&id));
+        assert!(repo2.index().contains_exact(&id).await?);
 
         let loaded = repo2.load_blob(&id).await?;
         assert_eq!(loaded, data);

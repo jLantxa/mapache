@@ -973,19 +973,18 @@ impl MasterIndex {
         self.inner.read().resident_blobs()
     }
 
-    /// Returns `true` if the object ID is known exactly, without any disk load.
-    ///
-    /// Covers pending blobs, the resident indices, and cold zero blobs (which
-    /// carry their locator in the lightweight metadata).
-    ///
-    /// In lazy mode a data/tree blob that lives *only* in a cold index returns
-    /// `false`. This is deliberate and is the safe direction for deduplication:
-    /// answering `true` from a bloom filter could skip storing a genuinely new
-    /// blob, whereas answering `false` merely re-sends a duplicate that the GC
-    /// collapses later. Callers that need an answer covering cold indices must
-    /// use the async [`Self::get`] (exact) or [`Self::might_contain`]
-    /// (no false negatives).
-    pub fn contains_exact(&self, id: &ID) -> bool {
+    /// Returns whether the ID is pending or present in any hot or cold index.
+    pub async fn contains_exact(&self, id: &ID) -> Result<bool> {
+        if self.pending_blobs.contains(id) {
+            return Ok(true);
+        }
+
+        Ok(self.get(id).await?.is_some())
+    }
+
+    /// Load-free check used by the synchronous pack-write path. A cold data or
+    /// tree blob is treated as unknown, so this can only cause a duplicate write.
+    fn contains_without_io(&self, id: &ID) -> bool {
         if self.pending_blobs.contains(id) {
             return true;
         }
@@ -1007,35 +1006,9 @@ impl MasterIndex {
         lock.indices.iter().rev().any(|idx| idx.contains(id))
     }
 
-    /// Look up a blob by ID, searching data_ids first, then tree_ids, then zero_ids.
-    /// The fallback chain exists because callers (restorer, verify) look up blob IDs
-    /// from file node descriptors without knowing the blob type upfront. A file's
-    /// content may span Data, Tree, or Zero blobs depending on dedup and zero-fill.
-    ///
-    /// Synchronous hot-only lookup. Cold (lazy) indices are resolved via the async
-    /// [`Self::get`]; this method additionally resolves zero blobs from cold
-    /// metadata exactly, without a disk load.
-    pub fn get_data(&self, id: &ID) -> Option<BlobLocator> {
-        if let Some(locator) = self.get_hot(id) {
-            return Some(locator);
-        }
-
-        let lock = self.inner.read();
-        lock.cold_metadata.iter().rev().find_map(|meta| {
-            let j = meta
-                .zero_blobs
-                .binary_search_by_key(id, |(zid, _)| *zid)
-                .ok()?;
-            let &(_, raw_length) = &meta.zero_blobs[j];
-            Some(BlobLocator {
-                pack_id: ID::default(),
-                blob_type: BlobType::Zero,
-                offset: 0,
-                length: 0,
-                raw_length,
-                compressed: false,
-            })
-        })
+    /// Resolves a blob from any hot or cold index.
+    pub async fn get_data(&self, id: &ID) -> Result<Option<BlobLocator>> {
+        self.get(id).await
     }
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
@@ -1055,6 +1028,14 @@ impl MasterIndex {
     /// genuinely fully resident pool.
     pub fn set_index_mode(&self, mode: IndexMode) {
         self.mode.set(mode);
+    }
+
+    pub(crate) async fn replace_with(&self, replacement: MasterIndex) {
+        let _operation = self.operations.write().await;
+        let mut current = self.inner.write();
+        let mut staged = replacement.inner.write();
+        std::mem::swap(&mut *current, &mut *staged);
+        self.mode.set(replacement.index_mode());
     }
 
     pub async fn get(&self, id: &ID) -> Result<Option<BlobLocator>> {
@@ -1078,10 +1059,6 @@ impl MasterIndex {
             // Fast path: search hot indices.
             if let Some(locator) = self.get_hot(id) {
                 return Ok(Some(locator));
-            }
-
-            if self.index_mode() == IndexMode::Eager {
-                return Ok(None);
             }
 
             // Pick the youngest cold candidate that might contain the blob.
@@ -1430,8 +1407,9 @@ impl MasterIndex {
 
     /// Atomically claims a blob ID for packing.
     ///
-    /// Returns `true` if the ID was successfully claimed (not previously known);
-    /// `false` if the blob is already pending or already in the index.
+    /// Returns `true` if the ID was successfully claimed (not already pending
+    /// or known in resident state). A non-zero blob found only in a cold index
+    /// may be written again; that costs space but cannot lose data.
     ///
     /// This MUST be called **before** encoding and sending the blob to the
     /// packer, and it is the only deduplication decision point. Claiming after
@@ -1440,15 +1418,15 @@ impl MasterIndex {
     /// entries for one blob while the index keeps a single entry — wasting
     /// space and confusing stats/GC.
     ///
-    /// In lazy mode a data/tree blob that lives only in a cold index is *not*
-    /// recognised and gets written a second time. That is the safe direction:
+    /// In lazy mode a data/tree blob that lives only in a cold index may get
+    /// written a second time. That is the safe direction:
     /// the alternative — consulting the cold bloom filters — would skip roughly
     /// 1% of genuinely new blobs, silently losing data. The resulting duplicate
     /// costs pack space until a GC run collapses it.
     pub fn add_pending_blob(&self, id: ID) -> bool {
         // Known already: pending, resident, or a cold zero blob (whose locator
         // rides along in the metadata, so this stays exact and load-free).
-        if self.contains_exact(&id) {
+        if self.contains_without_io(&id) {
             return false;
         }
 
@@ -1477,7 +1455,7 @@ impl MasterIndex {
         pack_id: &ID,
         descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<SizePair> {
-        let _operation = self.operations.read().await;
+        let _operation = self.operations.write().await;
         let mut index_to_persist = None;
 
         {
@@ -1562,7 +1540,7 @@ impl MasterIndex {
         repo: &Repository,
         repo_version: Option<u32>,
     ) -> Result<SizePair> {
-        let _operation = self.operations.read().await;
+        let _operation = self.operations.write().await;
         let repo_version = repo_version.unwrap_or(repo.repo_version());
         let mut total_size = SizePair::zero();
 
@@ -1626,11 +1604,11 @@ impl MasterIndex {
     /// Cold indices are loaded from disk one at a time through the configured
     /// loader and then discarded, so at most one cold index lives in RAM (in
     /// addition to the resident hot pool) during the sweep.
-    pub async fn for_each_id<F>(&self, mut f: F)
+    pub async fn for_each_id<F>(&self, mut f: F) -> Result<()>
     where
         F: FnMut(&ID, BlobLocator),
     {
-        let _operation = self.operations.read().await;
+        let _operation = self.operations.write().await;
         {
             let lock = self.inner.read();
             for idx in &lock.indices {
@@ -1640,50 +1618,24 @@ impl MasterIndex {
             }
         }
 
-        // Process each cold index exactly once, without promoting it to hot.
+        // Process each cold index exactly once without changing its published metadata.
         let cold_ids: Vec<ID> = {
             let lock = self.inner.read();
             lock.cold_metadata.iter().map(|m| m.file_id).collect()
         };
 
         for file_id in cold_ids {
-            // Take the entry out of the cold set while it is being processed, so
-            // a concurrent promotion cannot operate on the same index. If it is
-            // already gone (promoted by a concurrent load), skip it.
-            let meta = {
-                let mut lock = self.inner.write();
-                let Some(pos) = lock.cold_metadata.iter().position(|m| m.file_id == file_id) else {
-                    continue;
-                };
-                lock.cold_metadata.swap_remove(pos)
-            };
-
-            let Some(index) = (match self.loader.get() {
-                Some(loader) => loader.load_index(&meta.file_id).await,
-                None => Err(MapacheError::Format(
-                    "no cold index loader configured".to_string(),
-                )),
-            })
-            .ok() else {
-                tracing::warn!(target: "index",
-                    "Failed to load cold index {} during sweep; restoring it to cold metadata",
-                    meta.file_id.to_short_hex(8));
-                let mut lock = self.inner.write();
-                lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
-                lock.cold_metadata.push(meta);
-                continue;
-            };
+            let loader = self.loader.get().ok_or_else(|| {
+                MapacheError::Format("no cold index loader configured".to_string())
+            })?;
+            let index = loader.load_index(&file_id).await?;
 
             for (id, loc) in index.iter_ids() {
                 f(id, loc);
             }
-
-            // Restore the entry to cold metadata so it is processed on the next
-            // sweep and remains resolvable on demand.
-            let mut lock = self.inner.write();
-            lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
-            lock.cold_metadata.push(meta);
         }
+
+        Ok(())
     }
 
     pub fn for_each_pack_id<F>(&self, mut f: F)
@@ -1885,7 +1837,7 @@ impl MasterIndex {
                 matched.push(*id);
             }
         })
-        .await;
+        .await?;
 
         if matched.len() > 1 {
             return Err(MapacheError::Format(format!(
@@ -2288,11 +2240,11 @@ mod tests {
         let id1 = mock_id("blob1");
         let id2 = mock_id("blob2");
 
-        assert!(!mi.contains_exact(&id1));
+        assert!(!mi.contains_exact(&id1).await.unwrap());
 
         // Add pending blob
         assert!(mi.add_pending_blob(id1));
-        assert!(mi.contains_exact(&id1));
+        assert!(mi.contains_exact(&id1).await.unwrap());
         assert!(!mi.add_pending_blob(id1)); // Already exists
 
         // Add an index
@@ -2302,13 +2254,13 @@ mod tests {
         idx.add_pack(&pack_id, vec![b2.clone()]);
         mi.add_index(idx);
 
-        assert!(mi.contains_exact(&id2));
+        assert!(mi.contains_exact(&id2).await.unwrap());
         let loc = mi.get(&id2).await.unwrap().unwrap();
         assert_eq!(loc.pack_id, pack_id);
 
         mi.clear();
-        assert!(!mi.contains_exact(&id1));
-        assert!(!mi.contains_exact(&id2));
+        assert!(!mi.contains_exact(&id1).await.unwrap());
+        assert!(!mi.contains_exact(&id2).await.unwrap());
     }
 
     #[tokio::test]
@@ -2339,9 +2291,9 @@ mod tests {
 
         // Verify initial state
         assert_eq!(mi.inner.read().indices.len(), 2);
-        assert!(mi.contains_exact(&b1.id));
-        assert!(mi.contains_exact(&b3.id));
-        assert!(mi.contains_exact(&b4.id));
+        assert!(mi.contains_exact(&b1.id).await.unwrap());
+        assert!(mi.contains_exact(&b3.id).await.unwrap());
+        assert!(mi.contains_exact(&b4.id).await.unwrap());
 
         // Perform cleanup with pack2 as obsolete
         let mut obsolete = IdSet::default();
@@ -2408,8 +2360,8 @@ mod tests {
         assert_eq!(deserialized.packs[0].blobs[0].id, mock_id("b1"));
     }
 
-    #[test]
-    fn test_master_index_bloom_filter() {
+    #[tokio::test]
+    async fn test_master_index_bloom_filter() {
         let mi = MasterIndex::default();
         let pack1 = mock_id("pack1");
         let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
@@ -2425,8 +2377,8 @@ mod tests {
         mi.initialize_bloom_filter(10);
         assert!(mi.inner.read().bloom_filter.is_some());
 
-        assert!(mi.contains_exact(&b1.id));
-        assert!(!mi.contains_exact(&b2.id));
+        assert!(mi.contains_exact(&b1.id).await.unwrap());
+        assert!(!mi.contains_exact(&b2.id).await.unwrap());
 
         // Adding an index should update the Bloom filter
         let mut idx2 = Index::new();
@@ -2434,7 +2386,7 @@ mod tests {
         idx2.add_pack(&pack2, vec![b2.clone()]);
         mi.add_index(idx2);
 
-        assert!(mi.contains_exact(&b2.id));
+        assert!(mi.contains_exact(&b2.id).await.unwrap());
     }
 
     #[tokio::test]
@@ -2560,8 +2512,8 @@ mod tests {
         assert!(index.is_finalized());
     }
 
-    #[test]
-    fn test_master_index_pending_blob_priority() {
+    #[tokio::test]
+    async fn test_master_index_pending_blob_priority() {
         let mi = MasterIndex::default();
         let id = mock_id("blob");
 
@@ -2583,7 +2535,7 @@ mod tests {
         mi.add_index(idx);
 
         // The pending blob should still be found
-        assert!(mi.contains_exact(&id));
+        assert!(mi.contains_exact(&id).await.unwrap());
     }
 
     #[test]
@@ -2619,8 +2571,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_master_index_clear_removes_everything() {
+    #[tokio::test]
+    async fn test_master_index_clear_removes_everything() {
         let mi = MasterIndex::default();
 
         // Add pending blobs
@@ -2636,14 +2588,14 @@ mod tests {
         idx.add_pack(&pack, vec![b.clone()]);
         mi.add_index(idx);
 
-        assert!(mi.contains_exact(&id1));
-        assert!(mi.contains_exact(&b.id));
+        assert!(mi.contains_exact(&id1).await.unwrap());
+        assert!(mi.contains_exact(&b.id).await.unwrap());
 
         mi.clear();
 
-        assert!(!mi.contains_exact(&id1));
-        assert!(!mi.contains_exact(&id2));
-        assert!(!mi.contains_exact(&b.id));
+        assert!(!mi.contains_exact(&id1).await.unwrap());
+        assert!(!mi.contains_exact(&id2).await.unwrap());
+        assert!(!mi.contains_exact(&b.id).await.unwrap());
     }
 
     #[test]
@@ -3090,8 +3042,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_contains_and_get_data_resolve_cold_zero_blob() {
+    #[tokio::test]
+    async fn test_contains_and_get_data_resolve_cold_zero_blob() {
         let mi = MasterIndex::new(IndexMode::Lazy(u64::MAX));
 
         let mut index = Index::new();
@@ -3114,18 +3066,20 @@ mod tests {
 
         // Zero blobs are exact from cold metadata, no disk load required.
         assert!(
-            mi.contains_exact(&zero_id),
+            mi.contains_exact(&zero_id).await.unwrap(),
             "cold zero blobs are resolvable exactly"
         );
         let locator = mi
             .get_data(&zero_id)
+            .await
+            .unwrap()
             .expect("cold zero blob should resolve synchronously");
         assert_eq!(locator.blob_type, BlobType::Zero);
         assert_eq!(locator.raw_length, 4096);
     }
 
-    #[test]
-    fn test_cold_metadata_from_index_file_resolves_zero_blobs() {
+    #[tokio::test]
+    async fn test_cold_metadata_from_index_file_resolves_zero_blobs() {
         let mi = MasterIndex::new(IndexMode::Lazy(u64::MAX));
 
         // Simulate an index file read from disk: packs carry zero blobs mixed
@@ -3167,29 +3121,37 @@ mod tests {
         };
         let bf = IndexMetadata::bloom_filter_from_index_file(&index_file);
         let file_id = mock_id("file_from_disk");
-        let meta = IndexMetadata::from_index_file(index_file, bf, file_id);
+        let meta = IndexMetadata::from_index_file(index_file.clone(), bf, file_id);
         assert!(
             meta.zero_blobs.windows(2).all(|w| w[0].0 < w[1].0),
             "zero_blobs must be sorted for binary search"
         );
 
         mi.add_cold_metadata(meta);
+        mi.set_loader(Arc::new(MockColdLoader {
+            indices: std::collections::HashMap::from([(
+                file_id,
+                Index::from_index_file(index_file, file_id),
+            )]),
+        }));
 
-        assert!(mi.contains_exact(&zero_a));
-        assert!(mi.contains_exact(&zero_b));
+        assert!(mi.contains_exact(&zero_a).await.unwrap());
+        assert!(mi.contains_exact(&zero_b).await.unwrap());
         let locator = mi
             .get_data(&zero_a)
+            .await
+            .unwrap()
             .expect("cold zero blob from index file should resolve");
         assert_eq!(locator.blob_type, BlobType::Zero);
         assert_eq!(locator.raw_length, 4096);
         let locator = mi
             .get_data(&zero_b)
+            .await
+            .unwrap()
             .expect("cold zero blob from index file should resolve");
         assert_eq!(locator.raw_length, 8192);
-        assert!(
-            !mi.get_data(&data)
-                .is_some_and(|l| l.blob_type == BlobType::Zero)
-        );
+        let locator = mi.get_data(&data).await.unwrap().expect("cold data blob");
+        assert_eq!(locator.blob_type, BlobType::Data);
     }
 
     #[tokio::test]
@@ -3392,7 +3354,8 @@ mod tests {
         mi.for_each_id(|id, loc| {
             seen.push((*id, loc.pack_id));
         })
-        .await;
+        .await
+        .unwrap();
 
         assert_eq!(
             loads.load(std::sync::atomic::Ordering::Relaxed),
@@ -3414,7 +3377,8 @@ mod tests {
         mi.for_each_id(|id, loc| {
             seen.push((*id, loc.pack_id));
         })
-        .await;
+        .await
+        .unwrap();
         assert_eq!(
             loads.load(std::sync::atomic::Ordering::Relaxed),
             4,
@@ -3601,7 +3565,8 @@ mod tests {
             all_packs.insert(loc.pack_id);
             visited += 1;
         })
-        .await;
+        .await
+        .unwrap();
         assert_eq!(visited as usize, N * 2, "full sweep visits all blobs");
         assert_eq!(
             all_packs.len(),
@@ -3740,29 +3705,18 @@ mod tests {
         // get_data resolves the same cold zero blob synchronously.
         let loc = mi
             .get_data(&mock_id("lazy_zero_blob"))
+            .await
+            .unwrap()
             .expect("cold zero blob via get_data");
         assert_eq!(loc.blob_type, BlobType::Zero);
         assert_eq!(loc.raw_length, 12345);
-        assert!(mi.contains_exact(&mock_id("lazy_zero_blob")));
+        assert!(mi.contains_exact(&mock_id("lazy_zero_blob")).await.unwrap());
     }
 
-    /// The lookup predicates deliberately disagree in lazy mode, and the
-    /// disagreement is load-bearing rather than a bug:
-    ///
-    /// * [`MasterIndex::might_contain`] has no false negatives and covers cold
-    ///   indices through their bloom filters. This is what `verify`, `copy` and
-    ///   `bundle` use, so a cold-only blob is never mistaken for a missing one.
-    /// * [`MasterIndex::contains_exact`] is exact but load-free, so a cold
-    ///   data/tree blob reports `false`. This is what deduplication uses, because
-    ///   answering `true` from a bloom filter would silently skip storing
-    ///   genuinely new blobs.
-    /// * [`MasterIndex::get`] is exact and complete, at the cost of a disk load.
-    ///
-    /// Cold *zero* blobs are the documented exception: their locator rides along
-    /// in the cold metadata, so the predicates agree (covered by
-    /// `test_lazy_mode_resolves_cold_zero_blob`).
+    /// Exact presence queries must resolve cold data blobs the same as eager
+    /// mode, rather than treating a Bloom-filter candidate as absent.
     #[tokio::test]
-    async fn test_lazy_mode_predicates_disagree_only_for_cold_data_blobs() {
+    async fn test_lazy_mode_exact_query_resolves_cold_data_blob() {
         const N: usize = 12;
         let (mi, _index_map, _loads) = build_lazy_master(N, 4);
 
@@ -3772,27 +3726,19 @@ mod tests {
             "budget must leave some indices cold"
         );
 
-        // Find a blob that lives only in a cold index.
-        let mut cold_data = None;
-        'outer: for i in 0..N {
-            for suffix in ["a", "b"] {
-                let id = mock_id(&format!("blob{i}_{suffix}"));
-                if !mi.contains_exact(&id) && mi.might_contain(&id) {
-                    cold_data = Some(id);
-                    break 'outer;
-                }
-            }
-        }
-        let cold_data = cold_data.expect("budget must leave a cold data blob");
-
+        let cold_data = mock_id("blob0_a");
         assert!(
-            !mi.contains_exact(&cold_data),
-            "cold data blob is not resolvable exactly without a load"
+            mi.inner
+                .read()
+                .cold_metadata
+                .iter()
+                .any(|meta| meta.might_contain(&cold_data))
         );
         assert!(
             mi.might_contain(&cold_data),
             "cold data blob must never be reported as absent"
         );
+        assert!(mi.contains_exact(&cold_data).await.unwrap());
         assert!(
             mi.get(&cold_data).await.unwrap().is_some(),
             "cold data blob resolves once its index is loaded"

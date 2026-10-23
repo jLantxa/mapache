@@ -234,7 +234,7 @@ pub async fn scan(
                 reporter.update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
             }
         })
-        .await;
+        .await?;
 
     reporter.finish_task(GcTaskKind::FindingObsoleteBlobs);
 
@@ -642,7 +642,7 @@ impl Plan {
                     repack_blob_packs.insert(*id, locator.pack_id);
                 }
             })
-            .await;
+            .await?;
         let blobs_to_repack = repack_blob_packs.len() as u64;
 
         // Clear old references so the saver doesn't treat these blobs as
@@ -1727,7 +1727,7 @@ mod tests {
         plan.execute(noop_sender()).await?;
 
         assert!(
-            repo.index().contains_exact(&zero_id),
+            repo.index().contains_exact(&zero_id).await?,
             "referenced zero blob must survive the clean"
         );
         assert_eq!(
@@ -1753,11 +1753,11 @@ mod tests {
         plan.execute(noop_sender()).await?;
 
         assert!(
-            !repo.index().contains_exact(&zero_id),
+            !repo.index().contains_exact(&zero_id).await?,
             "unreferenced zero blob must be pruned from the index"
         );
         assert!(
-            !repo.index().contains_exact(&data_id),
+            !repo.index().contains_exact(&data_id).await?,
             "unreferenced data blob must be pruned from the index too"
         );
 

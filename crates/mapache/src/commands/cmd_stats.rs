@@ -530,7 +530,7 @@ pub async fn collect_stats(
             indexed_encoded = indexed_encoded.saturating_add(loc.length as u64);
             indexed_raw = indexed_raw.saturating_add(loc.raw_length as u64);
         })
-        .await;
+        .await?;
 
     // Snapshot-derived summary (index-only).
     let snap_stats = analyze_snapshots(repo.clone(), shutdown_signal.clone(), on_progress).await?;

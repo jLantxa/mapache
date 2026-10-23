@@ -182,10 +182,21 @@ pub async fn run_with_repo(
                     plan.tolerated_packs
                 );
 
+                if !plan.unresolved_references.is_empty() {
+                    ui::cli::log!(
+                        "  Warning: {} snapshot-referenced blobs are missing from the index",
+                        plan.unresolved_references.len()
+                    );
+                }
+
                 let actionable = plan.unused_packs.len()
                     + plan.obsolete_packs.len()
                     + plan.actionable_small_packs();
-                if actionable > 0 {
+                if !plan.unresolved_references.is_empty() {
+                    ui::cli::log!(
+                        "  Action: pack and index cleanup will be skipped to protect repository data"
+                    );
+                } else if actionable > 0 {
                     ui::cli::log!(
                         "  Action: removing {} unused, repacking {} obsolete + {} small",
                         plan.unused_packs.len(),
@@ -222,6 +233,7 @@ pub async fn run_with_repo(
                 obsolete_packs: report.obsolete_packs,
                 small_packs: report.small_packs,
                 tolerated_packs: report.tolerated_packs,
+                unresolved_references: report.unresolved_references,
                 added_bytes: report.added_bytes,
                 deleted_bytes: report.deleted_bytes,
                 net_freed_bytes: report.net_freed(),
@@ -233,7 +245,13 @@ pub async fn run_with_repo(
 
         ui::cli::log!();
 
-        if report.is_noop() {
+        if report.unresolved_references > 0 {
+            ui::cli::log!(
+                "{} Clean completed with pack and index cleanup skipped ({} unresolved snapshot references)",
+                "[WARNING]".bold().yellow(),
+                report.unresolved_references
+            );
+        } else if report.is_noop() {
             ui::cli::log!(
                 "{} Repository is already clean — no action needed",
                 "[SUCCESS]".bold().green()
@@ -274,6 +292,7 @@ pub struct CleanReport {
     pub obsolete_packs: usize,
     pub small_packs: usize,
     pub tolerated_packs: usize,
+    pub unresolved_references: usize,
 
     pub added_bytes: u64,
     pub deleted_bytes: u64,
@@ -347,6 +366,7 @@ where
         obsolete_packs: plan.obsolete_packs.len(),
         small_packs: plan.actionable_small_packs(),
         tolerated_packs: plan.tolerated_packs,
+        unresolved_references: plan.unresolved_references.len(),
         dry_run,
         ..Default::default()
     };
@@ -419,6 +439,7 @@ struct CleanOutput {
     obsolete_packs: usize,
     small_packs: usize,
     tolerated_packs: usize,
+    unresolved_references: usize,
 
     added_bytes: u64,
     deleted_bytes: u64,

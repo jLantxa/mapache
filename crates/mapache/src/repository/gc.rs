@@ -90,6 +90,7 @@ pub struct Plan {
     pub total_packs: usize,          // Total number of packs in the repository
     pub referenced_blobs: IdSet<ID>, // Blobs referenced by existing snapshots
     pub referenced_packs: IdSet<ID>, // Packs referenced by the referenced blobs
+    pub unresolved_references: IdSet<ID>, // Referenced blobs missing from the index
     pub obsolete_packs: IdSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
     pub small_data_packs: IdSet<ID>, // Small data packs marked to be repacked (to merge)
     pub small_tree_packs: IdSet<ID>, // Small tree packs marked to be repacked (to merge)
@@ -158,7 +159,7 @@ pub async fn scan(
     let reporter = GcReporter(event_sender);
     check_shutdown(&shutdown_signal)?;
     tracing::info!(target: "gc", "Starting garbage collection scan (tolerance={:.1}%)", tolerance * 100.0);
-    let (referenced_blobs, referenced_packs) =
+    let (referenced_blobs, referenced_packs, unresolved_references) =
         get_referenced_blobs_and_packs(repo.clone(), reporter.0.clone(), shutdown_signal.clone())
             .await?;
 
@@ -183,6 +184,7 @@ pub async fn scan(
         total_packs: num_total_packs,
         referenced_blobs,
         referenced_packs,
+        unresolved_references,
         obsolete_packs: IdSet::default(),
         tolerated_packs: 0,
         unused_packs,
@@ -331,8 +333,14 @@ pub async fn repack_all(
     let reporter = GcReporter(event_sender.clone());
     check_shutdown(&shutdown_signal)?;
 
-    let (referenced_blobs, referenced_packs) =
+    let (referenced_blobs, referenced_packs, unresolved_references) =
         get_referenced_blobs_and_packs(repo.clone(), event_sender, shutdown_signal.clone()).await?;
+    if !unresolved_references.is_empty() {
+        return Err(MapacheError::Integrity(format!(
+            "cannot repack while {} snapshot-referenced blobs are missing from the index",
+            unresolved_references.len()
+        )));
+    }
     let (all_packs, object_dropped) = repo.list_packs_and_dropped().await?;
 
     let mut unused_packs = all_packs.clone();
@@ -349,6 +357,7 @@ pub async fn repack_all(
         total_packs: all_packs.len(),
         referenced_blobs,
         referenced_packs: referenced_packs.clone(),
+        unresolved_references,
         obsolete_packs: referenced_packs,
         small_data_packs: IdSet::default(),
         small_tree_packs: IdSet::default(),
@@ -422,7 +431,7 @@ async fn find_packs_with_duplicate_footers(
 
                     // The authoritative copy per the index lives in another pack
                     // or at another offset — this descriptor is a phantom.
-                    if let Some(loc) = index.get(&d.id).await
+                    if let Some(loc) = index.get_checked(&d.id).await?
                         && (loc.pack_id != pack_id || loc.offset != d.offset)
                     {
                         has_phantom = true;
@@ -530,6 +539,16 @@ impl Plan {
             reporter.0.clone(),
         )
         .await?;
+
+        if !self.unresolved_references.is_empty() {
+            let message = format!(
+                "Skipping pack and index cleanup because {} snapshot-referenced blobs are missing from the index",
+                self.unresolved_references.len()
+            );
+            tracing::warn!(target: "gc", "{message}");
+            reporter.warning(message);
+            return Ok(gc_sizes);
+        }
 
         if self.small_data_packs.len() > 1 {
             tracing::debug!(target: "gc", "Marking {} small data packs as obsolete for repacking", self.small_data_packs.len());
@@ -749,10 +768,11 @@ async fn get_referenced_blobs_and_packs(
     repo: Arc<Repository>,
     event_sender: EventSender,
     shutdown_signal: Arc<AtomicBool>,
-) -> Result<(IdSet<ID>, IdSet<ID>)> {
+) -> Result<(IdSet<ID>, IdSet<ID>, IdSet<ID>)> {
     let reporter = GcReporter(event_sender);
     let referenced_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
+    let unresolved_references = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
     // Budgets concurrent tree deserialization across *all* snapshots at once.
     //
@@ -779,6 +799,7 @@ async fn get_referenced_blobs_and_packs(
             let reporter = reporter.clone();
             let referenced_blobs = referenced_blobs.clone();
             let referenced_packs = referenced_packs.clone();
+            let unresolved_references = unresolved_references.clone();
             let tree_budget = tree_budget.clone();
             let shutdown_signal = shutdown_signal.clone();
 
@@ -820,7 +841,7 @@ async fn get_referenced_blobs_and_packs(
                                 }
 
                                 let index = repo.index();
-                                if let Some(locator) = index.get(&tree_id).await {
+                                if let Some(locator) = index.get_checked(&tree_id).await? {
                                     referenced_packs.lock().insert(locator.pack_id);
                                 } else {
                                     reporter.warning(format!(
@@ -873,10 +894,19 @@ async fn get_referenced_blobs_and_packs(
                                     }
                                 }
 
-                                if let Some(locator) = index.get(&blob_id).await
-                                    && locator.blob_type != BlobType::Zero
-                                {
-                                    referenced_packs.lock().insert(locator.pack_id);
+                                match index.get_checked(&blob_id).await? {
+                                    Some(locator) if locator.blob_type != BlobType::Zero => {
+                                        referenced_packs.lock().insert(locator.pack_id);
+                                    }
+                                    Some(_) => {}
+                                    None => {
+                                        if unresolved_references.lock().insert(blob_id) {
+                                            reporter.warning(format!(
+                                                "Snapshot-referenced blob {} is missing from the index",
+                                                blob_id.to_short_hex(8)
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -905,6 +935,13 @@ async fn get_referenced_blobs_and_packs(
             )
         })?
         .into_inner();
+    let final_unresolved_references = Arc::try_unwrap(unresolved_references)
+        .map_err(|_| {
+            MapacheError::Internal(
+                "internal error: could not unwrap unresolved_references Arc".to_string(),
+            )
+        })?
+        .into_inner();
 
     reporter.log(format!(
         "Found {} referenced blobs and {} packs",
@@ -912,7 +949,7 @@ async fn get_referenced_blobs_and_packs(
         final_packs.len()
     ));
 
-    Ok((final_blobs, final_packs))
+    Ok((final_blobs, final_packs, final_unresolved_references))
 }
 
 /// Remove all expired locks from the repository

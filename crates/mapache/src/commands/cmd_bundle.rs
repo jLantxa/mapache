@@ -731,7 +731,7 @@ async fn export_snapshot_impl(
                 continue;
             }
             blob_list.push((tree_id, BlobType::Tree));
-            if let Some(loc) = index.get(&tree_id).await {
+            if let Some(loc) = index.get(&tree_id).await? {
                 total_bytes += loc.raw_length as u64;
             }
 
@@ -747,7 +747,7 @@ async fn export_snapshot_impl(
                                     continue;
                                 }
                                 blob_list.push((blob_id, BlobType::Data));
-                                if let Some(loc) = index.get(&blob_id).await {
+                                if let Some(loc) = index.get(&blob_id).await? {
                                     total_bytes += loc.raw_length as u64;
                                 }
                             }
@@ -1002,7 +1002,7 @@ async fn run_import_bundle(
     let dest_index = repo.index();
     let mut to_import: Vec<BundleIndexEntry> = Vec::with_capacity(bundle_index.entries.len());
     for entry in &bundle_index.entries {
-        if dest_index.get(&entry.id).await.is_none() {
+        if dest_index.get(&entry.id).await?.is_none() {
             to_import.push(entry.clone());
         }
     }

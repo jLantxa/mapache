@@ -859,12 +859,20 @@ impl Drop for ColdPromotionGuard<'_> {
     }
 }
 
+#[derive(Debug)]
+enum ColdPromotionFailure {
+    InProgress,
+    Load(MapacheError),
+}
+
 /// Manages a collection of `Index` instances, providing a unified view
 /// over all known blobs in the repository.
 #[derive(Clone)]
 pub struct MasterIndex {
     /// Internal state protected by a read-write lock.
     inner: Arc<RwLock<MasterIndexInner>>,
+    /// Serializes async operations with index maintenance.
+    operations: Arc<tokio::sync::RwLock<()>>,
     /// Blob IDs waiting to be serialized into a pack file.
     pending_blobs: PendingBlobs,
     auto_save: bool,
@@ -932,6 +940,7 @@ impl MasterIndex {
                 loading: IdSet::default(),
                 pinned: HashSet::default(),
             })),
+            operations: Arc::new(tokio::sync::RwLock::new(())),
             pending_blobs: PendingBlobs::new(),
             auto_save: true,
             mode: Arc::new(IndexModeCell::new(index_mode)),
@@ -1048,7 +1057,19 @@ impl MasterIndex {
         self.mode.set(mode);
     }
 
-    pub async fn get(&self, id: &ID) -> Option<BlobLocator> {
+    pub async fn get(&self, id: &ID) -> Result<Option<BlobLocator>> {
+        let _operation = self.operations.read().await;
+        self.get_inner(id).await
+    }
+
+    /// Retrieves an entry like `get`, but returns cold-index load failures
+    /// instead of retrying indefinitely. Destructive maintenance must not
+    /// interpret an unreadable index as an absent blob.
+    pub async fn get_checked(&self, id: &ID) -> Result<Option<BlobLocator>> {
+        self.get(id).await
+    }
+
+    async fn get_inner(&self, id: &ID) -> Result<Option<BlobLocator>> {
         // A candidate is skipped only once it is known to hold no copy of the
         // blob. A promotion that finds nothing stays retryable: eviction churn
         // can unseat it before this lookup scans it.
@@ -1056,11 +1077,11 @@ impl MasterIndex {
         loop {
             // Fast path: search hot indices.
             if let Some(locator) = self.get_hot(id) {
-                return Some(locator);
+                return Ok(Some(locator));
             }
 
             if self.index_mode() == IndexMode::Eager {
-                return None;
+                return Ok(None);
             }
 
             // Pick the youngest cold candidate that might contain the blob.
@@ -1093,28 +1114,25 @@ impl MasterIndex {
             };
 
             match candidate {
-                Some((Some(locator), _)) => return Some(locator),
+                Some((Some(locator), _)) => return Ok(Some(locator)),
                 Some((None, file_id)) => {
                     // Promote the candidate and search it. If another task is
                     // already loading this exact index (concurrent promotion),
                     // yield and rescan.
-                    let Ok(instance_id) = self.load_and_promote(file_id).await else {
-                        // Not promoted (concurrent promotion, or the load
-                        // failed): it may still be on its way in, so yield and
-                        // rescan without burning the candidate.
-                        tokio::task::yield_now().await;
-                        continue;
+                    let instance_id = match self.load_and_promote(file_id).await {
+                        Ok(instance_id) => instance_id,
+                        Err(ColdPromotionFailure::InProgress) => {
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                        Err(ColdPromotionFailure::Load(error)) => {
+                            return Err(error);
+                        }
                     };
-                    // Pin it so eviction cannot take it away again while we
-                    // search. Without the pin this index can be evicted by a
-                    // concurrent promotion before the scan below, and the
-                    // candidate would have to be retried — under eviction
-                    // pressure, indefinitely, re-reading it from disk each time.
-                    self.inner.write().pinned.insert(instance_id);
                     let found = self.get_hot(id);
                     self.inner.write().pinned.remove(&instance_id);
                     if let Some(locator) = found {
-                        return Some(locator);
+                        return Ok(Some(locator));
                     }
                     // The index was pinned for the whole scan, so its contents
                     // are now authoritative: if the blob is not here, it is not
@@ -1134,7 +1152,7 @@ impl MasterIndex {
                         tokio::task::yield_now().await;
                         continue;
                     }
-                    return None;
+                    return Ok(None);
                 }
             }
         }
@@ -1162,20 +1180,19 @@ impl MasterIndex {
 
     /// Load a cold index from disk and promote it to hot.
     ///
-    /// Returns `Ok(())` when the index was promoted (from disk);
-    /// returns `Err(())` when another task is concurrently loading this exact
-    /// index, or the disk load failed. On disk failure the metadata entry is
-    /// re-inserted into `cold_metadata` so a future retry can attempt again
-    /// instead of permanently losing the index.
-    /// Returns the `instance_id` of the index it made resident.
-    async fn load_and_promote(&self, file_id: ID) -> std::result::Result<u64, ()> {
+    /// Returns the instance ID of a promoted and pinned index. A concurrent
+    /// promotion is retryable; a load failure is returned to the caller.
+    async fn load_and_promote(
+        &self,
+        file_id: ID,
+    ) -> std::result::Result<u64, ColdPromotionFailure> {
         // Under the write lock: claim the metadata entry by file_id (never by a
         // positional index, which can shift under a concurrent promotion) so two
         // tasks never load the same index concurrently.
         let meta = {
             let mut lock = self.inner.write();
             let Some(pos) = lock.cold_metadata.iter().position(|m| m.file_id == file_id) else {
-                return Err(());
+                return Err(ColdPromotionFailure::InProgress);
             };
             // Publish the in-flight load before dropping the metadata, so no
             // concurrent lookup can mistake the missing entry for a blob that
@@ -1196,7 +1213,9 @@ impl MasterIndex {
 
         let Some(loader) = self.loader.get() else {
             // No loader available. The guard restores the entry.
-            return Err(());
+            return Err(ColdPromotionFailure::Load(MapacheError::Format(
+                "no cold index loader configured".to_string(),
+            )));
         };
         match loader.load_index(&file_id).await {
             Ok(index) => {
@@ -1205,6 +1224,7 @@ impl MasterIndex {
                 let instance_id = index.instance_id;
                 let mut lock = self.inner.write();
                 lock.indices.push(index);
+                lock.pinned.insert(instance_id);
                 if matches!(self.index_mode(), IndexMode::Lazy(_)) {
                     Self::record_touch(&mut lock, instance_id);
                     self.enforce_blob_budget(&mut lock);
@@ -1219,7 +1239,7 @@ impl MasterIndex {
                     file_id.to_short_hex(8), e);
                 // The guard restores the entry so a future retry can attempt
                 // again instead of permanently losing the blobs it holds.
-                Err(())
+                Err(ColdPromotionFailure::Load(e))
             }
         }
     }
@@ -1457,6 +1477,7 @@ impl MasterIndex {
         pack_id: &ID,
         descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<SizePair> {
+        let _operation = self.operations.read().await;
         let mut index_to_persist = None;
 
         {
@@ -1541,6 +1562,7 @@ impl MasterIndex {
         repo: &Repository,
         repo_version: Option<u32>,
     ) -> Result<SizePair> {
+        let _operation = self.operations.read().await;
         let repo_version = repo_version.unwrap_or(repo.repo_version());
         let mut total_size = SizePair::zero();
 
@@ -1608,6 +1630,7 @@ impl MasterIndex {
     where
         F: FnMut(&ID, BlobLocator),
     {
+        let _operation = self.operations.read().await;
         {
             let lock = self.inner.read();
             for idx in &lock.indices {
@@ -1721,8 +1744,10 @@ impl MasterIndex {
     /// at a file that is about to be deleted while its blobs were never merged
     /// into the replacement.
     ///
-    /// Descriptors are bucketed by pack (~48 bytes per blob instead of ~80) and
-    /// each source index is released as soon as it has been bucketed.
+    /// Descriptors are bucketed by pack (~48 bytes per blob instead of ~80).
+    /// The current indices remain available until all cold indices load
+    /// successfully, then the replacement is committed atomically. This keeps
+    /// lookups valid on failure at the cost of a higher temporary memory peak.
     ///
     /// This bounds the *input* side only: the rewritten indices cannot be evicted
     /// while unpersisted, so after the merge the whole new index is resident again
@@ -1740,39 +1765,39 @@ impl MasterIndex {
         obsolete_packs: Option<&IdSet<ID>>,
         referenced: Option<&IdSet<ID>>,
     ) -> Result<()> {
-        let (mut old_indices, mut cold_ids, loader) = {
-            let mut lock = self.inner.write();
-            let old_indices = std::mem::take(&mut lock.indices);
-            // Claim the cold entries up front: they are about to be consumed, so
-            // they must not stay reachable while the merge runs.
-            let cold_ids: Vec<ID> = lock.cold_metadata.iter().map(|m| m.file_id).collect();
-            lock.cold_metadata.clear();
-            (old_indices, cold_ids, self.loader.get().cloned())
+        let _operation = self.operations.write().await;
+        let mut pack_buckets: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
+        let (mut cold_ids, loader, hot_count) = {
+            let lock = self.inner.read();
+            let mut hot_indices: Vec<_> = lock.indices.iter().collect();
+            hot_indices.sort_by_key(|idx| idx.instance_id);
+            for idx in hot_indices {
+                idx.push_pack_descriptors(obsolete_packs, referenced, &mut pack_buckets);
+            }
+            (
+                lock.cold_metadata
+                    .iter()
+                    .map(|m| m.file_id)
+                    .collect::<Vec<_>>(),
+                self.loader.get().cloned(),
+                lock.indices.len(),
+            )
         };
 
-        // Deterministic order in both halves: resident indices by instance_id,
-        // cold ones by file id.
-        old_indices.sort_by_key(|idx| idx.instance_id);
+        // Keep ordering deterministic for cold indices too.
         cold_ids.sort_unstable();
 
         tracing::info!(
             target: "index",
             "Merging {} indices ({} cold, streamed)",
-            old_indices.len(),
+            hot_count,
             cold_ids.len()
         );
 
-        // Fill packs oldest-index-first so the newest occurrence of a duplicated
-        // (pack_id, blob_id) is the one that ends up last within its bucket.
-        let mut pack_buckets: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
-        for idx in old_indices {
-            idx.push_pack_descriptors(obsolete_packs, referenced, &mut pack_buckets);
-            // `idx` drops here, freeing its blob maps.
-        }
-
         // Stream the cold indices. A failure here is fatal: continuing would
         // drop the blobs of the index that could not be read, and the GC would
-        // then delete the packs that hold them.
+        // then delete the packs that hold them. The live indices are unchanged
+        // until every cold index has been read successfully.
         for file_id in cold_ids {
             let Some(loader) = loader.as_ref() else {
                 return Err(MapacheError::Format(format!(
@@ -1789,6 +1814,7 @@ impl MasterIndex {
 
         let mut lock = self.inner.write();
         lock.indices = new_indices;
+        lock.cold_metadata.clear();
         // The merge produced brand-new index instances, so rebuild the recency
         // ledger (old entries reference discarded instance_ids).
         Self::rebuild_recency(&mut lock);
@@ -2160,8 +2186,8 @@ mod tests {
         }));
 
         assert!(repo.index().persist(&repo).await.is_err());
-        assert!(repo.index().get(&descriptor1.id).await.is_some());
-        assert!(repo.index().get(&descriptor2.id).await.is_some());
+        assert!(repo.index().get(&descriptor1.id).await.unwrap().is_some());
+        assert!(repo.index().get(&descriptor2.id).await.unwrap().is_some());
 
         Ok(())
     }
@@ -2277,7 +2303,7 @@ mod tests {
         mi.add_index(idx);
 
         assert!(mi.contains_exact(&id2));
-        let loc = mi.get(&id2).await.unwrap();
+        let loc = mi.get(&id2).await.unwrap().unwrap();
         assert_eq!(loc.pack_id, pack_id);
 
         mi.clear();
@@ -3039,7 +3065,11 @@ mod tests {
 
         // Zero blobs are resolved from cold metadata without loading the index,
         // so no loader is needed for this test.
-        let locator = mi.get(&zero_id).await.expect("zero blob should be found");
+        let locator = mi
+            .get(&zero_id)
+            .await
+            .expect("cold lookup should succeed")
+            .expect("zero blob should be found");
         assert_eq!(locator.blob_type, BlobType::Zero);
         assert_eq!(locator.raw_length, 16384);
         assert_eq!(locator.length, 0);
@@ -3213,7 +3243,11 @@ mod tests {
             ]),
         }));
 
-        let locator = mi.get(&target_id).await.expect("blob should be found");
+        let locator = mi
+            .get(&target_id)
+            .await
+            .expect("cold lookup should succeed")
+            .expect("blob should be found");
         assert_eq!(locator.pack_id, pack_older);
         assert_eq!(locator.blob_type, BlobType::Data);
     }
@@ -3254,7 +3288,11 @@ mod tests {
         }));
 
         // First lookup loads from disk.
-        let locator = mi.get(&blob_id).await.expect("blob should be found");
+        let locator = mi
+            .get(&blob_id)
+            .await
+            .expect("cold lookup should succeed")
+            .expect("blob should be found");
         assert_eq!(locator.pack_id, pack_id);
         assert_eq!(loads.load(std::sync::atomic::Ordering::Relaxed), 1);
 
@@ -3269,7 +3307,11 @@ mod tests {
 
         // Second lookup must reload the index from disk: there is no cached
         // copy to promote.
-        let locator = mi.get(&blob_id).await.expect("blob should be found");
+        let locator = mi
+            .get(&blob_id)
+            .await
+            .expect("cold lookup should succeed")
+            .expect("blob should be found");
         assert_eq!(locator.pack_id, pack_id);
         assert_eq!(
             loads.load(std::sync::atomic::Ordering::Relaxed),
@@ -3383,6 +3425,7 @@ mod tests {
         let loc = mi
             .get(&cold_tree_blob)
             .await
+            .expect("cold lookup should succeed")
             .expect("cold blob should remain resolvable");
         assert_eq!(loc.pack_id, cold_tree_pack);
         assert_eq!(
@@ -3530,6 +3573,7 @@ mod tests {
                     let loc = mi
                         .get(&id)
                         .await
+                        .expect("cold lookup should succeed")
                         .unwrap_or_else(|| panic!("pass {pass}: blob{i}_{suffix} not found"));
                     assert_eq!(
                         loc.pack_id,
@@ -3601,6 +3645,7 @@ mod tests {
                 let loc = mi
                     .get(&id)
                     .await
+                    .expect("cold lookup should succeed")
                     .unwrap_or_else(|| panic!("{id} must survive cleanup"));
                 assert_eq!(loc.pack_id, mock_id(&format!("lazy_pack_{i}")));
             }
@@ -3679,7 +3724,11 @@ mod tests {
         mi.add_cold_metadata(IndexMetadata::from_index(&zeros, zero_file));
 
         // Zero blobs resolve from cold metadata exactly; no loader hit needed.
-        let loc = mi.get(&mock_id("lazy_zero_blob")).await.expect("zero blob");
+        let loc = mi
+            .get(&mock_id("lazy_zero_blob"))
+            .await
+            .expect("cold lookup should succeed")
+            .expect("zero blob");
         assert_eq!(loc.blob_type, BlobType::Zero);
         assert_eq!(loc.raw_length, 12345);
         assert_eq!(loc.pack_id, ID::default());
@@ -3745,7 +3794,7 @@ mod tests {
             "cold data blob must never be reported as absent"
         );
         assert!(
-            mi.get(&cold_data).await.is_some(),
+            mi.get(&cold_data).await.unwrap().is_some(),
             "cold data blob resolves once its index is loaded"
         );
     }
@@ -3767,7 +3816,7 @@ mod tests {
                 let id = mock_id(&format!("blob{i}_{suffix}"));
                 // might_contain reports the blob before/after a full lookup.
                 assert!(mi.might_contain(&id), "might_contain({i}_{suffix})");
-                assert!(mi.get(&id).await.is_some(), "get({i}_{suffix})");
+                assert!(mi.get(&id).await.unwrap().is_some(), "get({i}_{suffix})");
                 found += 1;
             }
         }
@@ -3809,7 +3858,11 @@ mod tests {
         // even though no other index could be evicted to make it "fit".
         for i in 0..6 {
             let id = mock_id(&format!("oversized_blob_{i}"));
-            let loc = mi.get(&id).await.expect("oversized index blob resolves");
+            let loc = mi
+                .get(&id)
+                .await
+                .expect("cold lookup should succeed")
+                .expect("oversized index blob resolves");
             assert_eq!(loc.pack_id, pack_id);
         }
 
@@ -3932,10 +3985,12 @@ mod tests {
         let first = first
             .await
             .expect("first lookup joins")
+            .expect("first lookup returns without error")
             .expect("first lookup resolves");
         let second = second
             .await
             .expect("second lookup joins")
+            .expect("second lookup returns without error")
             .expect("lookup during an in-flight promotion must not report a miss");
         assert_eq!(first.pack_id, mock_id("gated_pack"));
         assert_eq!(second.pack_id, mock_id("gated_pack"));

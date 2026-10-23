@@ -150,7 +150,7 @@ impl Restorer {
         for blob_id in &blob_ids {
             let locator = index
                 .get(blob_id)
-                .await
+                .await?
                 .ok_or(MapacheError::NotInIndex(*blob_id))?;
             locators.push(locator);
         }

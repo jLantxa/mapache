@@ -431,7 +431,7 @@ async fn collect_blobs(
             continue;
         }
         blob_list.push((tree_id, BlobType::Tree));
-        if let Some(loc) = index.get(&tree_id).await {
+        if let Some(loc) = index.get(&tree_id).await? {
             total_bytes += loc.raw_length as u64;
         }
 
@@ -447,7 +447,7 @@ async fn collect_blobs(
                                 continue;
                             }
                             blob_list.push((blob_id, BlobType::Data));
-                            if let Some(loc) = index.get(&blob_id).await {
+                            if let Some(loc) = index.get(&blob_id).await? {
                                 total_bytes += loc.raw_length as u64;
                             }
                         }
@@ -499,7 +499,7 @@ async fn copy_snapshots(
     let dest_index = dst_repo.index();
     let mut to_copy: Vec<(ID, BlobType)> = Vec::with_capacity(blob_list.len());
     for (id, blob_type) in blob_list {
-        if dest_index.get(&id).await.is_none() {
+        if dest_index.get(&id).await?.is_none() {
             to_copy.push((id, blob_type));
         }
     }
@@ -518,7 +518,7 @@ async fn copy_snapshots(
     let mut transfer_bytes: u64 = 0;
     let index = src_repo.index();
     for (id, _) in &to_copy {
-        if let Some(loc) = index.get(id).await {
+        if let Some(loc) = index.get(id).await? {
             transfer_bytes += loc.raw_length as u64;
         }
     }

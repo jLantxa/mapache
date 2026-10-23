@@ -925,7 +925,7 @@ impl SerializedNodeDataReader {
         let mut acc = 0u64;
 
         for id in blobs {
-            let entry = index.get(id).await.ok_or(MapacheError::NotInIndex(*id))?;
+            let entry = index.get(id).await?.ok_or(MapacheError::NotInIndex(*id))?;
             acc += entry.raw_length as u64;
             prefix.push(acc);
         }

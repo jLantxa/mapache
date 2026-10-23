@@ -328,6 +328,16 @@ fn summary_lines(outcome: &cmd_clean::CleanReport) -> Vec<Line<'static>> {
     lines.push(kv("Obsolete packs", outcome.obsolete_packs.to_string()));
     lines.push(kv("Small packs", outcome.small_packs.to_string()));
     lines.push(kv("Tolerated packs", outcome.tolerated_packs.to_string()));
+    lines.push(kv(
+        "Unresolved references",
+        outcome.unresolved_references.to_string(),
+    ));
+    if outcome.unresolved_references > 0 {
+        lines.push(Line::from(Span::styled(
+            "Pack and index cleanup skipped to protect repository data",
+            theme::THEME.warning,
+        )));
+    }
     lines.push(Line::from(""));
 
     if outcome.dry_run {

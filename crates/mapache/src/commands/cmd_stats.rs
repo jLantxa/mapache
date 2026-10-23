@@ -430,7 +430,7 @@ async fn scan_pack_footers(
                     if *entry > 1 {
                         // Same ID twice in this pack's footer.
                         scan.duplicate_blobs += 1;
-                    } else if let Some(loc) = index.get(&d.id).await {
+                    } else if let Some(loc) = index.get(&d.id).await? {
                         if loc.pack_id != pack_id || loc.offset != d.offset {
                             // Phantom: the authoritative copy lives in another pack
                             // or at another offset.
@@ -1091,7 +1091,7 @@ async fn analyze_snapshot(
     let index = repo.index();
 
     if visited.insert(snapshot.tree)
-        && let Some(locator) = index.get(&snapshot.tree).await
+        && let Some(locator) = index.get(&snapshot.tree).await?
     {
         acc.add_blob(true, locator.raw_length as u64, locator.length as u64);
     }
@@ -1112,7 +1112,7 @@ async fn analyze_snapshot(
 
         if let Some(tree_id) = &node.tree
             && visited.insert(*tree_id)
-            && let Some(locator) = index.get(tree_id).await
+            && let Some(locator) = index.get(tree_id).await?
         {
             acc.add_blob(true, locator.raw_length as u64, locator.length as u64);
         }
@@ -1120,7 +1120,7 @@ async fn analyze_snapshot(
         if let Some(blobs) = node.blobs {
             for blob_id in blobs {
                 if visited.insert(blob_id)
-                    && let Some(locator) = index.get(&blob_id).await
+                    && let Some(locator) = index.get(&blob_id).await?
                 {
                     acc.add_blob(false, locator.raw_length as u64, locator.length as u64);
                 }

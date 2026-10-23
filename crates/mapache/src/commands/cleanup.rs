@@ -35,18 +35,12 @@ impl CleanupHandler {
         F: Fn() + Send + 'static,
     {
         let locks = Arc::new(Mutex::new(Vec::<LockHandle>::new()));
-        let locks_clone = locks.clone();
         let sig = interrupted.clone();
 
         let join_handle = tokio::spawn(async move {
             wait_for_signal().await;
             sig.store(true, Ordering::SeqCst);
             callback();
-            if let Ok(locks) = locks_clone.lock() {
-                for lock in locks.iter() {
-                    lock.trigger_unlock();
-                }
-            }
         });
 
         Self {

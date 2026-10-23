@@ -707,7 +707,7 @@ impl Restorer {
                         if let Some(blobs) = &node.blobs {
                             let mut offset_in_file = 0u64;
                             for blob_id in blobs {
-                                match index.get(blob_id).await {
+                                match index.get(blob_id).await? {
                                     Some(locator) => {
                                         file_blobs.push((*blob_id, locator, offset_in_file));
                                         offset_in_file += locator.raw_length as u64;
@@ -837,7 +837,7 @@ impl Restorer {
                 if let Some(blobs) = &node.blobs {
                     let mut offset_in_file = 0;
                     for blob_id in blobs {
-                        let locator = match index.get(blob_id).await {
+                        let locator = match index.get(blob_id).await? {
                             Some(loc) => loc,
                             None => {
                                 emit_event(

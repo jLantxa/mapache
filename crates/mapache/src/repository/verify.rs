@@ -458,7 +458,7 @@ async fn verify_pack_inline(
     // of distinct cold indices.
     let mut num_dangling = 0usize;
     for desc in &pack_header {
-        if index.get(&desc.id).await.is_none() {
+        if index.get(&desc.id).await?.is_none() {
             num_dangling += 1;
         }
     }
@@ -660,7 +660,7 @@ async fn verify_pack_streaming(
     // a dangling blob.
     let mut num_dangling = 0usize;
     for blob in &pack_header {
-        if index.get(&blob.id).await.is_none() {
+        if index.get(&blob.id).await?.is_none() {
             num_dangling += 1;
         }
     }
@@ -720,7 +720,7 @@ pub async fn verify_snapshot_refs(
     let index = repo.index();
 
     // Validate the root tree exists first
-    if index.get(&tree_id).await.is_none() {
+    if index.get(&tree_id).await?.is_none() {
         return Err(MapacheError::Integrity(format!(
             "snapshot root tree {} is missing from index",
             tree_id
@@ -741,7 +741,7 @@ pub async fn verify_snapshot_refs(
             let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
 
             for id in referenced_ids {
-                match index.get(id).await {
+                match index.get(id).await? {
                     Some(blob_locator) => {
                         if blob_locator.blob_type != BlobType::Zero
                             && !existing_packs.contains(&blob_locator.pack_id)

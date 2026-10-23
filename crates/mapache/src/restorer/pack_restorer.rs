@@ -82,7 +82,7 @@ pub(crate) async fn restore_packs(
     if dry_run {
         for blob_requests in packs.values() {
             for (blob_id, _) in blob_requests.iter() {
-                if let Some(locator) = index.get(blob_id).await {
+                if let Some(locator) = index.get(blob_id).await? {
                     emit_event(
                         &restorer.event_sender,
                         Event::Restore(RestoreEvent::BytesProcessed(locator.raw_length as u64)),
@@ -138,7 +138,7 @@ pub(crate) async fn restore_packs(
         for (blob_id, req) in blob_requests {
             let locator = match locator_cache.get(&blob_id) {
                 Some(&locator) => locator,
-                None => match index.get(&blob_id).await {
+                None => match index.get(&blob_id).await? {
                     Some(locator) => {
                         locator_cache.insert(blob_id, locator);
                         locator

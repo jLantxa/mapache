@@ -285,7 +285,7 @@ impl BlobLoader for Repository {
         Ok(self
             .master_index
             .get(id)
-            .await
+            .await?
             .map(|locator| locator.raw_length as u64))
     }
 }
@@ -821,7 +821,7 @@ impl Repository {
         let locator = self
             .master_index
             .get(id)
-            .await
+            .await?
             .ok_or(MapacheError::NotInIndex(*id))?;
         if locator.blob_type == BlobType::Zero {
             // Zero blobs are only ever produced at chunk granularity, so the

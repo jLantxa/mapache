@@ -28,7 +28,7 @@ use mapache::backend::{
 use russh::{
     Channel, ChannelId,
     keys::{PrivateKey, PublicKey},
-    server::{Auth, ChannelOpenHandle, Msg, Server as _, Session},
+    server::{Auth, ChannelOpenHandle, Msg, Server as _, Session, VerifiedPublicKey},
 };
 use russh_sftp::protocol::{
     Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
@@ -316,11 +316,14 @@ impl russh::server::Handler for SshSession {
     async fn auth_publickey(
         &mut self,
         _user: &str,
-        public_key: &PublicKey,
+        verified_public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         let accepted = match &self.policy {
             AuthPolicy::Password(_) => false,
-            AuthPolicy::PublicKey(expected) => public_key.to_bytes()? == expected.to_bytes()?,
+            AuthPolicy::PublicKey(expected) => verified_public_key
+                .public_key
+                .to_bytes()
+                .eq(&expected.to_bytes()),
         };
         Ok(if accepted {
             Auth::Accept

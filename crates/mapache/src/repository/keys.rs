@@ -666,5 +666,10 @@ mod tests {
         // Legitimate values still pass.
         assert!(kf_with(1024, 1, 1).argon2_params().is_ok());
         assert!(kf_with(1_048_576, 1_000_000, 16).argon2_params().is_ok());
+
+        assert!(kdf::validate_bundle_argon2_params(65_536, 32, 1).is_ok());
+        assert!(kdf::validate_bundle_argon2_params(65_537, 1, 1).is_err());
+        assert!(kdf::validate_bundle_argon2_params(65_536, 33, 1).is_err());
+        assert!(kdf::validate_bundle_argon2_params(8, 65, 1).is_err());
     }
 }

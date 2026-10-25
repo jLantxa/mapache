@@ -114,6 +114,12 @@ impl BundleWriter {
         } else {
             kdf::default_params()
         };
+        kdf::validate_bundle_argon2_params(params.m_cost(), params.t_cost(), params.p_cost())
+            .map_err(|e| {
+                MapacheError::Config(format!(
+                    "bundle Argon2 parameters exceed reader limits: {e}"
+                ))
+            })?;
         let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &salt, params.clone())?;
 
         let storage = if compress {

@@ -1,6 +1,6 @@
 use std::{
-    io::SeekFrom,
-    path::{Path, PathBuf},
+    io::{self, SeekFrom},
+    path::{Component, Path, PathBuf},
 };
 
 use async_trait::async_trait;
@@ -47,7 +47,7 @@ impl LocalFS {
         let full_path = self.full_path(path);
 
         // If unsetting read-only and file doesn't exist, just return Ok
-        let metadata = match tokio::fs::metadata(&full_path).await {
+        let metadata = match tokio::fs::symlink_metadata(&full_path).await {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !readonly => return Ok(()),
             Err(e) => {
@@ -58,6 +58,9 @@ impl LocalFS {
                 )));
             }
         };
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
 
         let mut perms = metadata.permissions();
 
@@ -90,11 +93,14 @@ impl LocalFS {
 
     /// Internal synchronous version of set_readonly_status for use in blocking tasks.
     fn set_readonly_status_internal(full_path: &Path, readonly: bool) -> std::io::Result<()> {
-        let metadata = match std::fs::metadata(full_path) {
+        let metadata = match std::fs::symlink_metadata(full_path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !readonly => return Ok(()),
             Err(e) => return Err(e),
         };
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
 
         let mut perms = metadata.permissions();
 
@@ -116,12 +122,68 @@ impl LocalFS {
         std::fs::set_permissions(full_path, perms)
     }
 
-    /// Appends a temporary suffix to `path` instead of replacing its extension,
-    /// so the temp file always maps back to its final destination.
+    /// Appends a unique temporary suffix while preserving the `.tmp` extension.
     fn tmp_path(path: &Path) -> PathBuf {
         let mut os = path.as_os_str().to_os_string();
-        os.push(format!(".{REPO_TMP_EXTENSION}"));
+        os.push(format!(
+            ".{:032x}.{REPO_TMP_EXTENSION}",
+            rand::random::<u128>()
+        ));
         PathBuf::from(os)
+    }
+
+    fn safe_parent_and_name(base: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "repository path must contain only normal relative components",
+            ));
+        }
+        let file_name = relative.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "repository path has no filename",
+            )
+        })?;
+        std::fs::create_dir_all(base)?;
+        let mut parent = std::fs::canonicalize(base)?;
+
+        if let Some(relative_parent) = relative.parent() {
+            for component in relative_parent.components() {
+                let Component::Normal(name) = component else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "repository parent path must contain only normal components",
+                    ));
+                };
+                parent.push(name);
+                match std::fs::symlink_metadata(&parent) {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                    Ok(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "repository parent is not a real directory",
+                        ));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        std::fs::create_dir(&parent)?;
+                        let metadata = std::fs::symlink_metadata(&parent)?;
+                        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "repository parent is not a real directory",
+                            ));
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+
+        Ok((parent, PathBuf::from(file_name)))
     }
 
     /// Persists the rename into the parent directory so the new entry survives
@@ -231,51 +293,32 @@ impl StorageBackend for LocalFS {
         tracing::trace!(target: "backend", "LocalFS: write {:?} ({} bytes)", path, data.len());
 
         tokio::task::spawn_blocking(move || {
-            let full_tmp_path = full_base_path.join(Self::tmp_path(&path));
-            let full_path = full_base_path.join(&path);
-
-            // Write to temporary file with durability guarantee
-            let write_result = (|| -> std::io::Result<()> {
+            let write_result = (|| -> io::Result<()> {
                 use std::io::Write;
-                let mut file = std::fs::File::create(&full_tmp_path)?;
+                let (parent, file_name) = Self::safe_parent_and_name(&full_base_path, &path)?;
+                let full_path = parent.join(file_name);
+                let full_tmp_path = Self::tmp_path(&full_path);
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&full_tmp_path)?;
                 file.write_all(&data)?;
                 file.sync_all()?;
+
+                if let Err(e) = Self::set_readonly_status_internal(&full_path, false) {
+                    tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before rename: {e}", full_path);
+                }
+
+                std::fs::rename(&full_tmp_path, &full_path).inspect_err(|_| {
+                    let _ = std::fs::remove_file(&full_tmp_path);
+                })?;
+
+                Self::sync_parent_dir(&full_path)?;
+                Self::set_readonly_status_internal(&full_path, true)?;
                 Ok(())
             })();
 
-            if let Err(e) = write_result {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    if let Some(parent) = full_tmp_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    use std::io::Write;
-                    let mut file = std::fs::File::create(&full_tmp_path)?;
-                    file.write_all(&data)?;
-                    file.sync_all()?;
-                } else {
-                    return Err(MapacheError::Io(e));
-                }
-            }
-
-            if let Err(e) = Self::set_readonly_status_internal(&full_path, false) {
-                tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before rename: {e}", full_path);
-            }
-
-            std::fs::rename(&full_tmp_path, &full_path).map_err(|e| {
-                // Clean up the temp file on rename failure so it doesn't linger.
-                let _ = std::fs::remove_file(&full_tmp_path);
-                MapacheError::Io(e)
-            })?;
-
-            // Persist the rename itself, otherwise the new entry may be lost
-            // even though the file content was synced.
-            if let Err(e) = Self::sync_parent_dir(&full_path) {
-                return Err(MapacheError::Io(e));
-            }
-
-            Self::set_readonly_status_internal(&full_path, true).map_err(MapacheError::Io)?;
-
-            Ok(())
+            write_result.map_err(MapacheError::Io)
         })
         .await
         .map_err(|e| MapacheError::Backend(format!("blocking task failed: {}", e)))?
@@ -550,6 +593,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_local_fs_write_creates_missing_base_and_parents() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let base_path = temp_dir.path().join("missing").join("repo");
+        let local_fs = LocalFS::new(base_path.clone());
+        let handle = Handle::new(Path::new("objects/packs/object.pack"));
+
+        local_fs
+            .write(&handle, WriteContents::Borrowed(b"stored"))
+            .await?;
+
+        assert_eq!(std::fs::read(base_path.join(handle.path))?, b"stored");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_local_fs_readonly() -> Result<()> {
         let temp_dir = tempdir()?;
         let local_fs = LocalFS::new(temp_dir.path().to_path_buf());
@@ -595,6 +653,81 @@ mod tests {
         // Test removal (it should unlock and then delete)
         local_fs.remove(Path::new("readonly_file.txt")).await?;
         assert!(!local_fs.path_exists(Path::new("readonly_file.txt")).await);
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_local_fs_write_does_not_follow_symlinks() -> Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let repo_dir = tempdir()?;
+        let outside_dir = tempdir()?;
+        let temp_target = outside_dir.path().join("temp-target");
+        let destination_target = outside_dir.path().join("destination-target");
+        std::fs::write(&temp_target, b"keep temp target")?;
+        std::fs::write(&destination_target, b"keep destination target")?;
+        std::fs::set_permissions(&destination_target, std::fs::Permissions::from_mode(0o600))?;
+
+        symlink(&temp_target, repo_dir.path().join("temp.txt.tmp"))?;
+        symlink(&destination_target, repo_dir.path().join("destination.txt"))?;
+
+        let local_fs = LocalFS::new(repo_dir.path().to_path_buf());
+        local_fs
+            .write(
+                &Handle::new(Path::new("temp.txt")),
+                WriteContents::Borrowed(b"new temp content"),
+            )
+            .await?;
+        local_fs
+            .write(
+                &Handle::new(Path::new("destination.txt")),
+                WriteContents::Borrowed(b"new destination content"),
+            )
+            .await?;
+
+        assert_eq!(std::fs::read(&temp_target)?, b"keep temp target");
+        assert_eq!(
+            std::fs::read(&destination_target)?,
+            b"keep destination target"
+        );
+        assert_eq!(
+            std::fs::metadata(&destination_target)?.permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read(repo_dir.path().join("temp.txt"))?,
+            b"new temp content"
+        );
+        assert_eq!(
+            std::fs::read(repo_dir.path().join("destination.txt"))?,
+            b"new destination content"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_local_fs_write_rejects_symlinked_parent() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let repo_dir = tempdir()?;
+        let outside_dir = tempdir()?;
+        symlink(outside_dir.path(), repo_dir.path().join("objects"))?;
+
+        let local_fs = LocalFS::new(repo_dir.path().to_path_buf());
+        assert!(
+            local_fs
+                .write(
+                    &Handle::new(Path::new("objects/backup.pack")),
+                    WriteContents::Borrowed(b"must stay inside the repository"),
+                )
+                .await
+                .is_err()
+        );
+        assert!(!outside_dir.path().join("backup.pack").exists());
 
         Ok(())
     }

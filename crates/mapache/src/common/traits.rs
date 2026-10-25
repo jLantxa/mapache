@@ -40,10 +40,10 @@ pub trait BlobSaver: Send + Sync {
         true
     }
 
-    /// Resolves an [`CompressionHint::Auto`] decision from blob content.
+    /// Resolves a `CompressionHint::Auto` decision from blob content.
     ///
-    /// Returns a concrete [`CompressionHint::Compress`] or
-    /// [`CompressionHint::Store`] when the implementor can decide from the
+    /// Returns a concrete `CompressionHint::Compress` or
+    /// `CompressionHint::Store` when the implementor can decide from the
     /// sample *and* probing applies to it, or `None` when it cannot (no per-blob
     /// compression marker, compression disabled, or the policy has probing off).
     /// Callers then pass the hint through unchanged.

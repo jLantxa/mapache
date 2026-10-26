@@ -230,10 +230,12 @@ pub fn apply_retention_rules_with_reasons(
             }
             RetentionRule::KeepWithin(duration) => {
                 // Keep all snapshots newer than the cutoff time (using the exact `now`).
-                let cutoff_time = now - *duration;
+                // A duration large enough to overflow the datetime range means
+                // "keep everything", matching the `usize::MAX` period sentinel.
+                let cutoff_time = now.checked_sub_signed(*duration);
                 snapshots_sorted
                     .iter()
-                    .filter(|e| e.snapshot.timestamp >= cutoff_time)
+                    .filter(|e| cutoff_time.is_none_or(|cutoff| e.snapshot.timestamp >= cutoff))
                     .map(|e| e.id)
                     .collect()
             }
@@ -1304,6 +1306,21 @@ mod tests {
         let snapshots = create_mock_snapshots();
         // KeepWithin(very large) keeps all snapshots.
         let rules = vec![RetentionRule::KeepWithin(Duration::days(99999))];
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
+        assert_eq!(kept_ids.len(), 50);
+    }
+
+    #[test]
+    fn test_keep_within_overflow_keeps_all() {
+        let snapshots = create_mock_snapshots();
+        // `now - Duration::MAX` overflows the datetime range. The rule must
+        // treat that as "keep everything" instead of panicking.
+        let rules = vec![RetentionRule::KeepWithin(Duration::MAX)];
         let kept_ids = apply_retention_rules(
             &snapshots.iter().collect::<Vec<_>>(),
             &rules,

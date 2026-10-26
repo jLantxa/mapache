@@ -716,6 +716,28 @@ impl Repository {
             return Ok(id);
         }
 
+        // From this point on the blob is claimed as pending. Every failure must
+        // release the claim, otherwise a retry of the same content would be
+        // silently skipped (`add_pending_blob` returns false) and the blob would
+        // never reach a pack even though callers got a success ID.
+        let result = self.encode_and_enqueue_blob(blob_type, data, id, hint);
+        if result.is_err() {
+            self.master_index.remove_pending_blob(&id);
+        }
+        result
+    }
+
+    /// Encodes an already-claimed blob and hands it to the packer.
+    ///
+    /// The caller must have claimed `id` via `add_pending_blob` and is
+    /// responsible for releasing the claim if this method fails.
+    fn encode_and_enqueue_blob(
+        &self,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        id: ID,
+        hint: CompressionHint,
+    ) -> Result<ID> {
         // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
         // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
         //
@@ -760,10 +782,7 @@ impl Repository {
                 raw_length,
                 compressed: false,
             })
-            .map_err(|e| {
-                self.master_index.remove_pending_blob(&id);
-                MapacheError::Repo(format!("packer channel closed: {e}"))
-            })?;
+            .map_err(|e| MapacheError::Repo(format!("packer channel closed: {e}")))?;
 
             return Ok(id);
         }
@@ -808,10 +827,7 @@ impl Repository {
             raw_length,
             compressed,
         })
-        .map_err(|e| {
-            self.master_index.remove_pending_blob(&id);
-            MapacheError::Repo(format!("packer channel closed: {e}"))
-        })?;
+        .map_err(|e| MapacheError::Repo(format!("packer channel closed: {e}")))?;
 
         Ok(id)
     }
@@ -2557,6 +2573,50 @@ mod tests {
             total_entries, 1,
             "duplicate pack footer entries for the same blob ID: {total_entries} found"
         );
+
+        Ok(())
+    }
+
+    /// A failed save must release the pending-blob claim so a retry actually
+    /// stores the content. Before the fix, the claim leaked and the retry
+    /// returned success without sending anything to the packer.
+    #[tokio::test]
+    async fn test_failed_save_releases_pending_claim() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        // No pack saver is running, so the save fails after claiming the blob.
+        let data = b"pending claim must be released";
+        let error = repo
+            .encode_and_save_blob(
+                BlobType::Data,
+                WriteContents::Borrowed(data),
+                SaveID::CalculateID,
+            )
+            .expect_err("save without a pack saver must fail");
+        assert!(matches!(error, MapacheError::Repo(_)));
+
+        // The retry must reach the packer instead of being skipped as pending.
+        repo.init_pack_saver(1)?;
+        let id = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(data),
+            SaveID::CalculateID,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        assert_eq!(repo.load_blob(&id).await?, data);
 
         Ok(())
     }

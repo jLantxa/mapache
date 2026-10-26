@@ -341,12 +341,13 @@ impl BundleReader {
             .decrypt_in_place(encrypted_ecc)
             .map_err(|e| MapacheError::Crypto(format!("failed to decrypt ECC section: {e}")))?;
 
-        // Run ECC decode (verify + repair).
-        let repaired = ecc::ecc_decode(&data_section, &ecc_payload)
+        // Run ECC decode (verify + repair in place, avoiding a second
+        // full-size data buffer).
+        ecc::ecc_decode_in_place(&mut data_section, &ecc_payload)
             .map_err(|e| MapacheError::Integrity(format!("ECC decode failed: {e}")))?;
 
         // Validate repaired data CRCs against sidecar before writing.
-        ecc::validate_crc(&repaired, &ecc_payload).map_err(|bad_shard| {
+        ecc::validate_crc(&data_section, &ecc_payload).map_err(|bad_shard| {
             MapacheError::Integrity(format!(
                 "ECC repair produced invalid CRC at shard {bad_shard}, refusing to write"
             ))
@@ -367,14 +368,12 @@ impl BundleReader {
         repaired_file.write_all(&header_buf)?;
 
         // Write repaired data section.
-        repaired_file.write_all(&repaired)?;
+        repaired_file.write_all(&data_section)?;
 
         // Copy everything after the data section (ECC section, index, trailer, trailer size).
         let mut original = OpenOptions::new().read(true).open(&self.path)?;
         original.seek(SeekFrom::Start(self.data_end))?;
-        let mut remainder = Vec::new();
-        original.take(u64::MAX).read_to_end(&mut remainder)?;
-        repaired_file.write_all(&remainder)?;
+        std::io::copy(&mut original, &mut repaired_file)?;
 
         tracing::info!(target: "bundle", "ECC repair written to {}", repaired_path.display());
         ui::cli::warning!(

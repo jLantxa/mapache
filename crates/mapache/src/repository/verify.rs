@@ -159,10 +159,10 @@ async fn repair_pack_with_ecc(
         .decode(&sidecar_encoded)
         .map_err(|e| MapacheError::Repo(format!("failed to decode ECC sidecar: {}", e)))?;
 
-    // Run ECC decode (verifies + repairs in-place) on a blocking thread.
+    // Run ECC decode (verifies + repairs in place) on a blocking thread.
     let (decoded, was_repaired) = tokio::task::spawn_blocking(move || {
-        let decoded = ecc::ecc_decode(&raw_data, &sidecar_data)?;
-        let repaired = decoded != raw_data;
+        let mut decoded = raw_data;
+        let repaired = ecc::ecc_decode_in_place(&mut decoded, &sidecar_data)?;
         if repaired {
             ecc::validate_crc(&decoded, &sidecar_data)
                 .map_err(ecc::EccDecodeError::CrcValidationFailed)?;
@@ -314,14 +314,12 @@ pub async fn verify_metadata_file(
         }
     };
 
-    // Run ECC decode on a blocking thread.
-    let file_data_clone = raw_data.clone();
-    let sidecar_data_clone = sidecar_data.clone();
+    // Run ECC decode on a blocking thread, reusing the raw buffer.
     let ecc_result = tokio::task::spawn_blocking(move || {
-        let decoded = ecc::ecc_decode(&file_data_clone, &sidecar_data_clone)?;
-        let repaired = decoded != file_data_clone;
+        let mut decoded = raw_data;
+        let repaired = ecc::ecc_decode_in_place(&mut decoded, &sidecar_data)?;
         if repaired {
-            ecc::validate_crc(&decoded, &sidecar_data_clone)
+            ecc::validate_crc(&decoded, &sidecar_data)
                 .map_err(ecc::EccDecodeError::CrcValidationFailed)?;
         }
         Ok::<_, ecc::EccDecodeError>((decoded, repaired))

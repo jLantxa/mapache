@@ -19,6 +19,7 @@ use crate::{
         BlobType, ID, SaveID,
         compression_policy::{CompressionHint, CompressionPolicy},
         error::{MapacheError, Result},
+        hash::Hasher,
         kdf,
         traits::BlobSaver,
     },
@@ -309,22 +310,19 @@ impl BundleWriter {
             ecc_payload.extend_from_slice(&(p as u16).to_le_bytes());
             ecc_payload.extend_from_slice(&(data_len as u64).to_le_bytes());
             ecc_payload.extend_from_slice(&(layouts.len() as u32).to_le_bytes());
-            ecc_payload.extend_from_slice(
-                ID::from_content(&{
-                    let current = file.stream_position()?;
-                    file.seek(std::io::SeekFrom::Start(data_start))?;
-                    let mut data = vec![0u8; data_len];
-                    file.read_exact(&mut data)?;
-                    file.seek(std::io::SeekFrom::Start(current))?;
-                    data
-                })
-                .as_slice(),
-            );
+            // Hash of the protected data section, filled in after streaming
+            // the stripes below. Reserving the slot avoids reading the whole
+            // data section into memory just to hash it.
+            let protected_hash_offset = ecc_payload.len();
+            ecc_payload.extend_from_slice(&[0u8; 32]);
 
             let rs = ecc::reed_solomon::ReedSolomon::new(k, p).map_err(|_| {
                 MapacheError::Crypto(format!("invalid ECC shard count: k={k}, p={p}"))
             })?;
 
+            // Encode stripes and hash the data section in a single sequential
+            // pass, keeping only one stripe in memory at a time.
+            let mut data_hasher = Hasher::new();
             file.seek(std::io::SeekFrom::Start(data_start))?;
             for stripe in &layouts {
                 let sk = stripe.data_shards;
@@ -334,6 +332,7 @@ impl BundleWriter {
                 let mut shard_buf = vec![0u8; shard_bytes];
                 let copy_len = stripe.data_bytes.min(shard_bytes);
                 file.read_exact(&mut shard_buf[..copy_len])?;
+                data_hasher.update(&shard_buf[..copy_len]);
 
                 let data_refs: Vec<&[u8]> = shard_buf.chunks(ecc::SHARD_SIZE).take(sk).collect();
 
@@ -359,6 +358,8 @@ impl BundleWriter {
                 }
                 ecc_payload.extend_from_slice(&parity_buf);
             }
+            ecc_payload[protected_hash_offset..protected_hash_offset + 32]
+                .copy_from_slice(data_hasher.finalize().as_slice());
 
             let encrypted_ecc = self
                 .storage

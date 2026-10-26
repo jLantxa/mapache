@@ -311,8 +311,27 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, Ecc
 /// marks bad shards as erasures, and calls RS to reconstruct them.
 /// Returns an error if reconstruction fails or erasures exceed parity capacity.
 ///
-/// Stripes are processed in parallel using rayon for multi-core acceleration.
+/// This convenience wrapper allocates a repaired copy. Callers that already
+/// own the data should prefer [`ecc_decode_in_place`] to avoid the second
+/// full-size buffer.
+#[allow(dead_code)] // used in tests
 pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, EccDecodeError> {
+    let mut repaired = data.to_vec();
+    ecc_decode_in_place(&mut repaired, ecc_payload)?;
+    Ok(repaired)
+}
+
+/// Decode (verify + repair) data in place using a parity-only sidecar.
+///
+/// Stripes are processed in parallel using rayon for multi-core acceleration.
+/// Only one stripe's shards are buffered per worker; the repaired data stays
+/// in the caller-provided buffer.
+///
+/// Returns `true` when at least one data shard was reconstructed.
+pub(crate) fn ecc_decode_in_place(
+    data: &mut [u8],
+    ecc_payload: &[u8],
+) -> Result<bool, EccDecodeError> {
     let hdr = parse_header(ecc_payload).ok_or(EccDecodeError::InvalidHeader)?;
 
     if data.len() != hdr.original_len || hdr.k == 0 || hdr.p == 0 || hdr.k + hdr.p > 256 {
@@ -339,7 +358,6 @@ pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, Ecc
     let stripe_meta: Vec<StripeMetadata> = {
         let mut metas = Vec::with_capacity(layouts.len());
         let mut sidecar_offset = HEADER_SIZE;
-        let mut data_offset = 0usize;
 
         for stripe in &layouts {
             let k = stripe.data_shards;
@@ -372,62 +390,47 @@ pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, Ecc
             metas.push(StripeMetadata {
                 k,
                 p,
-                data_offset,
                 data_crcs,
                 parity_crcs,
                 parity_data_start,
-                data_bytes: stripe.data_bytes,
             });
 
             sidecar_offset += stripe_payload_size(k, p);
-            data_offset += stripe.data_bytes;
         }
         metas
     };
 
-    // Parallel stripe processing
-    // Each stripe is cloned into its own buffer so rayon tasks can operate
-    // on disjoint memory without requiring `&mut` borrows of `out`.
-    let mut stripe_buffers: Vec<Vec<u8>> = stripe_meta
-        .iter()
-        .map(|meta| {
-            let mut buf = vec![0u8; SHARD_SIZE * meta.k];
-            let copy_len = meta.data_bytes.min(buf.len());
-            buf[..copy_len].copy_from_slice(&data[meta.data_offset..meta.data_offset + copy_len]);
-            buf
-        })
-        .collect();
-
-    use rayon::prelude::*;
-    stripe_meta
-        .par_iter()
-        .zip(stripe_buffers.par_iter_mut())
-        .enumerate()
-        .try_for_each(|(stripe_idx, (meta, stripe_data))| {
-            process_stripe(stripe_idx, meta, stripe_data, ecc_payload, &rs)
-        })?;
-
-    // Assemble output from repaired stripe buffers.
-    let mut out = Vec::with_capacity(data.len());
-    for (meta, stripe_data) in stripe_meta.iter().zip(&stripe_buffers) {
-        let copy_len = meta.data_bytes.min(stripe_data.len());
-        out.extend_from_slice(&stripe_data[..copy_len]);
+    // Parallel in-place repair. Every stripe occupies `k` shard slots, so the
+    // data section can be split into disjoint chunks and repaired concurrently.
+    let chunk_size = hdr.k * SHARD_SIZE;
+    if data.chunks_mut(chunk_size).count() != stripe_meta.len() {
+        return Err(EccDecodeError::InvalidHeader);
     }
 
+    use rayon::prelude::*;
+    let repaired_data = std::sync::atomic::AtomicBool::new(false);
+    data.par_chunks_mut(chunk_size)
+        .zip(stripe_meta.par_iter())
+        .enumerate()
+        .try_for_each(|(stripe_idx, (stripe_data, meta))| {
+            if process_stripe(stripe_idx, meta, stripe_data, ecc_payload, &rs)? {
+                repaired_data.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        })?;
+
     let expected_id = ID::from_bytes(hdr.protected_hash);
-    if ID::from_content(&out) != expected_id {
+    if ID::from_content(data) != expected_id {
         return Err(EccDecodeError::ProtectedDataMismatch);
     }
 
-    Ok(out)
+    Ok(repaired_data.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Pre-computed per-stripe metadata for parallel decode.
 struct StripeMetadata {
     k: usize,
     p: usize,
-    data_offset: usize,
-    data_bytes: usize,
     data_crcs: Vec<u32>,
     parity_crcs: Vec<u32>,
     parity_data_start: usize,
@@ -436,14 +439,15 @@ struct StripeMetadata {
 /// Process a single stripe: verify CRCs, mark erasures, reconstruct if needed.
 ///
 /// Each stripe operates on a disjoint mutable slice of the output buffer,
-/// so it can be called from parallel rayon tasks.
+/// so it can be called from parallel rayon tasks. Returns `true` when at
+/// least one data shard was reconstructed.
 fn process_stripe(
     stripe_idx: usize,
     meta: &StripeMetadata,
     stripe_data: &mut [u8],
     ecc_payload: &[u8],
     rs: &ReedSolomon,
-) -> Result<(), EccDecodeError> {
+) -> Result<bool, EccDecodeError> {
     let k = meta.k;
     let p = meta.p;
 
@@ -452,6 +456,7 @@ fn process_stripe(
 
     // Load data shards from stripe slice, verify CRC32.
     let mut erasure_count = 0usize;
+    let mut repaired_data = false;
     for (i, expected_crc) in meta.data_crcs.iter().enumerate().take(k) {
         let start = i * SHARD_SIZE;
         let end = (start + SHARD_SIZE).min(stripe_data.len());
@@ -465,6 +470,7 @@ fn process_stripe(
         } else {
             shards.push(None);
             erasure_count += 1;
+            repaired_data = true;
         }
     }
 
@@ -504,7 +510,7 @@ fn process_stripe(
     }
 
     let _ = stripe_idx; // used for tracing in debug builds if needed
-    Ok(())
+    Ok(repaired_data)
 }
 
 /// Validate data CRCs against the sidecar after repair.
@@ -753,6 +759,23 @@ mod tests {
 
         let decoded = ecc_decode(&corrupted_data, &payload).unwrap();
         assert_eq!(decoded, data, "should repair one corrupt data shard");
+    }
+
+    #[test]
+    fn in_place_repair_reports_data_reconstruction() {
+        let data = vec![0xABu8; SHARD_SIZE * 4];
+        let payload = ecc_encode(&data, 4, 2).unwrap();
+
+        // Intact data: decode succeeds without reporting a repair.
+        let mut intact = data.clone();
+        assert!(!ecc_decode_in_place(&mut intact, &payload).unwrap());
+        assert_eq!(intact, data);
+
+        // Corrupt one data shard: it is repaired in the caller's buffer.
+        let mut corrupted = data.clone();
+        corrupted[0] ^= 0xFF;
+        assert!(ecc_decode_in_place(&mut corrupted, &payload).unwrap());
+        assert_eq!(corrupted, data, "in-place repair should restore the data");
     }
 
     #[test]

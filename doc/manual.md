@@ -292,9 +292,12 @@ Key properties:
 
 - **No data duplication** — sidecars store only parity shards, not the original
   data. A 50% ECC overhead adds ~50% of the data size in parity storage.
-- **Per-stripe processing** — data is split into stripes of up to 200 shards.
-  Each stripe is independently encoded, limiting memory to ~800 KB regardless
-  of pack size.
+- **Stripe-based encoding** — data is split into 4 KiB shards and encoded in
+  stripes (100 data shards by default). Encoding and repair work stripe by
+  stripe, but the protected file and its parity are still held in memory
+  while the sidecar is built or a file is repaired. Peak memory therefore
+  scales with the largest protected file plus the configured ECC overhead,
+  not with the shard size alone.
 - **Transparent to hashing** — the BLAKE3 hash is computed on the original pack
   content. ECC sidecars are invisible to the content-addressable layer.
 - **Compressed and encrypted** — like all repository objects, ECC sidecars are
@@ -1379,6 +1382,8 @@ its parity sidecar. The sidecar is decoded (decompressed + decrypted) before
 use. Corrupt data shards are reconstructed from the remaining intact shards
 using Reed-Solomon erasure coding. Repair reports all results but never aborts
 early — it attempts to repair every pack regardless of individual failures.
+Repair reads the full pack and its sidecar into memory, so it needs roughly
+the pack size plus the ECC overhead in available RAM.
 
 Seven outcome cases per pack:
 
@@ -1565,6 +1570,11 @@ mapache bundle -x bundle.mapache -o /tmp/extract
 If `-o` is omitted, extracts to the current directory. If the bundle was created
 with ECC (`--ecc`), corrupted blobs are automatically repaired during extraction
 using Reed-Solomon erasure coding — no manual intervention needed.
+
+> **Memory note:** ECC encoding and repair operate on the bundle's data section
+> as a whole. Creating a bundle with `--ecc`, or repairing a corrupt one, needs
+> memory proportional to the data section plus its parity overhead. Bundles
+> without ECC are streamed and do not have this requirement.
 
 ### Export a Snapshot to a Bundle
 

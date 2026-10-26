@@ -816,13 +816,29 @@ manually with `vssadmin delete shadows /all`.
 
 ### Exclusions
 
-Exclusions support glob patterns (`**`, `*`, `?`) as well as literal paths.
-Non-glob paths are normalized to absolute paths; glob patterns are kept as-is
-for matching. They can be specified inline or in a file:
+Exclusions accept literal paths and glob patterns (`**`, `*`, `?`).
+Glob matching is per path component: `*` and `?` never cross a `/`. A pattern
+without `**` therefore applies at one directory depth: for `restore`,
+`--exclude "*.log"` excludes only `*.log` files at the snapshot root. Use `**`
+to span any number of directories; `**/*.log` matches `a/b/c.log` at any depth.
+Excluding a directory also excludes everything below it.
+
+Non-glob paths are resolved to absolute paths when the options are parsed,
+relative to the current working directory (`~` is expanded). This matters for
+`snapshot` and `bundle`, where the matched paths are absolute:
+`--exclude "target"` only excludes `<current directory>/target`, which may not
+be the `target` directory of the source you are backing up. Use an absolute,
+`~`, or `**/` glob path instead. `restore` and `amend` match paths relative to
+the snapshot root, so the same `**/` guidance applies.
+
+They can be specified inline or in a file:
 
 ```bash
 # Inline exclusions
 mapache snapshot ~/project --exclude "~/project/target","~/project/.git"
+
+# Exclude the same name at any depth
+mapache snapshot ~/project --exclude "**/target","**/.git"
 
 # Exclusion file (one path per line)
 mapache snapshot ~/project --exclude-file ~/.mapache-exclude
@@ -986,14 +1002,30 @@ compares modification times.
 
 ### Path Filtering
 
+Restore include and exclude paths are matched against paths **inside the
+snapshot**, relative to the snapshot root. The snapshot root depends on how the
+snapshot was created:
+
+```bash
+# Snapshot root is the parent (~), stored paths are project/...
+mapache snapshot ~/project
+
+# Snapshot root is ~/project, stored paths are src/..., docs/...
+mapache snapshot ~/project --as-root
+```
+
 Restore supports both include and exclude filtering:
 
 ```bash
-# Restore only specific paths
-mapache restore --target /tmp/restore --include "docs/,src/main.rs"
+# From a normal snapshot of ~/project, restore docs and src/main.rs
+mapache restore --target /tmp/restore \
+  --include "project/docs,project/src/main.rs"
+
+# Include globs are matched against snapshot paths; ** spans directories
+mapache restore --target /tmp/restore --include "**/*.log"
 
 # Exclude certain paths
-mapache restore --target /tmp/restore --exclude "*.log,*.tmp"
+mapache restore --target /tmp/restore --exclude "**/*.log,**/*.tmp"
 
 # Use filter files
 mapache restore --target /tmp/restore --include-file restore-list.txt
@@ -1001,13 +1033,20 @@ mapache restore --target /tmp/restore --include-file restore-list.txt
 
 ### Strip Prefix
 
-When restoring a subset of paths, `--strip-prefix` removes the common ancestor
-directory:
+`--strip-prefix` removes the longest common prefix of the `--include` paths.
+It has no effect without includes.
 
 ```bash
-# Snapshot contains: /home/user/project/src/main.rs
-# Without --strip-prefix: /tmp/restore/home/user/project/src/main.rs
-# With --strip-prefix:    /tmp/restore/src/main.rs
+# Snapshot (created normally from ~/project) contains:
+#   project/src/main.rs, project/docs/guide.md
+mapache restore --target /tmp/restore \
+  --include "project/src/main.rs,project/docs" --strip-prefix
+# Restores: /tmp/restore/src/main.rs and /tmp/restore/docs/guide.md
+
+# A single include strips the file's parent directory as well
+mapache restore --target /tmp/restore \
+  --include "project/src/main.rs" --strip-prefix
+# Restores: /tmp/restore/main.rs
 ```
 
 ### Delete Mode
@@ -1504,8 +1543,8 @@ transferred to other systems.
 # Create a bundle from files/directories
 mapache bundle -b PATH [PATH...] -o bundle.mapache
 
-# With exclusions
-mapache bundle -b ~/project -o project.mapache -e "*.log" -e "tmp/"
+# With exclusions (bundle paths are absolute, so use ** to match at any depth)
+mapache bundle -b ~/project -o project.mapache -e "**/*.log" -e "**/tmp"
 
 # Custom compression
 mapache bundle -b ~/Documents -o docs.mapache --compression best
@@ -1569,7 +1608,7 @@ Bundle-specific options:
 |---|---|
 | `--export-snapshot <ID>` | Export mode: export snapshot to a bundle (requires `-r`) |
 | `-i, --import` | Import mode: import bundle as snapshot (requires `-r`) |
-| `-e, --exclude <GLOB>` | Glob patterns to exclude (bundle mode only) |
+| `-e, --exclude <GLOB>` | Exclude patterns (bundle mode only; `**/` spans directories) |
 | `--as-root` | Use a single directory as the bundle root (bundle mode only) |
 | `--readers <N>` | Parallel readers (default: 4) |
 | `--ecc <0-100>` | Enable Reed-Solomon ECC with given overhead percentage |
@@ -1642,7 +1681,7 @@ mapache amend <SNAPSHOT_ID> -r <URL>
 mapache amend <SNAPSHOT_ID_1> <SNAPSHOT_ID_2> -r <URL>
 
 # Add exclusions post-hoc (rebuilds tree)
-mapache amend --exclude "*.log" -r <URL>
+mapache amend --exclude "**/*.log" -r <URL>
 
 # Apply to all snapshots
 mapache amend --all --tags "archived" -r <URL>
@@ -2197,7 +2236,7 @@ mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
   --export-snapshot <SNAPSHOT>  Export mode: export snapshot (latest, prefix, or ID; requires -r)
   -m, --mount             Mount mode (FUSE, Unix only)
   -o, --output <PATH>     Bundle file (-a, --export-snapshot) or destination (-x)
-  -e, --exclude <GLOB>    Exclude globs (bundle mode)
+  -e, --exclude <GLOB>    Exclude patterns (bundle mode; **/ spans directories)
   --as-root               Use a single directory as the bundle root (bundle mode)
   --readers <N>           Parallel readers (default: 4)
   --ecc <0-100>           Enable Reed-Solomon ECC with given overhead percentage

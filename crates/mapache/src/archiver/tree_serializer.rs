@@ -107,6 +107,7 @@ pub(crate) struct TreeSerializer {
     pending_trees: HashMap<PathBuf, PendingTree>,
     snapshot_root_path: PathBuf,
     root_tree_id: Option<ID>,
+    root_node_count: usize,
 }
 
 impl TreeSerializer {
@@ -120,11 +121,19 @@ impl TreeSerializer {
             pending_trees: init_pending_trees(&snapshot_root_path, paths),
             snapshot_root_path,
             root_tree_id: None,
+            root_node_count: 0,
         }
     }
 
     pub(crate) fn root_tree(&self) -> Option<ID> {
         self.root_tree_id
+    }
+
+    /// Number of direct children in the finalized root tree.
+    ///
+    /// Zero means the snapshot captured no items at all.
+    pub(crate) fn root_node_count(&self) -> usize {
+        self.root_node_count
     }
 
     pub(crate) async fn handle_processed_item(
@@ -230,15 +239,16 @@ impl TreeSerializer {
         }
 
         let mut completed_tree = Tree::new(pending_tree.children);
+        let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
+        let completed_node_count = completed_tree.nodes.len();
 
         let tree_id = completed_tree
             .save_to_store(self.blob_saver.clone())
             .await?;
 
-        let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
-
         if is_root {
             self.root_tree_id = Some(tree_id);
+            self.root_node_count = completed_node_count;
             return Ok(None);
         }
 

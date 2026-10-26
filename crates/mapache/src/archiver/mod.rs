@@ -154,6 +154,7 @@ impl PipelineStatus {
 /// Result of the archiver pipeline.
 pub(crate) struct PipelineResult {
     pub root_tree_id: common::ID,
+    pub root_node_count: usize,
     pub summary: progress::SnapshotProcessSummary,
 }
 
@@ -350,6 +351,7 @@ pub(crate) async fn run_pipeline(
     let root_tree_id = tree_serializer
         .root_tree()
         .ok_or_else(|| error::MapacheError::Internal("root tree ID not set".to_string()))?;
+    let root_node_count = tree_serializer.root_node_count();
 
     status.signal_finished();
     let mut summary = status.progress.summary();
@@ -357,6 +359,7 @@ pub(crate) async fn run_pipeline(
 
     Ok(PipelineResult {
         root_tree_id,
+        root_node_count,
         summary,
     })
 }
@@ -624,6 +627,26 @@ pub(crate) async fn snapshot(
 
     let mut summary = progress.summary();
     summary.skipped_items = status.skipped_items.load(Ordering::Relaxed);
+
+    // An empty tree is almost always a mistake (wrong source path or an
+    // exclusion that is too broad), so make it visible in every UI instead of
+    // silently saving an empty snapshot.
+    if result.root_node_count == 0 {
+        let message = if summary.skipped_items == 0 {
+            "snapshot contains no items: nothing was captured. Check the source paths and \
+             exclusion filters (--exclude, --exclude-if-present, --exclude-larger-than)."
+                .to_string()
+        } else {
+            format!(
+                "snapshot contains no items: {} source item(s) were skipped. Check the source \
+                 paths and exclusion filters.",
+                summary.skipped_items
+            )
+        };
+        tracing::warn!(target: "archiver", "{message}");
+        emit_event(&event_sender, Event::Backup(BackupEvent::Warning(message)));
+    }
+
     emit_event(
         &event_sender,
         Event::Backup(BackupEvent::Finished(summary.clone())),

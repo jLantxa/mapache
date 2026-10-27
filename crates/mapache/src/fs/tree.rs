@@ -28,6 +28,7 @@ use crate::{
         node::Node,
     },
     repository::repo::Repository,
+    ui::events::{BackupEvent, Event, EventSender, emit_event},
 };
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -150,6 +151,53 @@ struct FSNodeState {
     with_atime: bool,
     one_file_system: bool,
     skipped_items: Option<Arc<AtomicU64>>,
+    scan_progress: Option<ScanProgress>,
+}
+
+struct ScanProgress {
+    event_sender: EventSender,
+    total_items: u64,
+    total_bytes: u64,
+}
+
+impl ScanProgress {
+    fn new(event_sender: EventSender) -> Self {
+        emit_event(&event_sender, Event::Backup(BackupEvent::ScanStarted));
+        Self {
+            event_sender,
+            total_items: 0,
+            total_bytes: 0,
+        }
+    }
+
+    fn record(&mut self, node: &Node) {
+        let size = if node.is_file() {
+            node.metadata.size
+        } else {
+            0
+        };
+        self.total_items += 1;
+        self.total_bytes += size;
+        emit_event(
+            &self.event_sender,
+            Event::Backup(BackupEvent::ScanProgress {
+                items: 1,
+                bytes: size,
+            }),
+        );
+    }
+}
+
+impl Drop for ScanProgress {
+    fn drop(&mut self) {
+        emit_event(
+            &self.event_sender,
+            Event::Backup(BackupEvent::ScanFinished {
+                total_items: self.total_items,
+                total_bytes: self.total_bytes,
+            }),
+        );
+    }
 }
 
 /// A depth‑first pre‑order filesystem stream.
@@ -173,6 +221,7 @@ impl FSNodeStream {
             false,
             None,
             WalkOptions::default(),
+            None,
         )
         .await
     }
@@ -192,6 +241,46 @@ impl FSNodeStream {
             one_file_system,
             Some(skipped_items),
             walk_options,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn from_paths_with_progress(
+        paths: Vec<PathBuf>,
+        exclude_paths: Vec<PathBuf>,
+        with_atime: bool,
+        event_sender: EventSender,
+    ) -> Result<Self> {
+        Self::from_paths_inner(
+            paths,
+            exclude_paths,
+            with_atime,
+            false,
+            None,
+            WalkOptions::default(),
+            Some(ScanProgress::new(event_sender)),
+        )
+        .await
+    }
+
+    pub(crate) async fn from_paths_tracking_skips_with_progress(
+        paths: Vec<PathBuf>,
+        exclude_paths: Vec<PathBuf>,
+        with_atime: bool,
+        one_file_system: bool,
+        skipped_items: Arc<AtomicU64>,
+        walk_options: WalkOptions,
+        event_sender: EventSender,
+    ) -> Result<Self> {
+        Self::from_paths_inner(
+            paths,
+            exclude_paths,
+            with_atime,
+            one_file_system,
+            Some(skipped_items),
+            walk_options,
+            Some(ScanProgress::new(event_sender)),
         )
         .await
     }
@@ -203,6 +292,7 @@ impl FSNodeStream {
         one_file_system: bool,
         skipped_items: Option<Arc<AtomicU64>>,
         walk_options: WalkOptions,
+        scan_progress: Option<ScanProgress>,
     ) -> Result<Self> {
         tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?}, with_atime: {})", paths, exclude_paths, with_atime);
         let mut exclude_paths = exclude_paths;
@@ -294,6 +384,7 @@ impl FSNodeStream {
             with_atime,
             one_file_system,
             skipped_items,
+            scan_progress,
         };
 
         Ok(Self {
@@ -380,6 +471,10 @@ impl FSNodeStream {
                         }
                     },
                 };
+
+                if let Some(scan_progress) = &mut state.scan_progress {
+                    scan_progress.record(&node);
+                }
 
                 let mut num_children = 0;
 
@@ -1103,6 +1198,60 @@ mod tests {
                 assert_eq!(stats.total_bytes, if exclude { 5 } else { 8 });
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fs_node_stream_progress_counts_source_items_only() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let root = temp_dir.path();
+        create_tree(root)?;
+        std::fs::write(root.join("dir_a/file0"), b"abc")?;
+        std::fs::write(root.join("dir_b/file2"), b"12345")?;
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_for_sender = events.clone();
+        let event_sender: EventSender = Arc::new(move |event| {
+            events_for_sender.lock().unwrap().push(event);
+        });
+        let fs_stream = FSNodeStream::from_paths_with_progress(
+            vec![root.join("dir_a/file0"), root.join("dir_b/file2")],
+            Vec::new(),
+            false,
+            event_sender,
+        )
+        .await?;
+        let nodes: Vec<_> = fs_stream.collect().await;
+        assert!(nodes.iter().all(Result::is_ok));
+
+        let events = events.lock().unwrap();
+        assert!(matches!(
+            events.first(),
+            Some(Event::Backup(BackupEvent::ScanStarted))
+        ));
+
+        let progress_totals = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Backup(BackupEvent::ScanProgress { items, bytes }) => Some((*items, *bytes)),
+                _ => None,
+            })
+            .fold((0, 0), |(items, bytes), (item_delta, byte_delta)| {
+                (items + item_delta, bytes + byte_delta)
+            });
+        let finished_totals = events
+            .iter()
+            .find_map(|event| match event {
+                Event::Backup(BackupEvent::ScanFinished {
+                    total_items,
+                    total_bytes,
+                }) => Some((*total_items, *total_bytes)),
+                _ => None,
+            })
+            .expect("scan should finish");
+
+        assert_eq!(progress_totals, (2, 8));
+        assert_eq!(finished_totals, progress_totals);
         Ok(())
     }
 

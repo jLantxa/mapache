@@ -14,7 +14,7 @@ use crate::{
     archiver::{
         PipelineStatus, SnapshotOptions,
         progress::{SnapshotProcessSummary, SnapshotProgress},
-        run_pipeline, spawn_scanner_task,
+        run_pipeline,
     },
     backend::{self, StorageHint, WriteContents},
     bundle::{
@@ -33,9 +33,7 @@ use crate::{
         traits::{BlobLoader, BlobSaver},
     },
     fs::{
-        calculate_lcp,
-        filter::WalkOptions,
-        get_absolute_normalized_path,
+        calculate_lcp, get_absolute_normalized_path,
         tree::{FSNodeStream, NodeDiff, Tree},
     },
     repository::{self, lock::LockHandle, manifest::EccConfig, repo::Repository},
@@ -456,10 +454,11 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         hostname: None,
     };
 
-    let fs_stream = FSNodeStream::from_paths(
+    let fs_stream = FSNodeStream::from_paths_with_progress(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
         false,
+        event_sender.clone(),
     )
     .await?;
 
@@ -471,17 +470,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         event_sender.clone(),
         shutdown_signal.clone(),
     ));
-
-    // Background Scanner (progress estimation, runs concurrently with processing)
-    let scanner_handle = spawn_scanner_task(
-        false,
-        snapshot_options.absolute_source_paths.clone(),
-        exclude_paths.clone(),
-        WalkOptions::default(),
-        false,
-        status.clone(),
-        event_sender.clone(),
-    );
 
     let bundle_writer = Arc::new(
         BundleWriter::new(
@@ -549,14 +537,10 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     )
     .await;
 
-    // Wait for producer and scanner
+    // Wait for producer
     if let Err(e) = producer_task.await {
         tracing::error!(target: "bundle", "Producer task panicked: {e}");
     }
-    if let Err(e) = scanner_handle.await {
-        tracing::warn!(target: "bundle", "Scanner task panicked: {e}");
-    }
-
     let summary = progress.summary();
 
     match pipeline_result {

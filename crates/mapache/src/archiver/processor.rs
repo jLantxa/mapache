@@ -94,8 +94,8 @@ pub(crate) struct ItemContext<'a> {
 /// When `bufs` is `Some`, the small file buffer is reused to avoid per-file allocation.
 pub(crate) fn process_item_sync(
     path: &Path,
-    prev_node: Option<&StreamNode>,
-    next_node: Option<&StreamNode>,
+    prev_node: Option<StreamNode>,
+    next_node: Option<StreamNode>,
     diff_type: NodeDiff,
     ctx: &mut ItemContext<'_>,
 ) -> Result<Option<StreamNode>> {
@@ -113,24 +113,24 @@ pub(crate) fn process_item_sync(
         }),
     );
 
+    let mut deleted_node = None;
     let out = match diff_type {
         NodeDiff::Deleted => {
-            let _prev = prev_node.ok_or_else(|| {
+            let prev = prev_node.ok_or_else(|| {
                 MapacheError::Internal(format!(
                     "inconsistent state: Deleted diff but no prev_node for {path:?}"
                 ))
             })?;
+            deleted_node = Some(prev.node);
             None
         }
 
         NodeDiff::Unchanged => {
-            let mut next = next_node
-                .ok_or_else(|| {
-                    MapacheError::Internal(format!(
-                        "inconsistent state: Unchanged diff but no next_node for {path:?}"
-                    ))
-                })?
-                .clone();
+            let mut next = next_node.ok_or_else(|| {
+                MapacheError::Internal(format!(
+                    "inconsistent state: Unchanged diff but no next_node for {path:?}"
+                ))
+            })?;
             let prev = prev_node.ok_or_else(|| {
                 MapacheError::Internal(format!(
                     "inconsistent state: Unchanged diff but no prev_node for {path:?}"
@@ -149,19 +149,17 @@ pub(crate) fn process_item_sync(
             // metadata-only changes (chmod/chown/xattr/flags) are recorded
             // instead of being clobbered by the previous snapshot.
             if next.node.is_file() {
-                next.node.blobs = prev.node.blobs.clone();
+                next.node.blobs = prev.node.blobs;
             }
             Some(next)
         }
 
         NodeDiff::New | NodeDiff::Changed => {
-            let mut next = next_node
-                .ok_or_else(|| {
-                    MapacheError::Internal(format!(
-                        "inconsistent state: New/Changed diff but no next_node for {path:?}"
-                    ))
-                })?
-                .clone();
+            let mut next = next_node.ok_or_else(|| {
+                MapacheError::Internal(format!(
+                    "inconsistent state: New/Changed diff but no next_node for {path:?}"
+                ))
+            })?;
 
             if next.node.is_file() {
                 let file_size = next.node.metadata.size;
@@ -261,11 +259,10 @@ pub(crate) fn process_item_sync(
         }
     };
 
-    let reported_node = out.as_ref().map(|node| &node.node).or_else(|| {
-        matches!(diff_type, NodeDiff::Deleted)
-            .then(|| prev_node.map(|node| &node.node))
-            .flatten()
-    });
+    let reported_node = out
+        .as_ref()
+        .map(|node| &node.node)
+        .or(deleted_node.as_ref());
 
     if let Some(node) = reported_node {
         report_node_diff(node, diff_type, ctx.progress);

@@ -37,7 +37,6 @@ use crate::{
     fs::{
         filter::WalkOptions,
         node::{Metadata, Node, NodeType},
-        scanner::spawn_background_scanner,
         tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
     },
     repository::{
@@ -92,9 +91,6 @@ pub struct SnapshotOptions<'a> {
 /// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
 /// It tracks progress, completion status, and fatal errors.
 pub(crate) struct PipelineStatus {
-    /// Signal that the snapshot is finished.
-    finished_flag: AtomicBool,
-
     /// This error flag signals a fatal error to all running tasks so they can
     /// abort execution early. Only fatal, unrecoverable errors should be signaled.
     fatal_error_flag: AtomicBool,
@@ -114,7 +110,6 @@ impl PipelineStatus {
         shutdown_signal: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            finished_flag: AtomicBool::new(false),
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
             shutdown_signal,
@@ -122,10 +117,6 @@ impl PipelineStatus {
             event_sender,
             progress,
         }
-    }
-
-    pub(crate) fn signal_finished(&self) {
-        self.finished_flag.store(true, Ordering::Release);
     }
 
     pub(crate) fn signal_fatal(&self, err: error::MapacheError) {
@@ -139,10 +130,6 @@ impl PipelineStatus {
             tracing::error!(target: "archiver", "Fatal error in pipeline: {err:#}");
             *self.first_error.lock() = Some(err);
         }
-    }
-
-    pub(crate) fn is_finished(&self) -> bool {
-        self.finished_flag.load(Ordering::Relaxed)
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -273,8 +260,8 @@ pub(crate) async fn run_pipeline(
                 };
                 match processor::process_item_sync(
                     path.as_path(),
-                    prev_node.as_ref(),
-                    next_node.as_ref(),
+                    prev_node,
+                    next_node,
                     diff,
                     &mut ctx,
                 ) {
@@ -353,7 +340,6 @@ pub(crate) async fn run_pipeline(
         .ok_or_else(|| error::MapacheError::Internal("root tree ID not set".to_string()))?;
     let root_node_count = tree_serializer.root_node_count();
 
-    status.signal_finished();
     let mut summary = status.progress.summary();
     summary.skipped_items = status.skipped_items.load(Ordering::Relaxed);
 
@@ -407,48 +393,6 @@ fn spawn_forwarder(
     })
 }
 
-/// Spawns the background scanner task used for progress estimation.
-pub(crate) fn spawn_scanner_task(
-    no_scan: bool,
-    absolute_source_paths: Vec<PathBuf>,
-    exclude_paths: Vec<PathBuf>,
-    walk_options: WalkOptions,
-    one_file_system: bool,
-    status: Arc<PipelineStatus>,
-    event_sender: EventSender,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if no_scan {
-            return;
-        }
-
-        tracing::info!(target: "archiver", "Starting background scanner");
-        let status_clone = status.clone();
-        let handle = spawn_background_scanner(
-            absolute_source_paths,
-            exclude_paths,
-            walk_options,
-            one_file_system,
-            event_sender,
-            move || status_clone.is_failed() || status_clone.is_finished(),
-        );
-
-        match handle.await {
-            Ok(Ok(_stats)) => {
-                tracing::info!(target: "archiver", "Background scanner finished");
-            }
-            Ok(Err(e)) => {
-                status.signal_fatal(error::MapacheError::Internal(e));
-            }
-            Err(e) => {
-                status.signal_fatal(error::MapacheError::Internal(format!(
-                    "scanner task join error: {e}"
-                )));
-            }
-        }
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Snapshot entry point
 // ---------------------------------------------------------------------------
@@ -472,18 +416,7 @@ pub(crate) async fn snapshot(
 
     let is_stdin = snapshot_options.stdin;
 
-    let scanner_handle = if !is_stdin {
-        tracing::info!(target: "archiver", "Starting background scanner");
-        Some(spawn_scanner_task(
-            snapshot_options.no_scan,
-            snapshot_options.absolute_source_paths.clone(),
-            snapshot_options.exclude_paths.clone(),
-            snapshot_options.walk_options.clone(),
-            snapshot_options.one_file_system,
-            status.clone(),
-            event_sender.clone(),
-        ))
-    } else {
+    if is_stdin {
         tracing::info!(target: "archiver", "Reading backup data from stdin (scanner skipped)");
         emit_event(
             &event_sender,
@@ -492,8 +425,7 @@ pub(crate) async fn snapshot(
                 total_bytes: 0,
             }),
         );
-        None
-    };
+    }
 
     // ------------------------------------------------------------------
     // Stage 1: Diff Producer Task
@@ -533,15 +465,28 @@ pub(crate) async fn snapshot(
         })
     } else {
         tracing::info!(target: "archiver", "Setting up input streams");
-        let fs_stream = FSNodeStream::from_paths_tracking_skips(
-            snapshot_options.absolute_source_paths.clone(),
-            snapshot_options.exclude_paths.clone(),
-            snapshot_options.with_atime,
-            snapshot_options.one_file_system,
-            status.skipped_items.clone(),
-            snapshot_options.walk_options.clone(),
-        )
-        .await?;
+        let fs_stream = if snapshot_options.no_scan {
+            FSNodeStream::from_paths_tracking_skips(
+                snapshot_options.absolute_source_paths.clone(),
+                snapshot_options.exclude_paths.clone(),
+                snapshot_options.with_atime,
+                snapshot_options.one_file_system,
+                status.skipped_items.clone(),
+                snapshot_options.walk_options.clone(),
+            )
+            .await?
+        } else {
+            FSNodeStream::from_paths_tracking_skips_with_progress(
+                snapshot_options.absolute_source_paths.clone(),
+                snapshot_options.exclude_paths.clone(),
+                snapshot_options.with_atime,
+                snapshot_options.one_file_system,
+                status.skipped_items.clone(),
+                snapshot_options.walk_options.clone(),
+                event_sender.clone(),
+            )
+            .await?
+        };
 
         let previous_tree_stream = SerializedNodeStream::new(
             repo.clone(),
@@ -595,18 +540,12 @@ pub(crate) async fn snapshot(
     )
     .await;
 
-    // Wait for the producer and scanner to finish
+    // Wait for the producer to finish
     if let Err(e) = producer_task.await {
         tracing::error!(target: "archiver", "Producer task panicked: {e}");
         status.signal_fatal(error::MapacheError::Internal(
             "producer task panicked".to_string(),
         ));
-    }
-
-    if let Some(handle) = scanner_handle
-        && let Err(e) = handle.await
-    {
-        tracing::warn!(target: "archiver", "Scanner task panicked: {e}");
     }
 
     // ------------------------------------------------------------------

@@ -66,50 +66,55 @@ impl ChunkerPool {
             thread::spawn(move || {
                 let mut bufs = ReusableBuffers::default();
 
-                let process =
-                    |job: &ChunkerJob, bufs: &mut ReusableBuffers| -> Result<Option<StreamNode>> {
-                        // IMPORTANT:
-                        // Keep the non-stdin as the favourable case for the branch predictor.
-                        // Also, stdin would only check this once in the whole snapshot.
-                        if !job.is_stdin {
-                            let mut ctx = processor::ItemContext {
-                                blob_saver: job.blob_saver.clone(),
-                                progress: job.progress.as_ref(),
-                                event_sender: &job.event_sender,
-                                shutdown_signal: job.shutdown_signal.as_ref(),
-                                skipped_items: job.skipped_items.as_ref(),
-                                bufs: Some(bufs),
-                            };
-                            processor::process_item_sync(
-                                &job.path,
-                                job.prev_node.as_ref(),
-                                job.next_node.as_ref(),
-                                job.diff_type,
-                                &mut ctx,
-                            )
-                        } else {
-                            processor::process_stdin_sync(
-                                job.next_node.as_ref(),
-                                processor::StdinReader::new(),
-                                job.blob_saver.clone(),
-                                job.progress.as_ref(),
-                                &job.event_sender,
-                                job.shutdown_signal.as_ref(),
-                            )
-                        }
+                let process = |job: Box<ChunkerJob>,
+                               bufs: &mut ReusableBuffers|
+                 -> (PathBuf, Result<Option<StreamNode>>) {
+                    let ChunkerJob {
+                        path,
+                        prev_node,
+                        next_node,
+                        diff_type,
+                        blob_saver,
+                        progress,
+                        event_sender,
+                        shutdown_signal,
+                        skipped_items,
+                        is_stdin,
+                    } = *job;
+
+                    // IMPORTANT:
+                    // Keep the non-stdin as the favourable case for the branch predictor.
+                    // Also, stdin would only check this once in the whole snapshot.
+                    let result = if !is_stdin {
+                        let mut ctx = processor::ItemContext {
+                            blob_saver: blob_saver.clone(),
+                            progress: progress.as_ref(),
+                            event_sender: &event_sender,
+                            shutdown_signal: shutdown_signal.as_ref(),
+                            skipped_items: skipped_items.as_ref(),
+                            bufs: Some(bufs),
+                        };
+                        processor::process_item_sync(
+                            &path, prev_node, next_node, diff_type, &mut ctx,
+                        )
+                    } else {
+                        processor::process_stdin_sync(
+                            next_node.as_ref(),
+                            processor::StdinReader::new(),
+                            blob_saver,
+                            progress.as_ref(),
+                            &event_sender,
+                            shutdown_signal.as_ref(),
+                        )
                     };
+                    (path, result)
+                };
 
                 while let Ok(msg) = rx.recv() {
                     match msg {
                         ChunkerPoolMsg::Single(job) => {
-                            let result = process(&job, &mut bufs);
-                            if tx
-                                .send(ChunkerResult {
-                                    path: job.path,
-                                    result,
-                                })
-                                .is_err()
-                            {
+                            let (path, result) = process(job, &mut bufs);
+                            if tx.send(ChunkerResult { path, result }).is_err() {
                                 break;
                             }
                         }

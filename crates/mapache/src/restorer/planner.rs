@@ -18,7 +18,7 @@ use crate::{
         hash,
     },
     fs::{self as repo_fs, node::Node},
-    repository::index::MasterIndex,
+    repository::index::{BlobLocator, MasterIndex},
     restorer::{Restorer, Strategy},
     ui::events::{Event, RestoreEvent, emit_event},
     utils::size,
@@ -32,8 +32,12 @@ pub(crate) enum RestorePlan {
     /// The node must be fully restored (all blobs).
     FullRestore,
     /// Only the listed blob indices differ from local content and need download.
-    /// All other blobs already match the local file.
-    SelectiveRestore { changed_blobs: Vec<usize> },
+    /// All other blobs already match the local file. Locators are retained from
+    /// verification so the restore loop does not look them up again.
+    SelectiveRestore {
+        changed_blobs: Vec<usize>,
+        blob_locators: Vec<BlobLocator>,
+    },
 }
 
 impl Restorer {
@@ -66,14 +70,17 @@ impl Restorer {
             && local_metadata.len() == node.metadata.size
         {
             match self.verify_file_content(node, restore_path, index).await {
-                Ok(changed) if changed.is_empty() => return Ok(RestorePlan::Skip),
-                Ok(changed) => {
+                Ok((changed, blob_locators)) => {
+                    if changed.is_empty() {
+                        return Ok(RestorePlan::Skip);
+                    }
                     let total = node.blobs.as_ref().map_or(0, |b| b.len());
                     if changed.len() >= total {
                         return Ok(RestorePlan::FullRestore);
                     }
                     return Ok(RestorePlan::SelectiveRestore {
                         changed_blobs: changed,
+                        blob_locators,
                     });
                 }
                 Err(e) => {
@@ -135,10 +142,10 @@ impl Restorer {
         node: &Node,
         local_path: &Path,
         index: Arc<MasterIndex>,
-    ) -> Result<Vec<usize>> {
+    ) -> Result<(Vec<usize>, Vec<BlobLocator>)> {
         let blobs = match &node.blobs {
             Some(b) => b.as_slice(),
-            None => return Ok(Vec::new()),
+            None => return Ok((Vec::new(), Vec::new())),
         };
 
         let local_path = local_path.to_path_buf();
@@ -204,7 +211,7 @@ impl Restorer {
                 }
                 offset += locator.raw_length as u64;
             }
-            Ok(changed)
+            Ok((changed, locators))
         })
         .await
         .map_err(|e| MapacheError::Internal(format!("background task failed: {e}")))?

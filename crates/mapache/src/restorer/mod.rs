@@ -700,35 +700,32 @@ impl Restorer {
                         );
                         continue;
                     }
-                    Ok(RestorePlan::SelectiveRestore { changed_blobs }) => {
-                        // Look up all blobs to compute offsets, but only add changed ones to pack map
-                        let mut file_blobs = Vec::new();
-                        let mut file_ok = true;
-                        if let Some(blobs) = &node.blobs {
-                            let mut offset_in_file = 0u64;
-                            for blob_id in blobs {
-                                match index.get(blob_id).await? {
-                                    Some(locator) => {
-                                        file_blobs.push((*blob_id, locator, offset_in_file));
-                                        offset_in_file += locator.raw_length as u64;
-                                    }
-                                    None => {
-                                        emit_event(
-                                            &self.event_sender,
-                                            Event::Restore(RestoreEvent::Error(format!(
-                                                "Blob {blob_id} not found in index; skipping {}",
-                                                restore_path.display(),
-                                            ))),
-                                        );
-                                        file_ok = false;
-                                        break;
-                                    }
-                                };
-                            }
+                    Ok(RestorePlan::SelectiveRestore {
+                        changed_blobs,
+                        blob_locators,
+                    }) => {
+                        let blobs = node.blobs.as_deref().ok_or_else(|| {
+                            MapacheError::Internal(
+                                "selective restore plan has no blob list".to_string(),
+                            )
+                        })?;
+                        if blobs.len() != blob_locators.len() {
+                            return Err(MapacheError::Internal(format!(
+                                "selective restore has {} locators for {} blobs",
+                                blob_locators.len(),
+                                blobs.len()
+                            )));
                         }
-                        if !file_ok {
-                            continue;
-                        }
+                        let mut offset_in_file = 0u64;
+                        let file_blobs: Vec<_> = blobs
+                            .iter()
+                            .zip(blob_locators)
+                            .map(|(blob_id, locator)| {
+                                let entry = (*blob_id, locator, offset_in_file);
+                                offset_in_file += locator.raw_length as u64;
+                                entry
+                            })
+                            .collect();
 
                         // Emit BlobsSkipped event for incremental restore progress
                         let total_blob_count = node.blobs.as_ref().map_or(0, |b| b.len());

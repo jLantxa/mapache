@@ -1,6 +1,7 @@
 name: build
 
-# Manual release build.
+# Plan-B release build on GitHub-hosted runners. The canonical release build
+# uses the pinned Docker image via tools/docker/build.py.
 #
 # The ref (branch or tag) to build is selected when dispatching the workflow
 # (the GitHub UI's "Use workflow from" selector, or `gh workflow run --ref`).
@@ -40,12 +41,13 @@ jobs:
   # ── Build ──────────────────────────────────────────
   #
   # Every target is built through tools/docker/build-target.sh, the same entry
-  # point used by the canonical Docker build (tools/docker/build.py). The target
-  # definitions below mirror tools/docker/targets 1:1 — keep them in sync.
+  # point as the canonical Docker build. Keep target triples, Rust flags, and
+  # features in sync with tools/docker/targets; tools are runner-specific.
   #
-  # Intentional difference from the Docker build: linux-amd64 is compiled with
-  # zigbuild here (no musl-gcc on the runner) instead of the Docker image's
-  # system musl-gcc. Both produce a static musl binary; the toolchain differs.
+  # Host-specific differences from the canonical Docker build:
+  # - linux-amd64 uses zigbuild here; Docker uses the image's musl-gcc.
+  # - macOS targets build natively on macOS runners; Docker cross-compiles with
+  #   zigbuild and the pinned macOS SDK.
 
   build:
     name: build ${{ matrix.name }}

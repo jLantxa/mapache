@@ -731,10 +731,10 @@ name and its parameters. The `algorithm` discriminator allows extending to
 additional KDFs in the future without changing the on-disk format. Currently the
 only supported value is `"argon2id"`.
 
-> **Note:** The top-level `m`, `t`, `p` fields are deprecated and will be
-> removed in a future version. New keyfiles always write the `kdf`
-> object. Old keyfiles without `kdf` are read by constructing the `kdf` object
-> from the flat fields.
+> **Note:** The top-level `m`, `t`, `p` fields are deprecated. They will be
+> removed in v0.9.0 with v1 repository support. New keyfiles always write
+> the `kdf` object. Old keyfiles without `kdf` are read by constructing the
+> `kdf` object from the flat fields.
 
 ## Local cache
 

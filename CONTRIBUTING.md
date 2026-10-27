@@ -114,9 +114,10 @@ full compiler output to `build/<ref>_<timestamp>/logs/<target>.log`; the
 terminal only shows one start/finish line per target, and the tail of any
 failed build is printed when the run finishes.
 
-The list of targets, their Rust flags, features, and build tool lives in
-`tools/docker/targets`, which is the single source of truth for both this
-workflow and the CI build in `.github/workflows/build.yaml`.
+The canonical release build uses the pinned Docker image and
+`tools/docker/targets`. The workflow in `.github/workflows/build.yaml` is a
+plan-B build on GitHub-hosted runners: it mirrors the target triples, Rust
+flags, and features, while using host-appropriate tools where needed.
 
 ### Feature Flags
 

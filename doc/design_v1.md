@@ -1,8 +1,8 @@
 # Design (Repository Format v1)
 
-> **Note:** This document describes repository format v1, which is deprecated
-> and will be unsupported in a future release. To migrate a v1 repository, run
-> `mapache migrate --repo <path>`.
+> **Note:** This document describes repository format v1. Support for v1
+> repositories is scheduled for removal in v0.9.0. Migrate before upgrading
+> with `mapache migrate -r <path>`.
 
 ## Introduction
 

@@ -62,6 +62,10 @@ Mapache is feature-complete and production-oriented, but relatively new. Users
 should validate their own backup/restore workflows before relying on it for
 mission-critical data.
 
+Repository v1 support is scheduled for removal in v0.9.0. Migrate v1
+repositories before upgrading to that release; see
+[`migrate`](#migrate--migrate-repository-format).
+
 ---
 
 ## 2. Installation
@@ -94,7 +98,7 @@ the [Rust toolchain](https://rustup.rs/) and a C toolchain, but no other
 build dependencies. To install a specific version:
 
 ```bash
-cargo install mapache --version 0.7.1
+cargo install mapache --version 0.8.0
 ```
 
 > **macOS:** the `mount` feature needs FUSE on your machine, which is up
@@ -726,7 +730,8 @@ the repository uses the new format.
 
 > **Important:** Back up your repository before migrating. While the migration
 > is designed to be safe, having a backup is always recommended for
-> destructive operations.
+> destructive operations. Repository v1 support is scheduled for removal in
+> v0.9.0, so migrate before upgrading to that release.
 
 ---
 

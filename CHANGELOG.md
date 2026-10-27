@@ -36,7 +36,8 @@
   rule without removing its entry.
 - `init` and bundle creation always use format v2; the legacy `--format`
   switches were removed. Existing v1 repositories can still be migrated, and
-  legacy bundle data can still be read.
+  legacy bundle data can still be read. Repository v1 support is scheduled for
+  removal in v0.9.0.
 - **Terminal UI**: new **Stats** (`6`), **Clean** (`7`) and **Verify** (`8`)
   screens, a help overlay (`?`/`F1`), a notification centre (`Ctrl+N`), a log
   overlay (`Ctrl+L`) and on-screen errors and warnings. Snapshot, Restore,
@@ -99,8 +100,8 @@
 
 - **Repository format v2**: New repository format with compact binary
   serialization for index files, replacing JSON from v1. Tree blobs use JSON
-  (same as v1) for forward-compatible extensibility. v1 is deprecated and will
-  be removed in a future release.
+  (same as v1) for forward-compatible extensibility. v1 support is scheduled
+  for removal in v0.9.0.
 - **`mapache migrate`**: New command to convert v1 repositories to v2 format.
   Re-encrypts packs, re-indexes files, and rebuilds the binary index.
   Supports `--dry-run` for preview. The command can now also be interrupted

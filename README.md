@@ -17,10 +17,9 @@ designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
 their own validation before relying on it for primary backups.
 
-> **⚠️ Repository format v1 is deprecated:** Support for the v1 repository
-> format is deprecated and will be completely removed in future releases. New
-> repositories use v2, and v1 repositories are still readable, so you have time
-> to migrate. To upgrade a v1 repository to v2, run
+> **Repository format v1:** Support for v1 repositories is scheduled for removal
+> in v0.9.0. New repositories use v2. Migrate existing v1 repositories before
+> upgrading to v0.9.0 with
 > `mapache migrate -r <path/to/repo>`, adding `--dry-run` to preview the
 > changes first. See the
 > [manual](https://jlantxa.github.io/mapache/manual.html#migrate--migrate-repository-format)
@@ -132,7 +131,7 @@ cargo install mapache
 Builds the latest published version from source and links against your
 system's libraries (glibc on Linux, system frameworks on macOS). Requires
 the [Rust toolchain] and a C toolchain, but no other build dependencies.
-Prefer this when you want a specific version (`--version 0.7.1`), rebuild
+Prefer this when you want a specific version (`--version 0.8.0`), rebuild
 regularly, or prefer to audit and control exactly what the binary links
 against.
 
@@ -161,6 +160,8 @@ make release-static
 `cargo build` compiles a binary linked against your system's libraries.
 This is fine for testing and development on the same hardware; for a
 portable static binary, run `make release-static` or use Option 1.
+Official release binaries are built with the pinned Docker image using
+`python3 tools/docker/build.py --ref <version>`.
 
 > **Feature flags:** `mount` is enabled by default (Unix). The FUSE
 > support on your system is a user-provided prerequisite — Linux needs the

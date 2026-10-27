@@ -1,10 +1,11 @@
-# Single source of truth for all build targets.
+# Canonical release-build targets and settings for the pinned Docker image.
 # Format: <triple> <release-name> <rustflags> <feat-args> <tool>
 #
 # <tool> is passed to build-target.sh: build | zigbuild | xwin
 #
-# Used by: build.py, build-target.sh, Dockerfile (rustup target add),
-# and mirrored by .github/workflows/build.yaml.
+# Used by: build.py, build-target.sh, Dockerfile (rustup target add).
+# .github/workflows/build.yaml mirrors triples, Rust flags, and features, but
+# uses runner-specific tools for the plan-B release build.
 
 x86_64-unknown-linux-musl        linux_amd64       "-C target-feature=+crt-static" ""                     build
 aarch64-unknown-linux-musl       linux_arm64       "-C target-feature=+crt-static" ""                     zigbuild

@@ -1,6 +1,6 @@
 use std::sync::{LazyLock, OnceLock};
 
-use super::widgets::text_width;
+use super::widgets::{text_width, wrap_line};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -19,17 +19,63 @@ pub(crate) fn empty_state(frame: &mut Frame, area: Rect, title: &str, message: &
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.height > 0 {
+    if inner.width > 0 && inner.height > 0 {
+        let lines = wrap_message(message, inner.width as usize);
+        let height = lines.len().min(inner.height as usize) as u16;
+        let y = inner.y + inner.height.saturating_sub(height) / 2;
         frame.render_widget(
-            Paragraph::new(Span::styled(message.to_string(), THEME.subtext))
-                .alignment(Alignment::Center),
-            Rect {
-                y: inner.y + inner.height / 3,
-                height: 1,
-                ..inner
-            },
+            Paragraph::new(Text::from(lines)).alignment(Alignment::Center),
+            Rect { y, height, ..inner },
         );
     }
+}
+
+fn wrap_message(message: &str, max_width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+
+    for word in message.split_whitespace() {
+        let word_width = text_width(word);
+        if !current.is_empty() && current_width + 1 + word_width > max_width {
+            lines.push(Line::from(Span::styled(
+                std::mem::take(&mut current),
+                THEME.subtext,
+            )));
+            current_width = 0;
+        }
+
+        if word_width > max_width {
+            if !current.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    std::mem::take(&mut current),
+                    THEME.subtext,
+                )));
+                current_width = 0;
+            }
+            wrap_line(
+                &Line::from(Span::styled(word.to_string(), THEME.subtext)),
+                max_width,
+                &mut lines,
+            );
+            continue;
+        }
+
+        if !current.is_empty() {
+            current.push(' ');
+            current_width += 1;
+        }
+        current.push_str(word);
+        current_width += word_width;
+    }
+
+    if !current.is_empty() {
+        lines.push(Line::from(Span::styled(current, THEME.subtext)));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 /// Width of the muted label column in key/value summary rows.
@@ -704,6 +750,23 @@ mod tests {
     fn field_values_use_the_theme_text_style() {
         let line = field("Path", 8, "C:\\backup");
         assert_eq!(line.spans[1].style, THEME.stat_value);
+    }
+
+    #[test]
+    fn empty_state_wraps_long_messages_on_narrow_terminals() {
+        let content = crate::ui::tui::test_support::render_text(20, 8, |frame| {
+            empty_state(
+                frame,
+                frame.area(),
+                "Snapshots",
+                "No snapshots yet - press 1 to create one.",
+            );
+        });
+
+        assert!(content.contains("No snapshots"));
+        assert!(content.contains("press 1"));
+        assert!(content.contains("create"));
+        assert!(content.contains("one."));
     }
 
     #[test]

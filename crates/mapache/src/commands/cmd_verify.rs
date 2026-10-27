@@ -583,6 +583,7 @@ pub async fn run_with_repo(
     let mut snapshots_corrupt = 0;
     let mut num_snapshots_total = 0;
     let verified_trees = Arc::new(utils::collections::ShardedIdSet::new());
+    let verified_blobs = Arc::new(utils::collections::ShardedIdSet::new());
 
     if (!physical_failed_early || !args.fail_early) && !cleanup_handler.is_interrupted() {
         (logical_failed_early, snapshots_corrupt, num_snapshots_total) =
@@ -590,6 +591,7 @@ pub async fn run_with_repo(
                 repo.clone(),
                 &packs_all,
                 &verified_trees,
+                &verified_blobs,
                 args,
                 json_out,
                 &cleanup_handler,
@@ -1257,10 +1259,12 @@ async fn verify_packs_physically(
     Ok(failed_early)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn verify_snapshots_logically(
     repo: Arc<Repository>,
     packs_all: &IdSet<ID>,
     verified_trees: &Arc<utils::collections::ShardedIdSet>,
+    verified_blobs: &Arc<utils::collections::ShardedIdSet>,
     args: &CmdArgs,
     json_out: bool,
     cleanup_handler: &CleanupHandler,
@@ -1311,10 +1315,17 @@ async fn verify_snapshots_logically(
             let repo = repo.clone();
             let packs = packs_all;
             let verified_trees = verified_trees.clone();
+            let verified_blobs = verified_blobs.clone();
 
             async move {
-                let res =
-                    verify_snapshot_refs(repo.clone(), &snapshot_id, packs, verified_trees).await;
+                let res = verify_snapshot_refs(
+                    repo.clone(),
+                    &snapshot_id,
+                    packs,
+                    verified_trees,
+                    verified_blobs,
+                )
+                .await;
                 (i, snapshot_id, res, json_out)
             }
         })

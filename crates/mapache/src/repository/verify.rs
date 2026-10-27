@@ -572,7 +572,7 @@ async fn verify_pack_streaming(
         .buffered(VERIFY_BATCH_CONCURRENCY);
 
     let mut next_blob = 0usize;
-    let mut blob_acc = Vec::with_capacity(CHUNK_SIZE);
+    let mut blob_acc = Vec::new();
     let mut pending_blobs = Vec::new();
     let mut pending_blobs_size = 0usize;
 
@@ -609,6 +609,9 @@ async fn verify_pack_streaming(
                 pending_blobs.push((desc.id, data, desc.compressed));
                 next_blob += 1;
             } else {
+                if blob_acc.is_empty() {
+                    blob_acc.reserve(blob_len);
+                }
                 let is = bs.max(cs);
                 let ie = be.min(ce);
                 if is < ie {
@@ -618,8 +621,7 @@ async fn verify_pack_streaming(
                 if blob_acc.len() == blob_len {
                     pending_blobs_size += blob_acc.len();
                     pending_blobs.push((desc.id, std::mem::take(&mut blob_acc), desc.compressed));
-                    // Pre-allocate for next potentially multi-chunk blob
-                    blob_acc = Vec::with_capacity(size::MiB as usize);
+                    blob_acc = Vec::new();
                     next_blob += 1;
                 } else {
                     break;
@@ -711,14 +713,15 @@ pub async fn verify_snapshot_refs(
     snapshot_id: &ID,
     existing_packs: &IdSet<ID>,
     verified_trees: Arc<ShardedIdSet>,
+    verified_blobs: Arc<ShardedIdSet>,
 ) -> Result<usize> {
     tracing::info!(target: "verify", "Verifying references for snapshot {}", snapshot_id.to_short_hex(8));
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
     let tree_id = snapshot.tree;
     let index = repo.index();
 
-    // Validate the root tree exists first
-    if index.get(&tree_id).await?.is_none() {
+    // Validate a root tree once it has already been checked as a tree.
+    if !verified_trees.contains(&tree_id) && index.get(&tree_id).await?.is_none() {
         return Err(MapacheError::Integrity(format!(
             "snapshot root tree {} is missing from index",
             tree_id
@@ -739,23 +742,26 @@ pub async fn verify_snapshot_refs(
             let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
 
             for id in referenced_ids {
-                match index.get(id).await? {
-                    Some(blob_locator) => {
-                        if blob_locator.blob_type != BlobType::Zero
-                            && !existing_packs.contains(&blob_locator.pack_id)
-                        {
+                if !verified_blobs.contains(id) {
+                    match index.get(id).await? {
+                        Some(blob_locator) => {
+                            if blob_locator.blob_type != BlobType::Zero
+                                && !existing_packs.contains(&blob_locator.pack_id)
+                            {
+                                return Err(MapacheError::Integrity(format!(
+                                    "broken reference: Pack {} referenced by blob {} is missing from storage",
+                                    blob_locator.pack_id, id
+                                )));
+                            }
+                        }
+                        None => {
                             return Err(MapacheError::Integrity(format!(
-                                "broken reference: Pack {} referenced by blob {} is missing from storage",
-                                blob_locator.pack_id, id
+                                "broken reference: Blob {} is missing from index",
+                                id
                             )));
                         }
                     }
-                    None => {
-                        return Err(MapacheError::Integrity(format!(
-                            "broken reference: Blob {} is missing from index",
-                            id
-                        )));
-                    }
+                    verified_blobs.insert(*id);
                 }
                 verified_count += 1;
             }

@@ -17,7 +17,7 @@ use serde::Serialize;
 use crate::{
     backend::{BackendNode, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ID, error::MapacheError, global::GlobalOpts},
+    common::{BlobType, ID, error::MapacheError, global::GlobalOpts},
     fs::tree::SerializedNodeStream,
     repository::{
         packer::Packer,
@@ -519,21 +519,30 @@ pub async fn collect_stats(
         .saturating_add(keys.files.bytes)
         .saturating_add(manifest_size);
 
+    // Collect distinct references while walking snapshots, then resolve their
+    // sizes in the same index sweep used for the index totals.
+    let (mut snap_stats, referenced_ids) =
+        analyze_snapshots(repo.clone(), shutdown_signal.clone(), on_progress).await?;
+
     // Index-level summary (walks every index, hot and cold).
     on_progress("scanning index".to_string());
     let mut indexed_blobs = 0u64;
     let mut indexed_encoded = 0u64;
     let mut indexed_raw = 0u64;
     repo.index()
-        .for_each_id(|_id, loc| {
+        .for_each_id(|id, loc| {
             indexed_blobs += 1;
             indexed_encoded = indexed_encoded.saturating_add(loc.length as u64);
             indexed_raw = indexed_raw.saturating_add(loc.raw_length as u64);
+            if referenced_ids.contains(id) {
+                snap_stats.add_blob(
+                    loc.blob_type == BlobType::Tree,
+                    loc.raw_length as u64,
+                    loc.length as u64,
+                );
+            }
         })
         .await?;
-
-    // Snapshot-derived summary (index-only).
-    let snap_stats = analyze_snapshots(repo.clone(), shutdown_signal.clone(), on_progress).await?;
 
     let footers = if full {
         Some(
@@ -1036,15 +1045,15 @@ async fn analyze_snapshots(
     repo: Arc<Repository>,
     shutdown_signal: Arc<AtomicBool>,
     on_progress: ProgressCallback<'_>,
-) -> Result<SnapshotAnalysis, StatsError> {
+) -> Result<(SnapshotAnalysis, Arc<ShardedIdSet>), StatsError> {
     let snapshot_ids = repo.list_snapshot_ids().await?;
     let total = snapshot_ids.len();
+    let visited = Arc::new(ShardedIdSet::new());
     if total == 0 {
-        return Ok(SnapshotAnalysis::default());
+        return Ok((SnapshotAnalysis::default(), visited));
     }
 
     // Shared so a blob referenced by several snapshots is only counted once.
-    let visited = Arc::new(ShardedIdSet::new());
     let done = AtomicUsize::new(0);
     on_progress(format!("analyzing snapshots 0/{total}"));
 
@@ -1072,7 +1081,7 @@ async fn analyze_snapshots(
     for partial in partials {
         totals.merge(partial);
     }
-    Ok(totals)
+    Ok((totals, visited))
 }
 
 async fn analyze_snapshot(
@@ -1083,18 +1092,12 @@ async fn analyze_snapshot(
 ) -> Result<SnapshotAnalysis, StatsError> {
     check_interrupted(shutdown_signal)?;
 
-    let mut acc = SnapshotAnalysis {
+    let acc = SnapshotAnalysis {
         // Sum of snapshot raw bytes, not deduped.
         total_restorable_bytes: snapshot.size(),
         ..Default::default()
     };
-    let index = repo.index();
-
-    if visited.insert(snapshot.tree)
-        && let Some(locator) = index.get(&snapshot.tree).await?
-    {
-        acc.add_blob(true, locator.raw_length as u64, locator.length as u64);
-    }
+    visited.insert(snapshot.tree);
 
     let mut stream = SerializedNodeStream::new(
         repo.clone(),
@@ -1110,20 +1113,13 @@ async fn analyze_snapshot(
         let (_path, stream_node_res_outer) = res?;
         let node = stream_node_res_outer?.node;
 
-        if let Some(tree_id) = &node.tree
-            && visited.insert(*tree_id)
-            && let Some(locator) = index.get(tree_id).await?
-        {
-            acc.add_blob(true, locator.raw_length as u64, locator.length as u64);
+        if let Some(tree_id) = &node.tree {
+            visited.insert(*tree_id);
         }
 
         if let Some(blobs) = node.blobs {
             for blob_id in blobs {
-                if visited.insert(blob_id)
-                    && let Some(locator) = index.get(&blob_id).await?
-                {
-                    acc.add_blob(false, locator.raw_length as u64, locator.length as u64);
-                }
+                visited.insert(blob_id);
             }
         }
     }

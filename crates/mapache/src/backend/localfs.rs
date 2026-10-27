@@ -309,6 +309,17 @@ impl StorageBackend for LocalFS {
                     tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before rename: {e}", full_path);
                 }
 
+                // On Windows, rename fails if the destination file already exists.
+                // Remove it first if present (after unlocking).
+                #[cfg(windows)]
+                {
+                    if full_path.exists() {
+                        if let Err(e) = std::fs::remove_file(&full_path) {
+                            tracing::warn!(target: "backend", "LocalFS: failed to remove existing {:?} before rename: {e}", full_path);
+                        }
+                    }
+                }
+
                 std::fs::rename(&full_tmp_path, &full_path).inspect_err(|_| {
                     let _ = std::fs::remove_file(&full_tmp_path);
                 })?;

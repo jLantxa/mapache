@@ -884,15 +884,18 @@ async fn get_referenced_blobs_and_packs(
                             };
 
                             for blob_id in blobs {
-                                {
+                                let (is_new_reference, reference_count) = {
                                     let mut ref_blobs = referenced_blobs.lock();
-                                    if ref_blobs.insert(blob_id) {
-                                        reporter.update_task(
-                                            GcTaskKind::SearchingReferencedBlobs,
-                                            ref_blobs.len() as u64,
-                                        );
-                                    }
+                                    let is_new = ref_blobs.insert(blob_id);
+                                    (is_new, ref_blobs.len() as u64)
+                                };
+                                if !is_new_reference {
+                                    continue;
                                 }
+                                reporter.update_task(
+                                    GcTaskKind::SearchingReferencedBlobs,
+                                    reference_count,
+                                );
 
                                 match index.get_checked(&blob_id).await? {
                                     Some(locator) if locator.blob_type != BlobType::Zero => {

@@ -169,7 +169,17 @@ impl LocalFS {
                         ));
                     }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        std::fs::create_dir(&parent)?;
+                        // Another writer may create this directory between the
+                        // `symlink_metadata` call above and this one (e.g.
+                        // concurrent sync copies of files sharing a parent).
+                        // Windows reports that race as `ERROR_ALREADY_EXISTS`
+                        // (os error 183), so treat it as success and validate
+                        // the entry below instead.
+                        if let Err(error) = std::fs::create_dir(&parent)
+                            && error.kind() != io::ErrorKind::AlreadyExists
+                        {
+                            return Err(error);
+                        }
                         let metadata = std::fs::symlink_metadata(&parent)?;
                         if !metadata.is_dir() || metadata.file_type().is_symlink() {
                             return Err(io::Error::new(
@@ -307,17 +317,6 @@ impl StorageBackend for LocalFS {
 
                 if let Err(e) = Self::set_readonly_status_internal(&full_path, false) {
                     tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before rename: {e}", full_path);
-                }
-
-                // On Windows, rename fails if the destination file already exists.
-                // Remove it first if present (after unlocking).
-                #[cfg(windows)]
-                {
-                    if full_path.exists() {
-                        if let Err(e) = std::fs::remove_file(&full_path) {
-                            tracing::warn!(target: "backend", "LocalFS: failed to remove existing {:?} before rename: {e}", full_path);
-                        }
-                    }
                 }
 
                 std::fs::rename(&full_tmp_path, &full_path).inspect_err(|_| {
@@ -615,6 +614,42 @@ mod tests {
             .await?;
 
         assert_eq!(std::fs::read(base_path.join(handle.path))?, b"stored");
+        Ok(())
+    }
+
+    /// Concurrent writers targeting files under the same not-yet-existing
+    /// parent must not fail when they race to create it. On Windows the loser
+    /// of that race reported `ERROR_ALREADY_EXISTS` (os error 183).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_local_fs_concurrent_writes_share_new_parent() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let local_fs = std::sync::Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
+
+        for round in 0..8u32 {
+            let parent = PathBuf::from("objects").join(format!("{round:02x}"));
+            let mut tasks = Vec::new();
+            for i in 0..16u32 {
+                let local_fs = local_fs.clone();
+                let path = parent.join(format!("{i:08x}.pack"));
+                tasks.push(tokio::spawn(async move {
+                    let handle = Handle::new(&path);
+                    local_fs
+                        .write(&handle, WriteContents::Borrowed(b"stored"))
+                        .await
+                }));
+            }
+            // `sync` also copies the directory node while files under it are
+            // being written, so both creation paths race each other.
+            for _ in 0..4 {
+                let local_fs = local_fs.clone();
+                let dir = parent.clone();
+                tasks.push(tokio::spawn(async move { local_fs.create_dir(&dir).await }));
+            }
+            for task in tasks {
+                task.await.expect("writer task panicked")?;
+            }
+        }
+
         Ok(())
     }
 

@@ -678,10 +678,17 @@ impl Index {
                 self.resolve_location(loc, BlobType::Tree).map(|l| (id, l))
             }))
             .chain(self.zero_ids.iter().map(|(id, loc)| {
+                // Unlike `get`, sweeps report the pack holding the footer entry
+                // (or the sentinel if unknown) so GC can keep that entry alive.
+                let pack_id = self
+                    .pack_ids
+                    .get_value(loc.pack_array_index as usize)
+                    .copied()
+                    .unwrap_or_default();
                 (
                     id,
                     BlobLocator {
-                        pack_id: ID::default(),
+                        pack_id,
                         blob_type: BlobType::Zero,
                         offset: 0,
                         length: 0,
@@ -737,31 +744,45 @@ impl Index {
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
-        // Zero blobs carry a real footer entry in a real pack; only their data
-        // section is empty. The index attributes them to the sentinel pack ID,
-        // so `obsolete_packs` never applies to them — a zero blob whose pack is
-        // being repacked or deleted stays valid, because restore synthesizes it
-        // from `raw_length` instead of reading the pack. What does make one
-        // garbage is having no referrer left, which only `referenced` can say.
-        let mut kept_zero = self
-            .zero_ids
-            .iter()
-            .filter(|(id, _)| referenced.is_none_or(|refs| refs.contains(id)))
-            .peekable();
+        // A zero blob stays restorable without its pack (restore synthesizes it
+        // from `raw_length`), so an obsolete pack only moves it to the sentinel
+        // pack; the GC re-emits its footer entry. It becomes garbage only when
+        // `referenced` says nothing points at it any more.
+        for (id, loc) in self.zero_ids.iter() {
+            if referenced.is_some_and(|refs| !refs.contains(id)) {
+                continue;
+            }
+            let pack_id = self
+                .pack_ids
+                .get_value(loc.pack_array_index as usize)
+                .copied()
+                .filter(|p| obsolete_packs.is_none_or(|obsolete| !obsolete.contains(p)))
+                .unwrap_or_default();
+            out.entry(pack_id).or_default().push(PackedBlobDescriptor {
+                id: *id,
+                blob_type: BlobType::Zero,
+                offset: 0,
+                length: 0,
+                raw_length: loc.raw_length,
+                compressed: false,
+            });
+        }
+    }
 
-        // Only create the bucket when a zero blob survives `referenced`,
-        // otherwise the sentinel pack would be emitted as an empty pack.
-        if kept_zero.peek().is_some() {
-            out.entry(ID::default())
-                .or_default()
-                .extend(kept_zero.map(|(id, loc)| PackedBlobDescriptor {
-                    id: *id,
-                    blob_type: BlobType::Zero,
-                    offset: 0,
-                    length: 0,
-                    raw_length: loc.raw_length,
-                    compressed: false,
-                }));
+    /// Drops sentinel zero-blob entries that also have a real footer entry.
+    fn drop_redundant_sentinel_zero_blobs(out: &mut IdMap<ID, Vec<PackedBlobDescriptor>>) {
+        let Some(mut sentinel) = out.remove(&ID::default()) else {
+            return;
+        };
+        let with_footer: IdSet<ID> = out
+            .values()
+            .flatten()
+            .filter(|d| d.blob_type == BlobType::Zero)
+            .map(|d| d.id)
+            .collect();
+        sentinel.retain(|d| !with_footer.contains(&d.id));
+        if !sentinel.is_empty() {
+            out.insert(ID::default(), sentinel);
         }
     }
 }
@@ -1762,6 +1783,7 @@ impl MasterIndex {
             // `idx` drops here.
         }
 
+        Index::drop_redundant_sentinel_zero_blobs(&mut pack_buckets);
         let new_indices = Self::emit_indices_from_buckets(pack_buckets);
 
         let mut lock = self.inner.write();

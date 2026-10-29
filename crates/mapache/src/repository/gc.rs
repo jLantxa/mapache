@@ -98,6 +98,8 @@ pub struct Plan {
     pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
     pub index_ids: IdSet<ID>,      // Current index IDs
     pub object_dropped: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
+    /// Referenced zero blobs: ID -> (raw length, packs holding a footer entry).
+    pub zero_blobs: IdMap<ID, (u32, Vec<ID>)>,
     /// Flag that signals GC to abort at the next safe checkpoint. Checked
     /// between phases only, so an interrupted GC leaves on-disk state intact.
     pub shutdown_signal: Arc<AtomicBool>,
@@ -192,6 +194,7 @@ pub async fn scan(
         small_data_packs: IdSet::default(),
         small_tree_packs: IdSet::default(),
         object_dropped,
+        zero_blobs: IdMap::default(),
         shutdown_signal: shutdown_signal.clone(),
     };
 
@@ -204,20 +207,24 @@ pub async fn scan(
     reporter.start_task(GcTaskKind::FindingObsoleteBlobs, None);
     let mut obsolete_blobs_count = 0;
 
+    let mut zero_blobs: IdMap<ID, (u32, Vec<ID>)> = IdMap::default();
+
     repo.index()
         .for_each_id(|id, locator| {
-            // Zero blobs have no bytes in the pack data section, but they do
-            // have a real footer entry in a real pack (`Packer::add_blob` pushes
-            // the descriptor unconditionally; only the data is skipped). The
-            // index nonetheless attributes them to the sentinel pack ID
-            // `ID::default()` with `length = 0`.
-            //
-            // So the sentinel is not a pack we can delete: counting it here
-            // would register a 0-byte "pack" that always looks small
-            // (`0.0 < min_pack_size_factor`), and the GC would then try to read
-            // `objects/00/0000..0000`, which does not exist — failing the whole
-            // run on any repository containing zero blobs.
+            // Zero blobs have no bytes in the pack data section, but their footer
+            // entry is what lets `rebuild-index` recover them, so the pack that
+            // holds it counts as referenced. The sentinel `ID::default()` (footer
+            // pack unknown) is not a real pack and must never be scheduled.
             if locator.blob_type == BlobType::Zero {
+                if plan.referenced_blobs.contains(id) {
+                    let entry = zero_blobs
+                        .entry(*id)
+                        .or_insert_with(|| (locator.raw_length, Vec::new()));
+                    if locator.pack_id != ID::default() {
+                        entry.1.push(locator.pack_id);
+                        pack_stats.entry(locator.pack_id).or_default();
+                    }
+                }
                 return;
             }
 
@@ -237,6 +244,16 @@ pub async fn scan(
         .await?;
 
     reporter.finish_task(GcTaskKind::FindingObsoleteBlobs);
+
+    for (_, packs) in zero_blobs.values() {
+        for pack_id in packs {
+            if plan.unused_packs.remove(pack_id) {
+                keep_packs.insert(*pack_id);
+                plan.referenced_packs.insert(*pack_id);
+            }
+        }
+    }
+    plan.zero_blobs = zero_blobs;
 
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
@@ -343,8 +360,29 @@ pub async fn repack_all(
     }
     let (all_packs, object_dropped) = repo.list_packs_and_dropped().await?;
 
+    let mut zero_blobs: IdMap<ID, (u32, Vec<ID>)> = IdMap::default();
+    repo.index()
+        .for_each_id(|id, locator| {
+            if locator.blob_type == BlobType::Zero && referenced_blobs.contains(id) {
+                let entry = zero_blobs
+                    .entry(*id)
+                    .or_insert_with(|| (locator.raw_length, Vec::new()));
+                if locator.pack_id != ID::default() {
+                    entry.1.push(locator.pack_id);
+                }
+            }
+        })
+        .await?;
+
+    // Every referenced zero blob is re-emitted, so its old footer packs are
+    // repacked rather than deleted as unused.
+    let mut obsolete_packs = referenced_packs.clone();
+    for (_, packs) in zero_blobs.values() {
+        obsolete_packs.extend(packs.iter().filter(|p| all_packs.contains(*p)));
+    }
+
     let mut unused_packs = all_packs.clone();
-    unused_packs.retain(|id| !referenced_packs.contains(id));
+    unused_packs.retain(|id| !obsolete_packs.contains(id));
 
     reporter.log(format!(
         "Repacking {} referenced blobs from {} packs",
@@ -356,15 +394,16 @@ pub async fn repack_all(
         repo: repo.clone(),
         total_packs: all_packs.len(),
         referenced_blobs,
-        referenced_packs: referenced_packs.clone(),
+        referenced_packs,
         unresolved_references,
-        obsolete_packs: referenced_packs,
+        obsolete_packs,
         small_data_packs: IdSet::default(),
         small_tree_packs: IdSet::default(),
         tolerated_packs: 0,
         unused_packs,
         index_ids: repo.index().ids(),
         object_dropped,
+        zero_blobs,
         shutdown_signal,
     }
     .execute(reporter.0)
@@ -428,6 +467,13 @@ async fn find_packs_with_duplicate_footers(
                         break;
                     }
                     seen.insert(d.id);
+
+                    // Lookups report zero blobs under the sentinel pack, and a
+                    // spare zero footer entry costs no data bytes, so only data
+                    // and tree descriptors can be cross-pack phantoms.
+                    if d.blob_type == BlobType::Zero {
+                        continue;
+                    }
 
                     // The authoritative copy per the index lives in another pack
                     // or at another offset — this descriptor is a phantom.
@@ -657,6 +703,19 @@ impl Plan {
             && let Err(error) = self.repo.index().persist(&self.repo).await
         {
             return Err(error);
+        }
+
+        // Zero blobs are not repacked from pack data; give each one whose footer
+        // entry is about to disappear (or is already gone) a fresh entry.
+        let mut zero_resaved = 0usize;
+        for (id, (raw_length, packs)) in &self.zero_blobs {
+            if packs.iter().all(|p| self.obsolete_packs.contains(p)) {
+                self.repo.resave_zero_blob(*id, *raw_length)?;
+                zero_resaved += 1;
+            }
+        }
+        if zero_resaved > 0 {
+            tracing::info!(target: "gc", "Re-emitted footer entries for {} zero blobs", zero_resaved);
         }
 
         if blobs_to_repack == 0 {

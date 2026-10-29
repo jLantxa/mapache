@@ -147,4 +147,70 @@ mod tests {
 
         Ok(())
     }
+
+    /// A zero blob must stay recoverable by rebuild-index after GC removes the
+    /// pack that held its original footer entry.
+    #[tokio::test]
+    async fn test_rebuild_index_preserves_zero_blob_without_footer() -> Result<()> {
+        rebuild_after_zero_blob_clean(false).await
+    }
+
+    /// Same, but without an index to carry over: GC must have re-emitted the
+    /// zero blob's footer entry into a surviving pack.
+    #[tokio::test]
+    async fn test_rebuild_index_from_scratch_recovers_zero_blob_after_clean() -> Result<()> {
+        rebuild_after_zero_blob_clean(true).await
+    }
+
+    async fn rebuild_after_zero_blob_clean(delete_index: bool) -> Result<()> {
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let data_dir = ctx._tmp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir)?;
+        let zero_file = data_dir.join("zero.bin");
+        let other_file = data_dir.join("other.bin");
+        std::fs::write(&zero_file, vec![0u8; 4096])?;
+        std::fs::write(
+            &other_file,
+            (0..4096u32).map(|i| (i * 31 + 7) as u8).collect::<Vec<_>>(),
+        )?;
+
+        ctx.snapshot_builder(vec![data_dir.clone()])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
+
+        // The second snapshot dedups the zero blob, so its only footer entry
+        // stays in the first data pack, which holds nothing else live once forgotten.
+        std::fs::remove_file(&other_file)?;
+        ctx.snapshot_builder(vec![data_dir.clone()])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
+        ctx.forget_builder().keep_last(1).run(&ctx.global).await?;
+        ctx.clean_builder().run(&ctx.global).await?;
+
+        let verify_builder = ctx.verify_builder().read_packs(true).fail_early(true);
+        assert!(
+            verify_builder.clone().run(&ctx.global).await.is_ok(),
+            "verify should pass after clean"
+        );
+
+        if delete_index {
+            let backend = LocalFS::new(ctx.repo_path.clone());
+            delete_all_files_from(&backend, &PathBuf::from(INDEX_DIR))
+                .await
+                .context("Failed to remove the index")?;
+        }
+
+        ctx.rebuild_index_builder().run(&ctx.global).await?;
+
+        assert!(
+            verify_builder.run(&ctx.global).await.is_ok(),
+            "verify should pass after rebuild-index"
+        );
+
+        Ok(())
+    }
 }

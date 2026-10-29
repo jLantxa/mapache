@@ -11,10 +11,13 @@ use indicatif::ProgressBar;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, ID, error::MapacheError},
-    repository::{index::MasterIndex, packer::Packer},
+    common::{BlobType, ContentIdType, ID, error::MapacheError},
+    repository::{
+        index::MasterIndex,
+        packer::{PackedBlobDescriptor, Packer},
+    },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
-    utils::{self},
+    utils::{self, collections::IdSet},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -141,6 +144,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
 
             let mut blob_count = 0;
             let mut error_count = 0;
+            let mut footer_blob_ids: IdSet<ID> = IdSet::default();
 
             for (pack_id, res) in results {
                 if cleanup_handler.is_interrupted() {
@@ -151,6 +155,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                 match res {
                     Ok(descriptors) => {
                         blob_count += descriptors.len();
+                        footer_blob_ids.extend(descriptors.iter().map(|d| d.id));
                         new_master_index
                             .add_pack(repo.as_ref(), pack_id, descriptors)
                             .await?;
@@ -178,6 +183,46 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                 return Err(RebuildIndexError::Repo(MapacheError::Internal(format!(
                     "aborting index rebuild: {error_count} pack(s) could not be read; the existing index was left untouched"
                 ))));
+            }
+
+            // GC may delete the pack holding a zero blob's footer entry while the
+            // index keeps it, so footers alone cannot recover those blobs.
+            let mut orphan_zero_blobs = Vec::new();
+            match repo.reload_master_index().await {
+                Ok(()) => {
+                    if let Err(e) = repo
+                        .index()
+                        .for_each_id(|id, loc| {
+                            if loc.blob_type == BlobType::Zero && !footer_blob_ids.contains(id) {
+                                orphan_zero_blobs.push(PackedBlobDescriptor {
+                                    id: *id,
+                                    blob_type: BlobType::Zero,
+                                    offset: 0,
+                                    length: 0,
+                                    raw_length: loc.raw_length,
+                                    compressed: false,
+                                });
+                            }
+                        })
+                        .await
+                    {
+                        orphan_zero_blobs.clear();
+                        ui::cli::warning!("Could not read the existing index; zero blobs without a pack footer entry cannot be preserved: {e}");
+                    }
+                }
+                Err(e) => ui::cli::warning!(
+                    "Could not load the existing index; zero blobs without a pack footer entry cannot be preserved: {e}"
+                ),
+            }
+            if !orphan_zero_blobs.is_empty() {
+                ui::cli::log!(
+                    "Preserved {} zero blobs from the existing index",
+                    orphan_zero_blobs.len()
+                );
+                tracing::info!(target: "rebuild-index", "Preserving {} zero blobs not present in any pack footer", orphan_zero_blobs.len());
+                new_master_index
+                    .add_pack(repo.as_ref(), &ID::default(), orphan_zero_blobs)
+                    .await?;
             }
 
             // Save the new index

@@ -675,6 +675,26 @@ impl Repository {
             .should_compress(hint, data, |s| self.is_compressible(s))
     }
 
+    /// Writes a new pack footer entry for an already indexed zero blob,
+    /// bypassing deduplication. Used by GC before deleting the old entry's pack.
+    pub fn resave_zero_blob(&self, id: ID, raw_length: u32) -> Result<()> {
+        let tx = self
+            .pack_saver_tx
+            .read()
+            .as_ref()
+            .ok_or_else(|| MapacheError::Repo("packer is stopped or not initialized".to_string()))?
+            .clone();
+
+        tx.send(PackSaverRequest::SaveBlob {
+            id,
+            blob_type: BlobType::Zero,
+            data: Vec::new(),
+            raw_length: raw_length as u64,
+            compressed: false,
+        })
+        .map_err(|e| MapacheError::Repo(format!("packer channel closed: {e}")))
+    }
+
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in a pack file.
     /// Returns the ID of the saved blob.
     ///

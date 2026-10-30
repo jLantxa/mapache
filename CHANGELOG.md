@@ -57,6 +57,8 @@
   metadata, skipping extended attributes, file flags and symlink targets.
 - Marker-pruned directory contents count as skipped items, so
   `--fail-on-skipped` also rejects snapshots that omit them.
+- The minimum configurable pack size is now 4 MiB (previously 1 MiB):
+  `--pack-size` and `global.pack-size` reject lower values.
 
 ### Fixed
 
@@ -75,6 +77,12 @@
   layout, wrapping and truncation use Unicode display width; `q` returns to the
   previous screen and only the dashboard quits; and Enter on a find result opens
   the file explorer on the matched item.
+- **Pack data-section hard limit**: the packer now refuses to let the encoded
+  data section exceed `u32::MAX`, dispatching the current pack before adding a
+  blob that would cross it. The configurable pack size remains a soft target,
+  so a large final blob can no longer push the accumulated blob lengths past
+  the `u32` offset space and leave a pack unparseable by `verify`,
+  `rebuild-index` or GC.
 
 ## v0.7.1 (2026-10-05)
 

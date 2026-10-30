@@ -5,7 +5,7 @@ use mapache_chunker::Normalization;
 use crate::{
     commands::Compression,
     common::{compression_policy::CompressionPolicy, config},
-    repository::{index::IndexMode, repo::RepoConfig},
+    repository::{index::IndexMode, packer::MAX_PACK_DATA_SIZE, repo::RepoConfig},
     utils::size,
 };
 
@@ -36,10 +36,11 @@ pub const DEFAULT_LRU_MAX_BLOBS: u64 = 1_000_000;
 pub const DEFAULT_INDEX_MODE: IndexMode = IndexMode::Eager;
 
 // --- Packing ---
-pub(crate) const MIN_CONFIGURABLE_PACK_SIZE_MIB: f32 = 1.0_f32;
-pub(crate) const MAX_CONFIGURABLE_PACK_SIZE_MIB: f32 = (u32::MAX as u64 / size::MiB) as f32;
+pub(crate) const MIN_CONFIGURABLE_PACK_SIZE_MIB: f32 = 4.0;
+pub(crate) const MAX_CONFIGURABLE_PACK_SIZE_MIB: f32 = (MAX_PACK_DATA_SIZE / size::MiB) as f32;
 pub const DEFAULT_PACK_SIZE_MIB: f32 = 16.0;
 pub const DEFAULT_PACK_SIZE: u64 = (DEFAULT_PACK_SIZE_MIB * size::MiB as f32) as u64;
+
 pub(crate) const FOOTER_BLOB_MULTIPLE: usize = 64;
 
 // --- Chunking ---

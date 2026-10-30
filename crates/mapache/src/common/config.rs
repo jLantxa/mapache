@@ -571,8 +571,8 @@ mod tests {
 
     #[test]
     fn pack_size_mib_below_min_is_rejected() {
-        let path = write_global_pack_size("0.5");
-        let err = load_config(&path).expect_err("pack-size 0.5 must be rejected");
+        let path = write_global_pack_size("3.9");
+        let err = load_config(&path).expect_err("pack-size 3.9 must be rejected");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert!(
             matches!(&err, MapacheError::Config(_)),

@@ -70,6 +70,10 @@ const FOOTER_MAGIC: [u8; 4] = *b"MPFT";
 const FOOTER_FORMAT_VERSION: u16 = 2;
 const FOOTER_HEADER_SIZE: usize = 8;
 
+/// Hard upper bound for a pack's data section.
+/// The data section must be addressable by a 32-bit offset.
+pub(crate) const MAX_PACK_DATA_SIZE: u64 = u32::MAX as u64;
+
 /// Maximum descriptors per pack before flushing. Guards against unbounded
 /// descriptor accumulation when a pack contains only zero blobs (which don't
 /// grow `buffer` but still consume descriptor slots).
@@ -209,6 +213,11 @@ impl Packer {
         self.raw_size += raw_size;
 
         tracing::trace!(target: "packer", "Packer #{} added blob {} ({} -> {} bytes)", self.instance_id, id.to_short_hex(8), raw_size, length);
+
+        debug_assert!(
+            self.buffer.len() as u64 <= MAX_PACK_DATA_SIZE,
+            "pack data section exceeded {MAX_PACK_DATA_SIZE} bytes"
+        );
 
         Ok(())
     }
@@ -706,11 +715,16 @@ impl PackSaver {
         })
     }
 
-    fn packer_for(&mut self, blob_type: BlobType) -> Option<&mut Packer> {
+    /// Returns the active packer for `blob_type`, or an internal error if the
+    /// type is not packable. `SaveBlob` requests only ever carry Data, Tree or
+    /// Zero blobs, so any other type is a bug.
+    fn packer_for(&mut self, blob_type: BlobType) -> Result<&mut Packer> {
         match blob_type {
-            BlobType::Data | BlobType::Zero => Some(&mut self.data_packer),
-            BlobType::Tree => Some(&mut self.tree_packer),
-            _ => None,
+            BlobType::Data | BlobType::Zero => Ok(&mut self.data_packer),
+            BlobType::Tree => Ok(&mut self.tree_packer),
+            _ => Err(MapacheError::Internal(format!(
+                "no packer available for blob type {blob_type:?}"
+            ))),
         }
     }
 
@@ -729,9 +743,25 @@ impl PackSaver {
                     compressed,
                 } => {
                     let max_size = self.max_packer_size;
-                    let Some(packer) = self.packer_for(blob_type) else {
-                        continue;
-                    };
+                    let blob_len = data.len() as u64;
+
+                    // A blob larger than the whole addressable data section can
+                    // never be stored, not even in a fresh pack.
+                    if blob_len > MAX_PACK_DATA_SIZE {
+                        return Err(MapacheError::Internal(format!(
+                            "blob {} of type {:?} is {blob_len} bytes, exceeding the maximum pack data size ({MAX_PACK_DATA_SIZE})",
+                            id.to_short_hex(8),
+                            blob_type
+                        )));
+                    }
+
+                    // If the new blob would exceed the maximum addressable pack size,
+                    // dispatch the current packer first.
+                    let mut packer = self.packer_for(blob_type)?;
+                    if packer.size() + blob_len > MAX_PACK_DATA_SIZE {
+                        self.dispatch_packer(blob_type)?;
+                        packer = self.packer_for(blob_type)?;
+                    }
 
                     packer.add_blob(id, blob_type, &data, raw_length, compressed)?;
 
@@ -762,22 +792,18 @@ impl PackSaver {
     /// Swaps the current packer with a fresh one from the recycle pool
     /// and sends the full one to the workers.
     fn dispatch_packer(&mut self, blob_type: BlobType) -> Result<()> {
-        let packer_ref = match blob_type {
-            BlobType::Data | BlobType::Zero => &mut self.data_packer,
-            BlobType::Tree => &mut self.tree_packer,
-            _ => return Ok(()),
-        };
-
-        if packer_ref.is_empty() {
+        if self.packer_for(blob_type)?.is_empty() {
             return Ok(());
         }
 
-        tracing::debug!(target: "packer", "Dispatching {blob_type:?} pack ({} bytes, {} blobs) to workers", packer_ref.size(), packer_ref.num_objects());
         // Get an empty packer from the pool (blocks if workers are too slow, creating backpressure)
         let mut new_packer = self
             .empty_packer_rx
             .recv()
             .map_err(|e| MapacheError::Repo(format!("worker pool died or no free packers: {e}")))?;
+
+        let packer_ref = self.packer_for(blob_type)?;
+        tracing::debug!(target: "packer", "Dispatching {blob_type:?} pack ({} bytes, {} blobs) to workers", packer_ref.size(), packer_ref.num_objects());
 
         std::mem::swap(packer_ref, &mut new_packer);
 

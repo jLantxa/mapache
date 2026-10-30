@@ -1165,8 +1165,8 @@ mod tests {
     #[test]
     fn test_pack_size_parser() {
         assert!(pack_size_parser("0").is_err());
-        assert!(matches!(pack_size_parser("1"), Ok(1.0)));
-        assert!(matches!(pack_size_parser("2"), Ok(2.0)));
+        assert!(pack_size_parser("3.9").is_err());
+        assert!(matches!(pack_size_parser("4"), Ok(4.0)));
         assert!(matches!(pack_size_parser("16"), Ok(16.0)));
         assert!(matches!(pack_size_parser("32"), Ok(32.0)));
         assert!(matches!(pack_size_parser("4095"), Ok(4095.0)));

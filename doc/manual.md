@@ -1894,7 +1894,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `--ssh-known-hosts <PATH>` | SSH known hosts file (SFTP backend) |
 | `--auth-file <PATH>` | File with username on the first line and password on the second line |
 | `--password-command <COMMAND>` | Shell command that prints repository credentials as JSON |
-| `--pack-size <MIB>` | Pack target size in MiB (1–4095, default: 16) |
+| `--pack-size <MIB>` | Pack target size in MiB (4–4095, default: 16) |
 | `-k, --key-file <PATH>` | Path to an external key file |
 | `--quiet` | Suppress all logging output (verbosity = 0) |
 | `-v, --verbosity <0-3>` | Verbosity level (0 = quiet, 3 = most verbose) |

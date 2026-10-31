@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.7.1"
+version = "0.8.0-rc.1"
 edition = "2024"
 rust-version = "1.96.0"
 description = "Fast, secure, deduplicating, incremental backup tool"

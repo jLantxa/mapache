@@ -13,7 +13,7 @@ use crate::{
     common::{
         self, BlobType, ContentIdType, ID, SaveID,
         compression_policy::CompressionHint,
-        defaults::{self, DEFAULT_SNAPSHOT_READERS},
+        defaults,
         error::{MapacheError, Result},
     },
     fs::tree::Tree,
@@ -91,6 +91,7 @@ pub struct Plan {
     pub referenced_blobs: IdSet<ID>, // Blobs referenced by existing snapshots
     pub referenced_packs: IdSet<ID>, // Packs referenced by the referenced blobs
     pub unresolved_references: IdSet<ID>, // Referenced blobs missing from the index
+    pub stale_index_packs: IdSet<ID>, // Index entries for missing, unreferenced packs
     pub obsolete_packs: IdSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
     pub small_data_packs: IdSet<ID>, // Small data packs marked to be repacked (to merge)
     pub small_tree_packs: IdSet<ID>, // Small tree packs marked to be repacked (to merge)
@@ -187,6 +188,7 @@ pub async fn scan(
         referenced_blobs,
         referenced_packs,
         unresolved_references,
+        stale_index_packs: IdSet::default(),
         obsolete_packs: IdSet::default(),
         tolerated_packs: 0,
         unused_packs,
@@ -245,6 +247,37 @@ pub async fn scan(
 
     reporter.finish_task(GcTaskKind::FindingObsoleteBlobs);
 
+    let mut missing_index_packs: Vec<ID> = pack_stats
+        .keys()
+        .filter(|pack_id| !keep_packs.contains(pack_id) && !plan.unused_packs.contains(pack_id))
+        .copied()
+        .collect();
+    missing_index_packs.sort_unstable();
+    let missing_snapshot_pack_count = missing_index_packs
+        .iter()
+        .filter(|pack_id| plan.referenced_packs.contains(pack_id))
+        .count();
+    if missing_snapshot_pack_count > 0 {
+        let first_missing = missing_index_packs
+            .iter()
+            .find(|pack_id| plan.referenced_packs.contains(pack_id))
+            .map(ID::to_hex)
+            .unwrap_or_default();
+        return Err(MapacheError::Integrity(format!(
+            "{} snapshot-referenced pack files are missing from the repository; first missing pack: {first_missing}",
+            missing_snapshot_pack_count
+        )));
+    }
+    plan.stale_index_packs.extend(missing_index_packs);
+    if !plan.stale_index_packs.is_empty() {
+        let message = format!(
+            "Found {} missing pack files referenced only by stale index entries; they will be removed from the index",
+            plan.stale_index_packs.len()
+        );
+        tracing::warn!(target: "gc", "{message}");
+        reporter.warning(message);
+    }
+
     for (_, packs) in zero_blobs.values() {
         for pack_id in packs {
             if plan.unused_packs.remove(pack_id) {
@@ -259,6 +292,9 @@ pub async fn scan(
     let current_pack_size = repo.pack_size();
     let min_pack_size_factor = defaults::runtime().min_pack_size_factor;
     for (pack_id, stats) in &pack_stats {
+        if plan.stale_index_packs.contains(pack_id) {
+            continue;
+        }
         if (stats.kept_bytes as f64 / current_pack_size as f64) < min_pack_size_factor as f64 {
             match stats.blob_type {
                 Some(common::BlobType::Tree) => {
@@ -271,7 +307,10 @@ pub async fn scan(
         }
     }
 
-    let garbage_pack_count = pack_stats.values().filter(|s| s.has_garbage).count();
+    let garbage_pack_count = pack_stats
+        .iter()
+        .filter(|(id, stats)| stats.has_garbage && !plan.stale_index_packs.contains(id))
+        .count();
     tracing::debug!(target: "gc", "Found {} obsolete blobs in {} packs", obsolete_blobs_count, garbage_pack_count);
     reporter.log(format!(
         "Found {} obsolete blobs in {} packs",
@@ -286,7 +325,7 @@ pub async fn scan(
     let mut checked_packs_count = 0;
     for (pack_id, stats) in pack_stats.into_iter() {
         check_shutdown(&shutdown_signal)?;
-        if !stats.has_garbage {
+        if !stats.has_garbage || plan.stale_index_packs.contains(&pack_id) {
             continue;
         }
         if (stats.garbage_bytes as f64 / current_pack_size as f64) > tolerance as f64 {
@@ -396,6 +435,7 @@ pub async fn repack_all(
         referenced_blobs,
         referenced_packs,
         unresolved_references,
+        stale_index_packs: IdSet::default(),
         obsolete_packs,
         small_data_packs: IdSet::default(),
         small_tree_packs: IdSet::default(),
@@ -620,15 +660,9 @@ impl Plan {
         check_shutdown(&signal)?;
 
         // Clean unused packs from the index — they were deleted from disk
-        // above but the index still references them.
+        // above but the index still references them. When repacking is needed,
+        // defer this cleanup so it can be combined with obsolete-pack cleanup.
         if !self.obsolete_packs.is_empty() {
-            if !self.unused_packs.is_empty() {
-                self.repo
-                    .index()
-                    .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs))
-                    .await?;
-            }
-
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
             self.repo
                 .init_pack_saver(common::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
@@ -642,11 +676,13 @@ impl Plan {
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
             gc_sizes.deleted_bytes += self.delete_obsolete_packs(reporter.0.clone()).await?;
-        } else if !self.unused_packs.is_empty() {
-            tracing::info!(target: "gc", "Cleaning index for {} unused packs", self.unused_packs.len());
+        } else if !self.unused_packs.is_empty() || !self.stale_index_packs.is_empty() {
+            let mut packs_to_remove = self.unused_packs.clone();
+            packs_to_remove.extend(self.stale_index_packs.iter().copied());
+            tracing::info!(target: "gc", "Cleaning index for {} unused or stale packs", packs_to_remove.len());
             self.repo
                 .index()
-                .cleanup(Some(&self.unused_packs), Some(&self.referenced_blobs))
+                .cleanup(Some(&packs_to_remove), Some(&self.referenced_blobs))
                 .await?;
             self.repo.index().persist(&self.repo).await?;
             gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
@@ -691,12 +727,16 @@ impl Plan {
             .await?;
         let blobs_to_repack = repack_blob_packs.len() as u64;
 
-        // Clear old references so the saver doesn't treat these blobs as
-        // already existing. This only mutates the in-memory index; the
-        // on-disk index is not updated until the post-repack flush.
+        // Remove unused and obsolete pack entries in one full index rewrite.
+        // The authoritative entries for obsolete packs were captured above;
+        // the saver can now add them back as new packs without treating them as
+        // existing. The on-disk index is updated after repacking completes.
+        let mut packs_to_remove = self.obsolete_packs.clone();
+        packs_to_remove.extend(self.unused_packs.iter().copied());
+        packs_to_remove.extend(self.stale_index_packs.iter().copied());
         self.repo
             .index()
-            .cleanup(Some(&self.obsolete_packs), Some(&self.referenced_blobs))
+            .cleanup(Some(&packs_to_remove), Some(&self.referenced_blobs))
             .await?;
 
         if !self.repo.index().index_mode().is_eager()
@@ -777,7 +817,7 @@ impl Plan {
                     Ok::<(), MapacheError>(())
                 }
             })
-            .buffer_unordered(DEFAULT_SNAPSHOT_READERS)
+            .buffer_unordered(segment_window)
             .try_for_each(|_| async { Ok(()) })
             .await;
 
@@ -1469,6 +1509,21 @@ mod tests {
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;
 
+        // Add an indexed pack with no snapshot references so this run has both
+        // an obsolete pack to repack and an unused pack to remove.
+        let unused_blob = ID::from_content(b"unused pack blob");
+        let (unused_pack, unused_descriptors) =
+            write_raw_pack(&repo, vec![(unused_blob, b"unused pack blob")]).await?;
+        repo.index()
+            .add_pack(&repo, &unused_pack, unused_descriptors)
+            .await?;
+        let obsolete_pack = repo
+            .index()
+            .get_checked(&blob_a)
+            .await?
+            .ok_or_else(|| MapacheError::NotFound("referenced blob not found".into()))?
+            .pack_id;
+
         // Clear history before GC execution
         backend.clear_history();
 
@@ -1483,6 +1538,8 @@ mod tests {
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(!plan.referenced_blobs.contains(&blob_b));
         assert!(!plan.referenced_blobs.contains(&blob_c));
+        assert!(plan.obsolete_packs.contains(&obsolete_pack));
+        assert!(plan.unused_packs.contains(&unused_pack));
 
         let gc_sizes = plan.execute(noop_sender()).await?;
         assert!(gc_sizes.deleted_bytes > 0);
@@ -1490,6 +1547,7 @@ mod tests {
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
         assert!(repo.load_blob(&blob_b).await.is_err());
         assert!(repo.load_blob(&blob_c).await.is_err());
+        assert!(repo.load_blob(&unused_blob).await.is_err());
 
         // Spy: Verify that packs containing orphaned blobs were removed
         let history = backend.history();
@@ -1510,26 +1568,10 @@ mod tests {
         // Blobs b and c are orphaned. They reside in Pack 1.
         // Pack 1 should be removed, Pack 2 should stay.
 
-        // We expect exactly 3 removal operations:
-        // - 2 index files (the old index files being replaced/cleaned up)
-        // - 1 object file (Pack 1 containing orphaned blobs B and C)
-        // Pack 2 (small tree, no garbage) is NOT repacked because there is
-        // only one small tree pack — merging a single pack gains nothing.
-        assert_eq!(
-            removed_paths.len(),
-            3,
-            "Expected exactly 3 removals, got: {:?}",
-            removed_paths
-        );
-
-        // Ensure at least one was a data/object file removal
-        assert!(
-            removed_paths
-                .iter()
-                .any(|p| p.to_string_lossy().contains("objects")),
-            "Expected removal of an object pack, got: {:?}",
-            removed_paths
-        );
+        let unused_pack_path = repo.get_path(ContentIdType::Pack, &unused_pack);
+        let obsolete_pack_path = repo.get_path(ContentIdType::Pack, &obsolete_pack);
+        assert!(removed_paths.contains(&unused_pack_path));
+        assert!(removed_paths.contains(&obsolete_pack_path));
 
         Ok(())
     }
@@ -1691,6 +1733,89 @@ mod tests {
 
         // The blob written before the scan is still there; scan is read-only.
         assert_eq!(repo.load_blob(&blob).await?, b"data");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_gc_prunes_unreferenced_missing_pack_from_index() -> Result<()> {
+        let (repo, backend) = init_repo().await?;
+
+        repo.init_pack_saver(1)?;
+        let blob = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"indexed blob"),
+            SaveID::CalculateID,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        let locator = repo
+            .index()
+            .get_checked(&blob)
+            .await?
+            .ok_or_else(|| MapacheError::NotFound("test blob not found".into()))?;
+        let missing_pack_path = repo.get_path(ContentIdType::Pack, &locator.pack_id);
+        backend.remove(&missing_pack_path).await?;
+
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
+        assert!(plan.stale_index_packs.contains(&locator.pack_id));
+        assert!(!plan.obsolete_packs.contains(&locator.pack_id));
+
+        plan.execute(noop_sender()).await?;
+        assert!(repo.index().get_checked(&blob).await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_scan_rejects_missing_snapshot_referenced_pack() -> Result<()> {
+        let (repo, backend) = init_repo().await?;
+
+        repo.init_pack_saver(1)?;
+        let blob = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"snapshot referenced blob"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![make_node("file.txt", vec![blob])]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        let locator = repo
+            .index()
+            .get_checked(&blob)
+            .await?
+            .ok_or_else(|| MapacheError::NotFound("test blob not found".into()))?;
+        let missing_pack_path = repo.get_path(ContentIdType::Pack, &locator.pack_id);
+        backend.remove(&missing_pack_path).await?;
+
+        let error = match super::scan(
+            repo,
+            0.0,
+            noop_sender(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await
+        {
+            Ok(_) => {
+                return Err(MapacheError::Internal(
+                    "scan accepted a missing snapshot-referenced pack".into(),
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, MapacheError::Integrity(message) if message.contains("snapshot-referenced") && message.contains(&locator.pack_id.to_hex()))
+        );
 
         Ok(())
     }

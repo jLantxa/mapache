@@ -87,8 +87,6 @@ pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.0; // [0 - 1]
 pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 
 /// Maximum pack segments downloaded and decoded concurrently during GC repack.
-/// Larger windows overlap more downloads/decompressions for a higher throughput
-/// in exchange for proportionally more encoded + decoded bytes in flight.
 pub(crate) const DEFAULT_GC_REPACK_CONCURRENCY: usize = 4;
 
 // --- UI ---

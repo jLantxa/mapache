@@ -389,13 +389,24 @@ impl BlobLoader {
                 let min_offset = segment.min_offset;
                 let secure_storage = decode_secure_storage.clone();
                 let blobs = segment.blobs;
+                let last_blob_index = segment.blob_range.end;
+                let mut data = Some(data);
                 stream::iter(segment.blob_range).map(move |blob_index| {
-                    decode_packed_blob_from_segment(
-                        secure_storage.clone(),
-                        min_offset,
-                        &data,
-                        &blobs[blob_index],
-                    )
+                    let result = match data.as_deref() {
+                        Some(segment_data) => decode_packed_blob_from_segment(
+                            secure_storage.clone(),
+                            min_offset,
+                            segment_data,
+                            &blobs[blob_index],
+                        ),
+                        None => Err(MapacheError::Internal(
+                            "pack segment data was released before its final blob".into(),
+                        )),
+                    };
+                    if blob_index + 1 == last_blob_index {
+                        data = None;
+                    }
+                    result
                 })
             })
             .try_flatten()

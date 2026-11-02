@@ -406,6 +406,12 @@ impl Index {
         self.set_status(IndexStatus::Finalized);
     }
 
+    fn freeze(&mut self) {
+        self.data_ids.freeze();
+        self.tree_ids.freeze();
+        self.zero_ids.freeze();
+    }
+
     /// Marks the index as pending.
     #[inline]
     fn set_status(&mut self, status: IndexStatus) {
@@ -646,9 +652,7 @@ impl Index {
         self.set_status(IndexStatus::Persisted(id));
 
         // Free memory: convert Mutable (HashMap) to Immutable (sorted Vec)
-        self.data_ids.freeze();
-        self.tree_ids.freeze();
-        self.zero_ids.freeze();
+        self.freeze();
 
         Ok(size)
     }
@@ -1740,11 +1744,13 @@ impl MasterIndex {
     ) -> Result<()> {
         let _operation = self.operations.write().await;
         let mut pack_buckets: IdMap<ID, Vec<PackedBlobDescriptor>> = IdMap::default();
-        let (mut cold_ids, loader, hot_count) = {
+        let (mut cold_ids, loader, hot_count, mut source_blob_count) = {
             let lock = self.inner.read();
             let mut hot_indices: Vec<_> = lock.indices.iter().collect();
             hot_indices.sort_by_key(|idx| idx.instance_id);
+            let mut source_blob_count = 0;
             for idx in hot_indices {
+                source_blob_count += idx.num_blobs();
                 idx.push_pack_descriptors(obsolete_packs, referenced, &mut pack_buckets);
             }
             (
@@ -1754,6 +1760,7 @@ impl MasterIndex {
                     .collect::<Vec<_>>(),
                 self.loader.get().cloned(),
                 lock.indices.len(),
+                source_blob_count,
             )
         };
 
@@ -1779,12 +1786,24 @@ impl MasterIndex {
                 )));
             };
             let idx = loader.load_index(&file_id).await?;
+            source_blob_count += idx.num_blobs();
             idx.push_pack_descriptors(obsolete_packs, referenced, &mut pack_buckets);
             // `idx` drops here.
         }
 
         Index::drop_redundant_sentinel_zero_blobs(&mut pack_buckets);
+        let retained_blob_count = pack_buckets.values().map(Vec::len).sum::<usize>();
+        tracing::info!(
+            target: "index",
+            "Index rewrite collected {source_blob_count} source blobs; {retained_blob_count} descriptors remain after filtering"
+        );
         let new_indices = Self::emit_indices_from_buckets(pack_buckets);
+        let output_blob_count = new_indices.iter().map(Index::num_blobs).sum::<usize>();
+        tracing::info!(
+            target: "index",
+            "Index rewrite produced {} indices containing {output_blob_count} blobs",
+            new_indices.len()
+        );
 
         let mut lock = self.inner.write();
         lock.indices = new_indices;
@@ -1838,6 +1857,7 @@ impl MasterIndex {
             current_index.add_pack(&pack_id, blobs);
             if current_index.is_full() {
                 current_index.set_status(IndexStatus::Finalized);
+                current_index.freeze();
                 new_indices.push(std::mem::take(&mut current_index));
             }
         }
@@ -2349,6 +2369,31 @@ mod tests {
 
         let loc4 = merged_idx.get(&b4.id).unwrap();
         assert_eq!(loc4.pack_id, pack3);
+    }
+
+    #[test]
+    fn test_emitted_full_indices_use_immutable_maps() {
+        let pack_id = mock_id("full-pack");
+        let blobs = (0..common::defaults::BLOBS_PER_INDEX_FILE)
+            .map(|index| PackedBlobDescriptor {
+                id: mock_id(&format!("blob-{index}")),
+                blob_type: BlobType::Data,
+                offset: index as u32,
+                length: 1,
+                raw_length: 1,
+                compressed: false,
+            })
+            .collect();
+        let buckets = [(pack_id, blobs)].into_iter().collect();
+
+        let indices = MasterIndex::emit_indices_from_buckets(buckets);
+
+        assert_eq!(indices.len(), 1);
+        assert_eq!(
+            indices[0].num_blobs(),
+            common::defaults::BLOBS_PER_INDEX_FILE
+        );
+        assert!(matches!(indices[0].data_ids, BlobMap::Immutable(_, _)));
     }
 
     #[test]

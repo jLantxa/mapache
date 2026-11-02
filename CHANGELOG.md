@@ -62,6 +62,11 @@
 
 ### Fixed
 
+- GC now removes unused and obsolete pack entries in one index rewrite when
+  repacking, freezes finalized index maps, and defaults to four in-flight pack
+  segments to limit peak memory. Rewrite entry counts are logged for diagnosis.
+  Pooled pack buffers no longer grow to twice the pack size, and blob
+  decompression reuses pooled zstd contexts instead of creating one per blob.
 - Harden restore and bundle path confinement, validate tree nodes, preserve
   symlink restore strategies and metadata handling, and secure bundle and
   key-file writes with owner-only key permissions on Unix.

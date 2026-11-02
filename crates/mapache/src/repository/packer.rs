@@ -79,6 +79,10 @@ pub(crate) const MAX_PACK_DATA_SIZE: u64 = u32::MAX as u64;
 /// grow `buffer` but still consume descriptor slots).
 const MAX_DESCRIPTORS_PER_PACK: usize = 4096;
 
+/// Spare capacity kept past the pack target so the last blob and the footer
+/// usually fit without another reallocation of the whole pack buffer.
+const PACK_BUFFER_SLACK: usize = 256 * size::KiB as usize;
+
 /// Describes a single blob's location and size within a packed file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackedBlobDescriptor {
@@ -128,6 +132,8 @@ pub(crate) struct FlushedPack {
 pub struct Packer {
     instance_id: u64,
     buffer: Vec<u8>,
+    /// Capacity the buffer grows to before it stops doubling.
+    target_capacity: usize,
     descriptors: Vec<PackedBlobDescriptor>,
     raw_size: u64,
     secure_storage: Arc<SecureStorage>,
@@ -155,6 +161,7 @@ impl Packer {
         Ok(Self {
             instance_id: NEXT_PACKER_ID.fetch_add(1, Ordering::Relaxed),
             buffer: Vec::with_capacity(capacity.min(Self::INITIAL_BUFFER_CAPACITY)),
+            target_capacity: capacity.saturating_add(PACK_BUFFER_SLACK),
             descriptors: Vec::with_capacity(FOOTER_BLOB_MULTIPLE),
             raw_size: 0,
             secure_storage,
@@ -198,6 +205,7 @@ impl Packer {
             .map_err(|e| MapacheError::Integrity(format!("blob raw size exceeds u32::MAX: {e}")))?;
 
         if blob_type != BlobType::Zero {
+            self.reserve_for(encoded_data.len());
             self.buffer.extend_from_slice(encoded_data);
         }
 
@@ -221,6 +229,27 @@ impl Packer {
 
         Ok(())
     }
+
+    /// Grows the buffer geometrically up to `target_capacity`, then only by what
+    /// is needed. Plain `Vec` doubling would leave every pooled packer holding
+    /// up to twice the pack size for the rest of the run, since buffers are
+    /// recycled and never shrink.
+    fn reserve_for(&mut self, additional: usize) {
+        let needed = self.buffer.len().saturating_add(additional);
+        if needed <= self.buffer.capacity() {
+            return;
+        }
+        let new_capacity = if needed > self.target_capacity {
+            needed.saturating_add(PACK_BUFFER_SLACK)
+        } else {
+            self.buffer
+                .capacity()
+                .saturating_mul(2)
+                .clamp(needed, self.target_capacity)
+        };
+        self.buffer.reserve_exact(new_capacity - self.buffer.len());
+    }
+
     /// Performs the CPU-intensive work of finalizing the pack.
     ///
     /// This includes:
@@ -256,6 +285,7 @@ impl Packer {
         })?;
         let footer_len_bytes = footer_len.to_le_bytes();
 
+        self.reserve_for(encoded_footer.len() + footer_len_bytes.len());
         self.buffer.extend_from_slice(&encoded_footer);
         self.buffer.extend_from_slice(&footer_len_bytes);
 

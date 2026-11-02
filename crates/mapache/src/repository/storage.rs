@@ -55,6 +55,10 @@ const PROBE_SAMPLE_SIZE: usize = 128 * size::KiB as usize;
 /// own.
 const PROBE_WINDOWS: usize = 4;
 
+/// Largest declared frame size decoded into a pre-sized buffer; larger or
+/// unknown sizes are streamed so a header cannot force a huge allocation.
+const MAX_PRESIZED_DECOMPRESS: u64 = 64 * size::MiB;
+
 /// Encodes repository data at rest: compress with zstd, then encrypt with
 /// AES-256-GCM-SIV (encryption is skipped when no key is set).
 pub struct SecureStorage {
@@ -62,6 +66,7 @@ pub struct SecureStorage {
     cipher: Option<Aes256GcmSiv>,
     nonce_at_end: AtomicBool,
     compressor_pool: Mutex<Vec<EncodingContext>>,
+    decompressor_pool: Mutex<Vec<zstd::bulk::Decompressor<'static>>>,
 }
 
 impl Default for SecureStorage {
@@ -77,6 +82,7 @@ impl SecureStorage {
             cipher: None,
             nonce_at_end: AtomicBool::new(true),
             compressor_pool: Mutex::new(Vec::new()),
+            decompressor_pool: Mutex::new(Vec::new()),
         }
     }
 
@@ -107,6 +113,7 @@ impl SecureStorage {
             cipher: self.cipher.clone(),
             nonce_at_end: AtomicBool::new(self.nonce_at_end()),
             compressor_pool: Mutex::new(Vec::new()),
+            decompressor_pool: Mutex::new(Vec::new()),
         }
     }
 
@@ -271,6 +278,27 @@ impl SecureStorage {
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
+        // A fresh zstd context per call churns zstd's C heap (outside the Rust
+        // allocator) on every blob, which inflates RSS during GC repack.
+        if let Ok(Some(size)) = zstd::zstd_safe::get_frame_content_size(data)
+            && size <= MAX_PRESIZED_DECOMPRESS
+        {
+            let pooled = self.decompressor_pool.lock().pop();
+            if let Some(mut dctx) = pooled.or_else(|| zstd::bulk::Decompressor::new().ok()) {
+                let mut out = Vec::with_capacity(size as usize);
+                let result = dctx.decompress_to_buffer(data, &mut out);
+                {
+                    let mut pool = self.decompressor_pool.lock();
+                    if pool.len() < defaults::DEFAULT_COMPRESSOR_POOL_SIZE {
+                        pool.push(dctx);
+                    }
+                }
+                if result.is_ok() {
+                    return Ok(out);
+                }
+            }
+        }
+
         zstd::decode_all(data)
             .map_err(|e| MapacheError::Compression(format!("zstd decompression failed: {e}")))
     }

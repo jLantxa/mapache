@@ -430,6 +430,13 @@ async fn scan_pack_footers(
                     if *entry > 1 {
                         // Same ID twice in this pack's footer.
                         scan.duplicate_blobs += 1;
+                    } else if d.blob_type == BlobType::Zero {
+                        // Zero blobs are indexed under the sentinel pack ID, so a
+                        // cross-pack comparison would always flag their single
+                        // footer entry as a duplicate. Their data section is
+                        // empty, and `clean` deliberately leaves cross-pack zero
+                        // entries alone; only a repeated ID in this same footer
+                        // (handled above) is a real duplicate.
                     } else if let Some(loc) = index.get(&d.id).await? {
                         if loc.pack_id != pack_id || loc.offset != d.offset {
                             // Phantom: the authoritative copy lives in another pack
@@ -1125,4 +1132,128 @@ async fn analyze_snapshot(
     }
 
     Ok(acc)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Local;
+
+    use super::*;
+    use crate::{
+        backend::{StorageHint, WriteContents, mock::MockBackend},
+        common::{ContentIdType, SaveID, defaults::TEST_REPO_CONFIG, traits::BlobSaver},
+        fs::{
+            node::{Node, NodeType},
+            tree::Tree,
+        },
+        repository::{
+            gc,
+            repo::{Auth, THIS_REPOSITORY_VERSION},
+            snapshot::Snapshot,
+        },
+        ui::events::noop_sender,
+    };
+
+    fn make_auth() -> Auth {
+        Auth {
+            username: "mapachito".to_string(),
+            password: zeroize::Zeroizing::new("password".to_string()),
+        }
+    }
+
+    async fn init_repo() -> Result<Arc<Repository>, MapacheError> {
+        let auth = make_auth();
+        let backend = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+        Ok(repo)
+    }
+
+    async fn save_snapshot(repo: &Arc<Repository>, tree_id: ID) -> Result<(), MapacheError> {
+        let snapshot = Snapshot {
+            timestamp: Local::now(),
+            tree: tree_id,
+            root: PathBuf::from("/"),
+            paths: vec![PathBuf::from("/root")],
+            ..Default::default()
+        };
+        let snapshot_bytes = serde_json::to_vec(&snapshot)?;
+        repo.save_file(
+            &SaveID::CalculateID,
+            &snapshot_bytes,
+            StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            },
+            None,
+        )
+        .await?;
+        repo.reload_master_index().await?;
+        Ok(())
+    }
+
+    /// A zero blob is indexed under the sentinel pack ID, so its single footer
+    /// entry can never match the real pack that holds it. `clean` intentionally
+    /// ignores that cross-pack difference, so `stats --full` must not report it
+    /// as a duplicate either.
+    #[tokio::test]
+    async fn test_zero_blob_is_not_reported_as_duplicate_after_clean() -> Result<(), StatsError> {
+        let repo = init_repo().await?;
+        repo.init_pack_saver(2)?;
+
+        let zeros = [0u8; 4096];
+        let zero_id = repo.encode_and_save_blob(
+            BlobType::Zero,
+            WriteContents::Borrowed(&zeros),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![Node {
+            name: "zeros.bin".to_string(),
+            node_type: NodeType::File,
+            blobs: Some(vec![zero_id]),
+            ..Default::default()
+        }]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        let plan = gc::scan(
+            repo.clone(),
+            0.0,
+            noop_sender(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await?;
+        plan.execute(noop_sender()).await?;
+        repo.reload_master_index().await?;
+
+        let packs: Vec<ID> = repo.list_packs().await?.into_iter().collect();
+        let report = scan_pack_footers(
+            repo.clone(),
+            repo.backend(),
+            repo.secure_storage(),
+            &packs,
+            Arc::new(AtomicBool::new(false)),
+            &|_| {},
+        )
+        .await?;
+
+        assert_eq!(
+            report.duplicate_blobs, 0,
+            "the only zero blob must not be counted as a duplicate"
+        );
+        assert_eq!(report.dangling, 0, "the zero blob must not be dangling");
+        Ok(())
+    }
 }

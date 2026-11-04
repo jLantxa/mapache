@@ -88,6 +88,10 @@
   so a large final blob can no longer push the accumulated blob lengths past
   the `u32` offset space and leave a pack unparseable by `verify`,
   `rebuild-index` or GC.
+- `stats --full` no longer reports a zero blob as a duplicate footer entry.
+  Zero blobs resolve to the sentinel pack in the index, so the cross-pack
+  comparison always flagged the single footer entry that `clean` intentionally
+  preserves.
 
 ## v0.7.1 (2026-10-05)
 

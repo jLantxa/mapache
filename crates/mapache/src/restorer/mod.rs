@@ -458,6 +458,11 @@ impl Restorer {
             fs::create_dir_all(&self.target_path)?;
         }
 
+        // Resolve each node against a canonicalized target that is reused for
+        // the whole restore. Doing this per node was a significant cost on
+        // trees with many files.
+        let path_resolver = Arc::new(utils::SecurePathResolver::new(&self.target_path)?);
+
         let index = self.repo.index();
         let secure_storage = self.repo.secure_storage();
         let batch_size = self.opts.batch_size.unwrap_or(usize::MAX);
@@ -554,12 +559,7 @@ impl Restorer {
                 };
             }
 
-            let joined_path = if node.is_symlink() {
-                utils::secure_join_symlink(&self.target_path, &path)
-            } else {
-                utils::secure_join(&self.target_path, &path)
-            };
-            let restore_path = match joined_path {
+            let restore_path = match path_resolver.resolve(&path, node.is_symlink()) {
                 Ok(p) => p,
                 Err(e) => {
                     emit_event(
@@ -1000,6 +1000,7 @@ impl Restorer {
             self.opts.include.clone(),
             self.opts.exclude.clone(),
             &metadata_paths.as_ref().map(|set| Arc::new(set.clone())),
+            path_resolver,
         )
         .await?;
 

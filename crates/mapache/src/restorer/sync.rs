@@ -17,6 +17,7 @@ use crate::{
     fs::tree::SerializedTreeStream,
     repository::repo::Repository,
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
+    utils::SecurePathResolver,
 };
 
 pub struct SyncOpts {
@@ -60,6 +61,8 @@ pub async fn delete_nodes(
             "failed to read snapshot tree root: {e}"
         )));
     }
+
+    let path_resolver = SecurePathResolver::new(&target_path)?;
 
     while let Some(item_result) = tree_stream.next().await {
         if opts.shutdown_signal.load(Ordering::Acquire) {
@@ -108,7 +111,7 @@ pub async fn delete_nodes(
             _ => path,
         };
 
-        let local_dir = crate::utils::secure_join(&target_path, &local_path).map_err(|error| {
+        let local_dir = path_resolver.resolve(&local_path, false).map_err(|error| {
             MapacheError::Integrity(format!(
                 "refusing to delete outside the restore target: {error}"
             ))

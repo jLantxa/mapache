@@ -26,6 +26,7 @@ impl Restorer {
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
         metadata_paths: &Option<Arc<HashSet<PathBuf>>>,
+        path_resolver: Arc<utils::SecurePathResolver>,
     ) -> Result<()> {
         if self.opts.dry_run {
             return Ok(());
@@ -46,9 +47,9 @@ impl Restorer {
         node_stream
             .for_each_concurrent(d.restore_blob_concurrency, |node_res| {
                 let event_sender = self.event_sender.clone();
-                let target_path = self.target_path.clone();
                 let opts_strip_prefix = self.opts.strip_prefix.clone();
                 let metadata_paths = metadata_paths.clone();
+                let path_resolver = path_resolver.clone();
                 let dir_tx = dir_tx.clone();
 
                 async move {
@@ -91,12 +92,7 @@ impl Restorer {
                         };
                     }
 
-                    let joined_path = if node.is_symlink() {
-                        utils::secure_join_symlink(&target_path, &path)
-                    } else {
-                        utils::secure_join(&target_path, &path)
-                    };
-                    let restore_path = match joined_path {
+                    let restore_path = match path_resolver.resolve(&path, node.is_symlink()) {
                         Ok(p) => p,
                         Err(_) => return,
                     };

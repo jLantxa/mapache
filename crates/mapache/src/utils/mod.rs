@@ -5,11 +5,13 @@ pub mod rate_estimator;
 pub(crate) mod stream;
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{DateTime, Duration, Local};
+use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -616,10 +618,138 @@ pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
     Ok(canonical_joined)
 }
 
+#[cfg(test)]
 pub(crate) fn secure_join_symlink(base: &Path, relative: &Path) -> Result<PathBuf> {
     match (relative.parent(), relative.file_name()) {
         (Some(parent), Some(name)) => Ok(secure_join(base, parent)?.join(name)),
         _ => secure_join(base, relative),
+    }
+}
+
+/// A path resolver that confines relative paths to a base directory and caches
+/// the canonical form of directories.
+///
+/// [`secure_join`] canonicalizes the base and every ancestor for each call,
+/// which is expensive when restoring trees with many files: every node costs
+/// two canonicalizations plus a metadata lookup. Restore visits a directory
+/// before its children, so the canonical directory paths can be cached and
+/// shared by all of its entries. The leaf is still checked for symlinks (and on
+/// Windows reparse points) before being accepted.
+pub(crate) struct SecurePathResolver {
+    base: PathBuf,
+    canonical_base: PathBuf,
+    canonical_dirs: Mutex<HashMap<PathBuf, PathBuf>>,
+}
+
+impl SecurePathResolver {
+    pub(crate) fn new(base: &Path) -> Result<Self> {
+        let base = fs::get_absolute_normalized_path(base)?;
+        let canonical_base = canonicalize_with_missing_tail(&base)?;
+        let mut canonical_dirs = HashMap::new();
+        canonical_dirs.insert(base.clone(), canonical_base.clone());
+        Ok(Self {
+            base,
+            canonical_base,
+            canonical_dirs: Mutex::new(canonical_dirs),
+        })
+    }
+
+    /// Resolves `relative` under the base directory.
+    ///
+    /// `is_symlink` preserves the leaf itself instead of following it, matching
+    /// [`secure_join_symlink`]. For all other node types the leaf is followed
+    /// only when it is a symlink (or, on Windows, any reparse point), so regular
+    /// files and directories do not pay for a full canonicalization once their
+    /// parent is known.
+    pub(crate) fn resolve(&self, relative: &Path, is_symlink: bool) -> Result<PathBuf> {
+        if relative.is_absolute() {
+            return Err(MapacheError::Config(format!(
+                "Relative path cannot be absolute: {}",
+                relative.display()
+            )));
+        }
+
+        let joined = self.base.join(relative);
+        let normalized = fs::get_absolute_normalized_path(&joined)?;
+        if !normalized.starts_with(&self.base) {
+            return Err(MapacheError::Integrity(format!(
+                "Path traversal detected: {} is outside of {}",
+                normalized.display(),
+                self.base.display()
+            )));
+        }
+
+        if normalized == self.base {
+            return Ok(self.canonical_base.clone());
+        }
+
+        let name = normalized.file_name().ok_or_else(|| {
+            MapacheError::Internal(format!(
+                "resolved path has no file name: {}",
+                normalized.display()
+            ))
+        })?;
+        let parent = normalized.parent().ok_or_else(|| {
+            MapacheError::Internal(format!(
+                "resolved path has no parent: {}",
+                normalized.display()
+            ))
+        })?;
+
+        let canonical_parent = self.canonical_dir(parent)?;
+        let candidate = canonical_parent.join(name);
+
+        if is_symlink {
+            return Ok(candidate);
+        }
+
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) => {
+                #[cfg(windows)]
+                let needs_canonicalize = {
+                    // Any reparse point (including junctions) must be
+                    // canonicalized, not just `is_symlink()` entries.
+                    let _ = &metadata;
+                    true
+                };
+                #[cfg(not(windows))]
+                let needs_canonicalize = metadata.file_type().is_symlink();
+
+                if !needs_canonicalize {
+                    return Ok(candidate);
+                }
+
+                let canonical = std::fs::canonicalize(&candidate)?;
+                self.ensure_inside(&canonical, &normalized)?;
+                Ok(canonical)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
+            Err(error) => Err(MapacheError::Io(error)),
+        }
+    }
+
+    fn canonical_dir(&self, dir: &Path) -> Result<PathBuf> {
+        if let Some(cached) = self.canonical_dirs.lock().get(dir).cloned() {
+            return Ok(cached);
+        }
+
+        let canonical = canonicalize_with_missing_tail(dir)?;
+        self.ensure_inside(&canonical, dir)?;
+        self.canonical_dirs
+            .lock()
+            .insert(dir.to_path_buf(), canonical.clone());
+        Ok(canonical)
+    }
+
+    fn ensure_inside(&self, canonical: &Path, original: &Path) -> Result<()> {
+        if !canonical.starts_with(&self.canonical_base) {
+            return Err(MapacheError::Integrity(format!(
+                "Path traverses a symlink outside of {}: {}",
+                self.canonical_base.display(),
+                original.display()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1211,6 +1341,61 @@ mod tests {
             assert_eq!(secure_join_symlink(&base, Path::new("link"))?, expected);
             std::fs::remove_file(base.join("link"))?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_secure_path_resolver_matches_secure_join() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().join("target");
+        std::fs::create_dir_all(base.join("dir"))?;
+        let resolver = SecurePathResolver::new(&base)?;
+
+        for relative in [
+            Path::new("file.txt"),
+            Path::new("dir/file.txt"),
+            Path::new("sub/../other.txt"),
+            Path::new(""),
+        ] {
+            assert_eq!(
+                resolver.resolve(relative, false)?,
+                secure_join(&base, relative)?,
+                "resolver and secure_join disagree for {relative:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_secure_path_resolver_preserves_symlink_leaf() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().join("target");
+        std::fs::create_dir_all(&base)?;
+        let expected = std::fs::canonicalize(&base)?.join("link");
+        let resolver = SecurePathResolver::new(&base)?;
+
+        for target in [base.join("missing.txt"), temp.path().to_path_buf()] {
+            std::os::unix::fs::symlink(target, base.join("link"))?;
+            assert_eq!(resolver.resolve(Path::new("link"), true)?, expected);
+            std::fs::remove_file(base.join("link"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_secure_path_resolver_rejects_symlink_escape() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().join("target");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&base)?;
+        std::fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, base.join("link"))?;
+        let resolver = SecurePathResolver::new(&base)?;
+
+        assert!(resolver.resolve(Path::new("link/file.txt"), false).is_err());
+        assert!(resolver.resolve(Path::new("link"), false).is_err());
         Ok(())
     }
 }

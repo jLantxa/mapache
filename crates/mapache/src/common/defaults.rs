@@ -86,8 +86,49 @@ pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.0; // [0 - 1]
 /// Repack files smaller than this factor of the max pack size
 pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 
-/// Maximum pack segments downloaded and decoded concurrently during GC repack.
-pub(crate) const DEFAULT_GC_REPACK_CONCURRENCY: usize = 4;
+/// Default maximum concurrency for the GC repack pipeline.
+pub(crate) const DEFAULT_GC_REPACK_CONCURRENCY: usize = 8;
+
+/// Upper bound on the number of CPU-bound repack workers.
+///
+/// Each worker holds one decoded blob plus its re-encoded copy while the packer
+/// accepts it, so this is deliberately much lower than the core count. The
+/// snapshot path uses a similarly small fixed number of readers.
+pub(crate) const MAX_GC_REPACK_WORKERS: usize = 8;
+
+/// Maximum bytes of pack segment data held in memory at once during GC repack.
+///
+/// Segments are merged reads of adjacent blobs and can be much larger than a
+/// single blob. Bounding their total size, rather than only their count, keeps
+/// peak memory flat when the configured concurrency or the segment size is
+/// raised.
+pub(crate) const GC_REPACK_SEGMENT_BUDGET: u64 = 128 * size::MiB;
+
+/// Upper bound on the packer workers used while repacking. This matches the
+/// snapshot default: each packer can hold a full pack-sized buffer.
+pub(crate) const MAX_GC_REPACK_PACKERS: usize = DEFAULT_SNAPSHOT_PACKERS;
+
+/// Number of CPU-bound workers used to re-encode blobs during GC repack.
+///
+/// The configured concurrency is an upper bound, further limited by the number
+/// of available cores and by [`MAX_GC_REPACK_WORKERS`]. Following the configured
+/// value (instead of using every core) lets low-memory configurations stay
+/// low-memory; the default still runs more workers than the old pipeline.
+pub(crate) fn gc_repack_workers() -> usize {
+    let configured = runtime().gc_repack_concurrency.max(1);
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(configured)
+        .min(configured)
+        .clamp(1, MAX_GC_REPACK_WORKERS)
+}
+
+/// Number of packer workers used while repacking. Packer buffers dominate
+/// memory, so this never exceeds the snapshot default and never exceeds the
+/// encoder count.
+pub(crate) fn gc_repack_packers() -> usize {
+    gc_repack_workers().clamp(1, MAX_GC_REPACK_PACKERS)
+}
 
 // --- UI ---
 pub(crate) const DEFAULT_PROGRESS_REFRESH_RATE_HZ: f32 = 10.0;

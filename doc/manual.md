@@ -393,7 +393,7 @@ restore-pack-prefetch = 4
 restore-blob-concurrency = 8
 restore-max-open-files = 128
 min-pack-size-factor = 0.05
-gc-repack-concurrency = 4
+gc-repack-concurrency = 8
 blobs-per-index-file = 65535
 index-flush-timeout-secs = 600
 lru-max-blobs = 1000000
@@ -1432,6 +1432,10 @@ the compression of an existing repository after the fact (e.g.
 
 Old packs are removed after the replacement index is persisted. Repack requires
 an exclusive lock and may take significant time on large repositories.
+Re-encoding and pack finalization run in parallel, bounded by
+`gc-repack-concurrency`, the available CPU count and a fixed segment-memory
+budget. Memory use stays comparable to `snapshot` even when the configured
+concurrency is high.
 
 ---
 

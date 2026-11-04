@@ -57,13 +57,19 @@
   metadata, skipping extended attributes, file flags and symlink targets.
 - Marker-pruned directory contents count as skipped items, so
   `--fail-on-skipped` also rejects snapshots that omit them.
+- **GC repack parallelism**: re-encoding during `clean`/`repack` uses a small
+  worker pool instead of a single in-flight segment, and pack finalization/upload
+  runs in parallel. Concurrency stays bounded by `gc-repack-concurrency`, the
+  available CPU count and a fixed segment-byte budget, so raising it cannot
+  multiply whole pack reads without limit. Packer workers match the snapshot
+  default, keeping peak memory close to `snapshot` instead of scaling with cores.
 - The minimum configurable pack size is now 4 MiB (previously 1 MiB):
   `--pack-size` and `global.pack-size` reject lower values.
 
 ### Fixed
 
 - GC now removes unused and obsolete pack entries in one index rewrite when
-  repacking, freezes finalized index maps, and defaults to four in-flight pack
+  repacking, freezes finalized index maps, and defaults to eight in-flight pack
   segments to limit peak memory. Rewrite entry counts are logged for diagnosis.
   Pooled pack buffers no longer grow to twice the pack size, and blob
   decompression reuses pooled zstd contexts instead of creating one per blob.

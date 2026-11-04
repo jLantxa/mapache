@@ -27,6 +27,7 @@ use crate::{
     utils::{
         self,
         collections::{IdMap, IdSet},
+        size,
     },
 };
 
@@ -664,8 +665,7 @@ impl Plan {
         // defer this cleanup so it can be combined with obsolete-pack cleanup.
         if !self.obsolete_packs.is_empty() {
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
-            self.repo
-                .init_pack_saver(common::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
+            self.repo.init_pack_saver(defaults::gc_repack_packers())?;
 
             self.repack(reporter.0.clone()).await?;
 
@@ -769,11 +769,26 @@ impl Plan {
 
         // Read obsolete-pack footers and stream only indexed authoritative
         // entries; no encoded blob payloads are accumulated in a batch.
+        //
+        // Segment reads are the biggest transient allocation, so their count is
+        // also capped by a byte budget. Without it a high configured concurrency
+        // multiplies whole merged segments and dominates peak RSS.
         let d = defaults::runtime();
-        let segment_window = d.gc_repack_concurrency.max(1);
+        let segment_max_size = d.restore_pack_segment_max_size.max(1);
+        let max_segment_window = (defaults::GC_REPACK_SEGMENT_BUDGET / segment_max_size).max(1);
+        let segment_window =
+            (d.gc_repack_concurrency.max(1) as u64).min(max_segment_window) as usize;
+        let encode_concurrency = defaults::gc_repack_workers();
         let mut pack_ids: Vec<ID> = self.obsolete_packs.iter().copied().collect();
         pack_ids.sort_unstable();
-        tracing::info!(target: "gc", "Repacking referenced blobs from {} packs", pack_ids.len());
+        tracing::info!(
+            target: "gc",
+            "Repacking referenced blobs from {} packs ({} encode workers, {} segment window, {} MiB segment budget)",
+            pack_ids.len(),
+            encode_concurrency,
+            segment_window,
+            defaults::GC_REPACK_SEGMENT_BUDGET / size::MiB
+        );
         let repack_blob_packs = Arc::new(parking_lot::Mutex::new(repack_blob_packs));
 
         let loader = loader::BlobLoader::new(self.repo.clone());
@@ -817,7 +832,7 @@ impl Plan {
                     Ok::<(), MapacheError>(())
                 }
             })
-            .buffer_unordered(segment_window)
+            .buffer_unordered(encode_concurrency)
             .try_for_each(|_| async { Ok(()) })
             .await;
 

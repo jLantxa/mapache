@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "mapache"
-version = "0.8.0-rc.1"
+version = "0.8.0-rc.2"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",

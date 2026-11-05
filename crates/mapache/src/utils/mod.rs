@@ -657,7 +657,7 @@ impl SecurePathResolver {
     /// Resolves `relative` under the base directory.
     ///
     /// `is_symlink` preserves the leaf itself instead of following it, matching
-    /// [`secure_join_symlink`]. For all other node types the leaf is followed
+    /// `secure_join_symlink`. For all other node types the leaf is followed
     /// only when it is a symlink (or, on Windows, any reparse point), so regular
     /// files and directories do not pay for a full canonicalization once their
     /// parent is known.

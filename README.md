@@ -77,7 +77,7 @@ restic v0.19.1 as a base.
 **Test environment:** Fedora 44, AMD Ryzen 9 3900X (24 threads), SanDisk
 Extreme PRO NVMe.
 
-Each result is the average of 3 runs following a warmup run, all on local
+Each result is the average of 5 runs following a warmup run, all on local
 storage. Both tools run with default settings and 8 readers for backup.
 
 Workloads:
@@ -89,19 +89,19 @@ Workloads:
 
 | Tool    | Action  | Avg Time (s) | Max Time (s) | Avg PSS (MB) | Peak PSS (MB) | Avg CPU (%) | Repo (MB) |
 |---------|---------|--------------|--------------|--------------|---------------|-------------|-----------|
-| mapache | backup  |         1.98 |         2.02 |       358.77 |        362.04 |     1413.12 |    303.56 |
-| restic  | backup  |         3.90 |         3.97 |       812.79 |        839.21 |     1284.41 |    308.86 |
-| mapache | restore |        10.37 |        10.61 |       407.37 |        430.17 |      278.21 |      0.00 |
-| restic  | restore |        13.96 |        14.01 |       240.26 |        250.34 |      141.76 |      0.00 |
+| mapache | backup  |         1.93 |         1.95 |       341.18 |        353.62 |     1361.90 |    303.55 |
+| restic  | backup  |         3.85 |         3.94 |       810.96 |        817.80 |     1273.19 |    308.88 |
+| mapache | restore |        10.83 |        11.19 |       367.87 |        417.53 |      259.10 |      0.00 |
+| restic  | restore |        13.96 |        14.07 |       235.70 |        255.50 |      142.10 |      0.00 |
 
 ### enron
 
 | Tool    | Action  | Avg Time (s) | Max Time (s) | Avg PSS (MB) | Peak PSS (MB) | Avg CPU (%) | Repo (MB) |
 |---------|---------|--------------|--------------|--------------|---------------|-------------|-----------|
-| mapache | backup  |         4.48 |         4.51 |       385.03 |        386.79 |     1346.55 |    714.38 |
-| mapache | restore |        52.53 |        53.21 |       629.37 |        645.11 |      248.09 |      0.00 |
-| restic  | backup  |        10.67 |        10.77 |       858.84 |        904.03 |     1159.24 |    725.08 |
-| restic  | restore |        64.71 |        64.94 |       441.92 |        451.32 |      148.16 |      0.00 |
+| mapache | backup  |         4.22 |         4.33 |       322.07 |        329.28 |     1297.07 |    714.40 |
+| mapache | restore |        53.54 |        53.92 |       537.52 |        542.93 |      233.81 |      0.00 |
+| restic  | backup  |        10.55 |        10.77 |       863.95 |        892.79 |     1163.95 |    725.11 |
+| restic  | restore |        62.25 |        62.66 |       428.64 |        434.43 |      146.99 |      0.00 |
 
 ## Getting Started
 

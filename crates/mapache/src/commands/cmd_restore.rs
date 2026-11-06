@@ -113,8 +113,8 @@ pub struct CmdArgs {
     #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
     pub target: Option<PathBuf>,
 
-    /// A list of paths to restore: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    /// A path to restore. Can be used multiple times.
+    #[clap(long, value_parser)]
     pub include: Option<Vec<String>>,
 
     /// A file containing a list of paths to include, one per line.
@@ -122,8 +122,8 @@ pub struct CmdArgs {
     #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
     pub include_file: Option<PathBuf>,
 
-    /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    /// A path to exclude. Can be used multiple times.
+    #[clap(long, value_parser)]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.

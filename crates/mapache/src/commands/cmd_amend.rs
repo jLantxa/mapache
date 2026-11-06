@@ -98,8 +98,8 @@ pub struct CmdArgs {
     #[clap(long, value_parser, group = "description_group")]
     pub clear_description: bool,
 
-    /// List of paths to exclude from the backup
-    #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
+    /// Path to exclude from the backup. Can be used multiple times.
+    #[clap(long, value_parser, required = false)]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.

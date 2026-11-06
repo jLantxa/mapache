@@ -751,7 +751,7 @@ shared content across all of them.
 | Flag | Description |
 |---|---|
 | `--as-root` | Use a single directory as the snapshot root (its children become top-level items) |
-| `--exclude PATH[,PATH,...]` | Comma-separated paths to exclude (repeatable) |
+| `--exclude <PATH>` | Path to exclude (repeatable; pass the flag once per path) |
 | `--exclude-file <PATH>` | File with exclude paths, one per line |
 | `--exclude-if-present <FILE>` | Keep marker files but omit the other contents of any directory containing a marker (repeatable) |
 | `--exclude-caches` | Shorthand for `--exclude-if-present CACHEDIR.TAG` |
@@ -842,11 +842,14 @@ the snapshot root, so the same `**/` guidance applies.
 They can be specified inline or in a file:
 
 ```bash
-# Inline exclusions
-mapache snapshot ~/project --exclude "~/project/target","~/project/.git"
+# Inline exclusions (repeat the flag for multiple paths)
+mapache snapshot ~/project --exclude "~/project/target" --exclude "~/project/.git"
 
 # Exclude the same name at any depth
-mapache snapshot ~/project --exclude "**/target","**/.git"
+mapache snapshot ~/project --exclude "**/target" --exclude "**/.git"
+
+# Paths may contain commas without further quoting
+mapache snapshot ~/project --exclude "~/project/archive,2024.tar"
 
 # Exclusion file (one path per line)
 mapache snapshot ~/project --exclude-file ~/.mapache-exclude
@@ -981,9 +984,9 @@ be a snapshot ID prefix or `latest` (default).
 | Flag | Description |
 |---|---|
 | `--target <PATH>` | Restore destination (required) |
-| `--include PATH[,PATH,...]` | Only restore these paths (repeatable, or comma-separated within a single flag) |
+| `--include <PATH>` | Only restore this path (repeatable; pass the flag once per path) |
 | `--include-file <PATH>` | File with paths to include, one per line |
-| `--exclude PATH[,PATH,...]` | Exclude these paths (repeatable, or comma-separated within a single flag) |
+| `--exclude <PATH>` | Exclude this path (repeatable; pass the flag once per path) |
 | `--exclude-file <PATH>` | File with paths to exclude, one per line |
 | `--strip-prefix` | Strip the longest common prefix from restored paths |
 | `--strategy <MODE>` | Conflict resolution: `fail` (default), `skip`, `overwrite`, `newer` |
@@ -1027,13 +1030,13 @@ Restore supports both include and exclude filtering:
 ```bash
 # From a normal snapshot of ~/project, restore docs and src/main.rs
 mapache restore --target /tmp/restore \
-  --include "project/docs,project/src/main.rs"
+  --include project/docs --include project/src/main.rs
 
 # Include globs are matched against snapshot paths; ** spans directories
 mapache restore --target /tmp/restore --include "**/*.log"
 
 # Exclude certain paths
-mapache restore --target /tmp/restore --exclude "**/*.log,**/*.tmp"
+mapache restore --target /tmp/restore --exclude "**/*.log" --exclude "**/*.tmp"
 
 # Use filter files
 mapache restore --target /tmp/restore --include-file restore-list.txt
@@ -1048,7 +1051,7 @@ It has no effect without includes.
 # Snapshot (created normally from ~/project) contains:
 #   project/src/main.rs, project/docs/guide.md
 mapache restore --target /tmp/restore \
-  --include "project/src/main.rs,project/docs" --strip-prefix
+  --include project/src/main.rs --include project/docs --strip-prefix
 # Restores: /tmp/restore/src/main.rs and /tmp/restore/docs/guide.md
 
 # A single include strips the file's parent directory as well
@@ -2031,7 +2034,7 @@ Create a new backup snapshot.
 ```
 mapache snapshot [PATHS...] -r <URL>
   --as-root               Use a single directory as the snapshot root
-  --exclude <PATH,...>    Paths to exclude (repeatable, or comma-separated)
+  --exclude <PATH>        Path to exclude (repeatable)
   --exclude-file <PATH>   File with exclude paths (one per line)
   --exclude-if-present <FILE>  Omit directory contents when marker is present
   --exclude-caches        Exclude directory contents containing CACHEDIR.TAG
@@ -2063,9 +2066,9 @@ Restore a snapshot to a target path.
 ```
 mapache restore [SNAPSHOT] --target <PATH> -r <URL>
   --target <PATH>         Restore destination (required)
-  --include <PATH,...>    Paths to include (repeatable, or comma-separated)
+  --include <PATH>        Path to include (repeatable)
   --include-file <PATH>   File with include paths (one per line)
-  --exclude <PATH,...>    Paths to exclude (repeatable, or comma-separated)
+  --exclude <PATH>        Path to exclude (repeatable)
   --exclude-file <PATH>   File with exclude paths (one per line)
   --strip-prefix          Strip longest common prefix from restored paths
   --strategy <MODE>       Conflict resolution: fail|skip|overwrite|newer
@@ -2304,7 +2307,7 @@ mapache amend [SNAPSHOT...] -r <URL>
   --clear-tags            Remove all tags
   --description <TEXT>    Replace description
   --clear-description     Remove description
-  --exclude <PATH,...>    Exclude paths (rebuilds tree)
+  --exclude <PATH>        Exclude path (repeatable; rebuilds tree)
   --exclude-file <PATH>   File with exclude paths
 ```
 

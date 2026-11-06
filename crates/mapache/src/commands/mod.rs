@@ -1218,6 +1218,52 @@ mod tests {
     }
 
     #[test]
+    fn test_path_filter_flags_keep_commas_and_do_not_swallow_positionals() {
+        let comma_path = "/data/Grand Theft Auto - San Andreas (Europe) (En,Fr,De,Es,It).iso";
+
+        let cli = Cli::try_parse_from([
+            "mapache",
+            "snapshot",
+            "--exclude",
+            comma_path,
+            "/data/source",
+            "--exclude",
+            "**/.git",
+        ])
+        .expect("snapshot path filters must parse");
+        let Command::Snapshot(snapshot) = cli.command else {
+            panic!("expected snapshot command");
+        };
+        assert_eq!(snapshot.args.paths, vec![PathBuf::from("/data/source")]);
+        assert_eq!(
+            snapshot.args.exclude,
+            Some(vec![comma_path.to_string(), "**/.git".to_string()])
+        );
+
+        let cli = Cli::try_parse_from([
+            "mapache",
+            "restore",
+            "--include",
+            comma_path,
+            "--exclude",
+            comma_path,
+        ])
+        .expect("restore path filters must parse");
+        let Command::Restore(restore) = cli.command else {
+            panic!("expected restore command");
+        };
+        assert_eq!(restore.args.include, Some(vec![comma_path.to_string()]));
+        assert_eq!(restore.args.exclude, Some(vec![comma_path.to_string()]));
+
+        let cli = Cli::try_parse_from(["mapache", "amend", "latest", "--exclude", comma_path])
+            .expect("amend path filters must parse");
+        let Command::Amend(amend) = cli.command else {
+            panic!("expected amend command");
+        };
+        assert_eq!(amend.args.exclude, Some(vec![comma_path.to_string()]));
+    }
+
+    #[test]
     fn test_compression_pattern_flags_repeat_and_keep_positionals() {
         #[derive(clap::Parser, Debug)]
         #[command(no_binary_name = true)]

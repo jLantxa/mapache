@@ -68,6 +68,10 @@
 
 ### Fixed
 
+- Path filters no longer treat commas as list separators. `--exclude` and
+  `--include` accept one path per occurrence, so paths and glob patterns that
+  contain commas (such as `(En,Fr,De,Es,It)`) are matched intact. Repeat the
+  flag, or use `--exclude-file`/`--include-file`, to pass multiple paths.
 - GC now removes unused and obsolete pack entries in one index rewrite when
   repacking, freezes finalized index maps, and defaults to eight in-flight pack
   segments to limit peak memory. Rewrite entry counts are logged for diagnosis.

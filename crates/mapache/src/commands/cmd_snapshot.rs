@@ -105,8 +105,8 @@ pub struct CmdArgs {
     #[clap(long = "as-root", action = clap::ArgAction::SetTrue)]
     pub as_root: Option<bool>,
 
-    /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    /// A path to exclude. Can be used multiple times.
+    #[clap(long, value_parser)]
     #[serde(deserialize_with = "crate::common::config::deserialize_config_string_vec_opt")]
     pub exclude: Option<Vec<String>>,
 

@@ -70,7 +70,7 @@ repositories before upgrading to that release; see
 
 ## 2. Installation
 
-### Quick Install (Linux, macOS, Windows)
+### Quick Install (Linux, macOS, Windows, Android)
 
 ```bash
 curl -fsSL https://github.com/jlantxa/mapache/raw/main/tools/install.sh | sh
@@ -763,7 +763,7 @@ shared content across all of them.
 | `--no-parent` | Force complete analysis of all files (skip parent diff) |
 | `--no-scan` | Skip the initial file system scan |
 | `--one-file-system` | Do not descend into entries on another filesystem (errors if device IDs cannot be determined) |
-| `--use-fs-snapshot` | Windows: read sources through a VSS shadow copy, so files held open by running programs are captured (requires administrator privileges) |
+| `--use-fs-snapshot` | Windows: read sources through a VSS shadow copy, so files held open by running programs are captured (best effort; falls back to live reads with a warning without administrator privileges) |
 | `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
@@ -1764,8 +1764,9 @@ any running operation — and only quits from the dashboard. Long-running work
 such as loading the dashboard, searching, diffing, or snapshot, restore, clean
 and verify runs in the background, so the interface stays responsive.
 
-Transient toasts report info, success, warnings and errors. Click a toast to
-dismiss it, or press `Ctrl+N` for the notification centre, which keeps the full
+Transient toasts report info, success, warnings and errors. They expire on
+their own, and any key press or mouse click dismisses them immediately. Press
+`Ctrl+N` for the notification centre, which keeps the full
 history (`c` clears it, `Esc` or `Ctrl+N` closes it). `Ctrl+L` opens an overlay
 of recent log records, which are captured even when `MAPACHE_DEBUG_LEVEL` is
 unset (`c` clears it, `Esc` or `Ctrl+L` closes it).
@@ -1885,8 +1886,8 @@ colour depth and whether its background is light or dark; see
 
 ## 20. Global Options Reference
 
-These options are available on most commands (exceptions: `bundle`, `cache`,
-`completion` do not use repository connection).
+These options are available on most commands. `cache` and `completion` do not
+use a repository connection, and `config` only reads `--with-config`.
 
 | Flag | Description |
 |---|---|

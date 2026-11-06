@@ -87,7 +87,13 @@
   lifecycle handling; background work keeps the UI responsive and cancellable;
   layout, wrapping and truncation use Unicode display width; `q` returns to the
   previous screen and only the dashboard quits; and Enter on a find result opens
-  the file explorer on the matched item.
+  the file explorer on the matched item. The file explorer clamps its selection
+  after filtering instead of panicking on a stale index, clearing a no-match
+  diff filter recovers the selection, snapshot-detail hints render as a bottom
+  footer, breadcrumbs wrap wide characters by display width, the dashboard
+  reserves the rows its detail panel renders and keeps mouse selection working
+  after a failed reload, and info toasts expire after five seconds while any
+  key press or click dismisses transient notifications.
 - **Pack data-section hard limit**: the packer now refuses to let the encoded
   data section exceed `u32::MAX`, dispatching the current pack before adding a
   blob that would cross it. The configurable pack size remains a soft target,

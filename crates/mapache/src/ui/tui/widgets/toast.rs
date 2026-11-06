@@ -62,7 +62,8 @@ impl ToastKind {
     /// How long the transient toast stays visible before it is pruned.
     fn ttl(self) -> Duration {
         match self {
-            ToastKind::Info | ToastKind::Success => Duration::from_secs(6),
+            ToastKind::Info => Duration::from_secs(5),
+            ToastKind::Success => Duration::from_secs(6),
             ToastKind::Warning => Duration::from_secs(8),
             ToastKind::Error => Duration::from_secs(12),
         }
@@ -213,6 +214,11 @@ impl ToastQueue {
     pub fn prune(&mut self, now: Instant) {
         self.entries
             .retain(|e| now.saturating_duration_since(e.created) < e.kind.ttl());
+    }
+
+    /// Drops every transient notification. The history is left untouched.
+    pub fn dismiss_all(&mut self) {
+        self.entries.clear();
     }
 
     /// Forgets every transient notification and the whole history.
@@ -437,6 +443,22 @@ mod tests {
 
         queue.prune(now + Duration::from_secs(13));
         assert!(queue.entries.is_empty());
+    }
+
+    #[test]
+    fn info_toasts_expire_after_five_seconds() {
+        let mut queue = ToastQueue::default();
+        queue.push(ToastKind::Info, "refreshing");
+        let now = Instant::now();
+
+        queue.prune(now + Duration::from_secs(4));
+        assert!(
+            !queue.is_empty(),
+            "info toast should still be visible at 4s"
+        );
+
+        queue.prune(now + Duration::from_secs(5));
+        assert!(queue.is_empty(), "info toast should be gone at 5s");
     }
 
     #[test]

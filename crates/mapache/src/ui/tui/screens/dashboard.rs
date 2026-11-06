@@ -717,8 +717,11 @@ impl DashboardScreen {
         let entry = self.display_entry(self.table_state.selected().unwrap_or(0));
         let Some(entry) = entry else { return 0 };
         let mut h = 3u16;
-        if !entry.snapshot.paths.is_empty() {
-            h += (entry.snapshot.paths.len().min(5) + 1) as u16;
+        let shown_paths = entry.snapshot.paths.len().min(5);
+        h += shown_paths as u16;
+        if entry.snapshot.paths.len() > shown_paths {
+            // Extra row for the "… and N more" summary line.
+            h += 1;
         }
         if entry.snapshot.description.is_some() {
             h += 1;
@@ -1089,7 +1092,6 @@ impl Screen for DashboardScreen {
     async fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
         if self.filter.is_active()
             || self.loading
-            || self.needs_reload
             || !matches!(
                 mouse.kind,
                 crossterm::event::MouseEventKind::Down(MouseButton::Left)
@@ -1161,9 +1163,13 @@ mod tests {
     use crate::{
         backend::{StorageBackend, mock::MockBackend},
         common::defaults::TEST_REPO_CONFIG,
-        repository::repo::{Auth, THIS_REPOSITORY_VERSION},
+        repository::{
+            repo::{Auth, THIS_REPOSITORY_VERSION},
+            snapshot::Snapshot,
+        },
     };
     use crossterm::event::KeyModifiers;
+    use std::path::PathBuf;
     use zeroize::Zeroizing;
 
     fn render_header(screen: &DashboardScreen, width: u16) -> String {
@@ -1347,6 +1353,33 @@ mod tests {
             content.contains("No snapshots yet"),
             "empty dashboard should guide a new user: {content}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn details_height_matches_the_rendered_path_rows() -> Result<()> {
+        let mut screen = test_screen().await?;
+        let entry = |count: usize| SnapshotEntry {
+            id: ID::default(),
+            snapshot: Snapshot {
+                paths: (0..count)
+                    .map(|i| PathBuf::from(format!("/path{i}")))
+                    .collect(),
+                ..Default::default()
+            },
+            active: true,
+        };
+
+        screen.filtered_indices = vec![0];
+        screen.table_state.select(Some(0));
+
+        screen.snapshots = Arc::new(vec![entry(5)]);
+        // Three fixed rows, five path rows, two block borders.
+        assert_eq!(screen.selected_info_height(), 10);
+
+        screen.snapshots = Arc::new(vec![entry(8)]);
+        // Five path rows plus the "… and 3 more" summary row.
+        assert_eq!(screen.selected_info_height(), 11);
         Ok(())
     }
 

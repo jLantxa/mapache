@@ -322,10 +322,11 @@ impl DiffScreen {
         if self.visible.is_empty() {
             self.list_state.select(None);
         } else {
+            // Recover from a cleared `None` selection (e.g. a filter that
+            // matched nothing) as well as clamping past-the-end indices.
             let current = self.list_state.selected().unwrap_or(0);
-            if current >= self.visible.len() {
-                self.list_state.select(Some(self.visible.len() - 1));
-            }
+            self.list_state
+                .select(Some(current.min(self.visible.len() - 1)));
         }
     }
 
@@ -860,4 +861,68 @@ impl Screen for DiffScreen {
     }
 
     impl_attach_toasts!(toasts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backend::{StorageBackend, mock::MockBackend},
+        common::defaults::TEST_REPO_CONFIG,
+        repository::repo::{Auth, THIS_REPOSITORY_VERSION},
+    };
+    use zeroize::Zeroizing;
+
+    async fn test_screen() -> Result<DiffScreen> {
+        let auth = Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+        Ok(DiffScreen::new(repo, Arc::new(Vec::new()), 0, 0))
+    }
+
+    #[tokio::test]
+    async fn clearing_a_filter_recovers_the_selection() -> Result<()> {
+        let mut screen = test_screen().await?;
+        screen.entries.push(DiffEntry {
+            path: PathBuf::from("file.txt"),
+            depth: 0,
+            diff: NodeDiff::Unchanged,
+            changed_kind: None,
+            is_dir: false,
+            has_changes: true,
+            expanded: false,
+        });
+
+        screen.filter.open();
+        for ch in ['z', 'z', 'z'] {
+            screen.filter.handle_key(KeyCode::Char(ch));
+        }
+        screen.filter.handle_key(KeyCode::Enter);
+        screen.build_visible();
+        assert!(screen.visible.is_empty());
+        assert_eq!(screen.list_state.selected(), None);
+
+        screen.filter.clear();
+        screen.build_visible();
+        assert_eq!(screen.visible.len(), 1);
+        assert_eq!(
+            screen.list_state.selected(),
+            Some(0),
+            "clearing a no-match filter must reselect the first visible entry"
+        );
+        Ok(())
+    }
 }

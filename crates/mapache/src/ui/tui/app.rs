@@ -256,17 +256,18 @@ impl App {
         }
 
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            // While an overlay is open it swallows clicks.
-            if self.overlay != Overlay::None {
-                return;
-            }
-
-            // A click on a toast dismisses it before anything else sees it.
+            // Interacting with the UI dismisses transient notifications. A
+            // click that lands on a toast is consumed; any other click still
+            // reaches the screen or overlay underneath.
             let area = self.last_area;
-            if self
-                .toasts
-                .with_queue(|queue| queue.dismiss_at(area, mouse.column, mouse.row))
-            {
+            let clicked_toast = self.toasts.with_queue(|queue| {
+                let hit = queue.dismiss_at(area, mouse.column, mouse.row);
+                queue.dismiss_all();
+                hit
+            });
+
+            // While an overlay is open it swallows clicks.
+            if self.overlay != Overlay::None || clicked_toast {
                 return;
             }
 
@@ -324,6 +325,10 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
+        // Interacting with the UI dismisses transient notifications. The key
+        // still reaches the screen so it is not stolen from the user.
+        self.toasts.with_queue(|queue| queue.dismiss_all());
+
         // Ctrl+C always quits, whatever the screen (or an overlay) is doing.
         // The run loop shuts the screens down on the way out.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -536,6 +541,35 @@ mod tests {
 
             assert!(app.should_quit);
         }
+    }
+
+    #[tokio::test]
+    async fn any_key_dismisses_transient_toasts() {
+        let (mut app, _finished) = worker_app(false);
+        app.toasts.info("still visible");
+        assert!(app.toasts.with_queue(|queue| !queue.is_empty()));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+
+        assert!(app.toasts.with_queue(|queue| queue.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn any_click_dismisses_transient_toasts() {
+        let (mut app, _finished) = worker_app(false);
+        app.toasts.warning("still visible");
+        assert!(app.toasts.with_queue(|queue| !queue.is_empty()));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await;
+
+        assert!(app.toasts.with_queue(|queue| queue.is_empty()));
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@ use crate::{
         theme,
         widgets::{
             FilterState, Spinner, StateNavigation, ToastSink, click_to_index, impl_attach_toasts,
-            truncate_with_ellipsis, wrap_line,
+            text_width, truncate_with_ellipsis, wrap_line,
         },
     },
     utils,
@@ -200,6 +200,18 @@ impl FileExplorerScreen {
         }
     }
 
+    /// Keeps the list cursor inside the currently visible entries. Filtering
+    /// can shrink the list below the selected index; without this, key handlers
+    /// that index the visible slice could go out of bounds.
+    fn clamp_selection(state: &mut ListState, len: usize) {
+        if len == 0 {
+            state.select(None);
+        } else {
+            let selected = state.selected().unwrap_or(0);
+            state.select(Some(selected.min(len - 1)));
+        }
+    }
+
     /// Starts loading the subtree for `tree_id` in the background. The event
     /// loop keeps running; `poll_loads` applies the result once it arrives.
     fn start_loading(&mut self, tree_id: ID, node_name: &str) {
@@ -267,8 +279,9 @@ impl FileExplorerScreen {
     fn breadcrumb_lines(&self, width: u16) -> Vec<Line<'static>> {
         let width = (width as usize).max(1);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let mut spans = vec![Span::styled(" \u{2302} ", theme::THEME.breadcrumb)];
-        let mut cur = 3usize; // width of the home glyph span
+        let home = Span::styled(" \u{2302} ", theme::THEME.breadcrumb);
+        let mut cur = text_width(home.content.as_ref());
+        let mut spans = vec![home];
 
         for part in self
             .current_path
@@ -280,7 +293,7 @@ impl FileExplorerScreen {
             .filter(|part| *part != "/")
         {
             // " / " plus the component name.
-            let token_width = 3 + part.chars().count();
+            let token_width = 3 + text_width(part);
 
             if !spans.is_empty() && cur + token_width > width {
                 lines.push(Line::from(std::mem::take(&mut spans)));
@@ -296,7 +309,11 @@ impl FileExplorerScreen {
                 let mut wrapped = Vec::new();
                 wrap_line(&token, width, &mut wrapped);
                 let last = wrapped.pop().unwrap_or_default();
-                cur = last.spans.iter().map(|s| s.content.chars().count()).sum();
+                cur = last
+                    .spans
+                    .iter()
+                    .map(|s| text_width(s.content.as_ref()))
+                    .sum();
                 lines.extend(wrapped);
                 spans = last.spans;
             } else {
@@ -535,10 +552,13 @@ impl Screen for FileExplorerScreen {
 
         if self.filter.is_active() {
             self.filter.handle_key(key.code);
+            let len = Self::visible_nodes(&self.current_tree.nodes, &self.filter).len();
+            Self::clamp_selection(&mut self.list_state, len);
             return None;
         }
 
         let nodes = Self::visible_nodes(&self.current_tree.nodes, &self.filter);
+        Self::clamp_selection(&mut self.list_state, nodes.len());
         match key.code {
             KeyCode::Esc => {
                 if self.filter.has_query() {
@@ -574,13 +594,12 @@ impl Screen for FileExplorerScreen {
                 None
             }
             KeyCode::Char('r') => {
-                if let Some(i) = self.list_state.selected() {
-                    let node_name = &nodes[i].name;
+                if let Some(node) = self.list_state.selected().and_then(|i| nodes.get(i)) {
                     let mut path = self.current_path.clone();
                     if let Ok(stripped) = path.strip_prefix("/") {
                         path = stripped.to_path_buf();
                     }
-                    let restore_path = path.join(node_name);
+                    let restore_path = path.join(&node.name);
 
                     Some(Transition::Push(Box::new(RestoreScreen::new(
                         self.repo.clone(),
@@ -766,6 +785,55 @@ mod tests {
                 .content
                 .contains('\u{2302}')
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn breadcrumb_wraps_wide_characters_by_display_width() -> Result<()> {
+        let mut screen = make_screen().await?;
+        screen.current_path = PathBuf::from("/日本語版/中文目录");
+
+        let width = 20;
+        for line in screen.breadcrumb_lines(width) {
+            let used: usize = line
+                .spans
+                .iter()
+                .map(|span| text_width(span.content.as_ref()))
+                .sum();
+            assert!(
+                used <= width as usize,
+                "breadcrumb row is {used} columns wide, expected at most {width}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn filtering_clamps_a_stale_selection() -> Result<()> {
+        let mut screen = make_screen().await?;
+        screen.current_tree.nodes = ["alpha.txt", "beta.txt", "gamma.txt"]
+            .iter()
+            .map(|name| Node {
+                name: (*name).into(),
+                ..Default::default()
+            })
+            .collect();
+        screen.list_state.select(Some(2));
+
+        screen.handle_key(KeyEvent::from(KeyCode::Char('/'))).await;
+        for ch in ['a', 'l', 'p'] {
+            screen.handle_key(KeyEvent::from(KeyCode::Char(ch))).await;
+        }
+        screen.handle_key(KeyEvent::from(KeyCode::Enter)).await;
+
+        let visible = FileExplorerScreen::visible_nodes(&screen.current_tree.nodes, &screen.filter);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(screen.list_state.selected(), Some(0));
+
+        // Restoring the selected entry used to index the shortened list
+        // directly, which panicked once the selection was past its end.
+        let transition = screen.handle_key(KeyEvent::from(KeyCode::Char('r'))).await;
+        assert!(transition.is_some());
         Ok(())
     }
 

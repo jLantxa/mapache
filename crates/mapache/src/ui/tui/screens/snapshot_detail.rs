@@ -248,14 +248,14 @@ impl Screen for SnapshotDetailScreen {
         let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(footer.len() as u16), Constraint::Min(3)])
+            .constraints([Constraint::Min(3), Constraint::Length(footer.len() as u16)])
             .split(inner);
 
+        self.render_content(frame, chunks[0]);
         frame.render_widget(
             ratatui::widgets::Paragraph::new(ratatui::text::Text::from(footer)),
-            chunks[0],
+            chunks[1],
         );
-        self.render_content(frame, chunks[1]);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
@@ -314,4 +314,62 @@ impl Screen for SnapshotDetailScreen {
     }
 
     impl_attach_toasts!(toasts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backend::{StorageBackend, mock::MockBackend},
+        common::{ID, defaults::TEST_REPO_CONFIG},
+        repository::repo::{Auth, THIS_REPOSITORY_VERSION},
+        ui::tui::test_support::render_text,
+    };
+    use zeroize::Zeroizing;
+
+    async fn test_repo() -> Result<Arc<Repository>> {
+        let auth = Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+        Ok(repo)
+    }
+
+    #[tokio::test]
+    async fn footer_renders_below_the_content() -> Result<()> {
+        let repo = test_repo().await?;
+        let entries: SnapshotEntryList = vec![SnapshotEntry {
+            id: ID::default(),
+            snapshot: Snapshot::default(),
+            active: true,
+        }];
+        let mut screen = SnapshotDetailScreen::new(repo, Arc::new(entries), 0);
+        let lines = screen.build_content_lines();
+        screen.cached_lines = lines;
+
+        let rendered = render_text(100, 30, |frame| screen.render(frame));
+        let content = rendered
+            .find("Snapshot")
+            .expect("snapshot content title should be rendered");
+        let footer = rendered
+            .find("Esc")
+            .expect("footer hints should be rendered");
+        assert!(
+            content < footer,
+            "footer hints must follow the content, not precede it:\n{rendered}"
+        );
+        Ok(())
+    }
 }

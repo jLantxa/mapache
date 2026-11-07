@@ -828,7 +828,6 @@ async fn verify_metadata_files(
         match verify_metadata_file(
             repo.backend(),
             secure_storage.clone(),
-            repo.repo_version(),
             *file_type,
             *file_id,
             file_path.clone(),
@@ -1019,7 +1018,6 @@ async fn dump_pack_blobs(
                     backend.as_ref(),
                     secure_storage.as_ref(),
                     &pack_id,
-                    secure_storage.nonce_at_end(),
                 )
                 .await
                 .map_err(|e| {

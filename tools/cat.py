@@ -11,10 +11,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV
 
 # Mapache Constants
 FOOTER_BLOB_LEN = 41
-TYPE_DATA, TYPE_TREE, TYPE_PADDING = 1, 2, 255
 
 # BlobType enum values (from common/id.rs)
-BLOB_TYPES = {0: "Data", 1: "Tree", 2: "Zero", 255: "Padding"}
+BLOB_TYPES = {0: "Data", 1: "Tree", 2: "Padding", 3: "Zero"}
 
 
 class MapacheRepo:
@@ -38,16 +37,10 @@ class MapacheRepo:
         except Exception as e:
             raise ValueError(f"Failed to decompress/parse keyfile: {e}")
 
-        # Support both v1 (flat m/t/p) and v2 (kdf object) keyfiles
-        if 'kdf' in kf:
-            kdf = kf['kdf']
-            time_cost = kdf['t']
-            memory_cost = kdf['m']
-            parallelism = kdf['p']
-        else:
-            time_cost = kf['t']
-            memory_cost = kf['m']
-            parallelism = kf['p']
+        kdf = kf['kdf']
+        time_cost = kdf['t']
+        memory_cost = kdf['m']
+        parallelism = kdf['p']
 
         kek = low_level.hash_secret_raw(
             secret=password.encode(),
@@ -60,32 +53,19 @@ class MapacheRepo:
         )
 
         enc_key = base64.b64decode(kf['encrypted_key'])
-        # Try nonce-at-end first (v2), then nonce-at-start (v1)
-        # v2: [ciphertext+tag | nonce(12)]   v1: [nonce(12) | ciphertext+tag]
-        try:
-            return AESGCMSIV(kek).decrypt(enc_key[-12:], enc_key[:-12], None)
-        except Exception:
-            return AESGCMSIV(kek).decrypt(enc_key[:12], enc_key[12:], None)
+        return AESGCMSIV(kek).decrypt(enc_key[-12:], enc_key[:-12], None)
 
     def _detect_version(self):
-        """Detect repo version by reading and decrypting the manifest."""
-        try:
-            path = os.path.join(self.repo_path, "manifest")
-            with open(path, 'rb') as f:
-                raw = f.read()
-
-            # Try nonce-at-end first (v2)
-            for nonce_at_end in [True, False]:
-                try:
-                    decrypted = self._decrypt(raw, nonce_at_end)
-                    decompressed = self.dctx.decompress(decrypted, max_output_size=1048576)
-                    manifest = json.loads(decompressed)
-                    return manifest.get("version", 1)
-                except Exception:
-                    continue
-            return 1  # fallback
-        except Exception:
-            return 1
+        """Read and validate the repository format version."""
+        path = os.path.join(self.repo_path, "manifest")
+        with open(path, 'rb') as f:
+            raw = f.read()
+        decrypted = self._decrypt(raw)
+        decompressed = self.dctx.decompress(decrypted, max_output_size=1048576)
+        version = json.loads(decompressed).get("version")
+        if version != 2:
+            raise ValueError(f"unsupported repository format version: {version}")
+        return version
 
     def _get_path(self, obj_type, obj_id):
         key = (obj_type, obj_id)
@@ -103,16 +83,10 @@ class MapacheRepo:
         self.path_cache[key] = res
         return res
 
-    def _decrypt(self, data, nonce_at_end=False):
-        """Decrypt data with correct nonce position.
-        v2: [ciphertext+tag | nonce(12)]   v1: [nonce(12) | ciphertext+tag]
-        """
-        if nonce_at_end:
-            nonce = data[-12:]
-            ct = data[:-12]
-        else:
-            nonce = data[:12]
-            ct = data[12:]
+    def _decrypt(self, data):
+        """Decrypt v2 data laid out as [ciphertext+tag | nonce(12)]."""
+        nonce = data[-12:]
+        ct = data[:-12]
         return self.cipher.decrypt(nonce, ct, None)
 
     def load_object(self, obj_type, obj_id, offset=0, length=None):
@@ -128,23 +102,18 @@ class MapacheRepo:
         if obj_type == "key":
             return self.dctx.decompress(data, max_output_size=1048576)
 
-        # v2: nonce at end; v1: nonce at start
-        nonce_at_end = self.repo_version >= 2
-        decrypted = self._decrypt(data, nonce_at_end)
+        decrypted = self._decrypt(data)
         return self.dctx.decompress(decrypted, max_output_size=10485760)
 
     def load_all_indices(self):
-        """Load all index files, handling both v1 JSON and v2 binary formats."""
+        """Load all binary index files."""
         idx_dir = self._get_path("index", "")
         if not os.path.exists(idx_dir):
             return
         for idx_id in os.listdir(idx_dir):
             try:
                 raw = self.load_object("index", idx_id)
-                if self.repo_version >= 2:
-                    packs = self._parse_index_binary(raw)
-                else:
-                    packs = json.loads(raw).get("packs", [])
+                packs = self._parse_index_binary(raw)
 
                 for pack in packs:
                     pid = pack["id"] if isinstance(pack["id"], str) else pack["id"].hex()
@@ -156,11 +125,17 @@ class MapacheRepo:
 
     def _parse_index_binary(self, data):
         """Parse v2 binary index format."""
+        if len(data) < 12 or data[:4] != b"MPIX":
+            raise ValueError("invalid binary index header")
+        version, flags = struct.unpack_from('<HH', data, 4)
+        if version != 2 or flags != 0:
+            raise ValueError("unsupported binary index version or flags")
+
         packs = []
         cur = data
 
-        num_packs = struct.unpack_from('<I', cur, 0)[0]
-        pos = 4
+        num_packs = struct.unpack_from('<I', cur, 8)[0]
+        pos = 12
 
         for _ in range(num_packs):
             pack_id = cur[pos:pos + 32]
@@ -214,21 +189,28 @@ class MapacheRepo:
             f.seek(-(4 + flen), os.SEEK_END)
             raw = f.read(flen)
 
-        # v2: nonce at end; v1: nonce at start
-        nonce_at_end = self.repo_version >= 2
         footer_plain = self.dctx.decompress(
-            self._decrypt(raw, nonce_at_end),
+            self._decrypt(raw),
             max_output_size=5242880
         )
+        if footer_plain[:4] != b"MPFT" or struct.unpack_from('<H', footer_plain, 4)[0] != 2:
+            raise ValueError("unsupported pack footer format")
+        if struct.unpack_from('<H', footer_plain, 6)[0] != 0:
+            raise ValueError("invalid pack footer flags")
+        footer_plain = footer_plain[8:]
+        if len(footer_plain) % FOOTER_BLOB_LEN:
+            raise ValueError("partial pack footer descriptor")
         res, off = [], 0
         for i in range(len(footer_plain) // FOOTER_BLOB_LEN):
             e = footer_plain[i * FOOTER_BLOB_LEN:(i + 1) * FOOTER_BLOB_LEN]
             blen = struct.unpack('<I', e[33:37])[0]
             type_byte = e[32]
-            if type_byte != TYPE_PADDING:
+            blob_type = type_byte & 0x7F
+            if blob_type != 2:
                 res.append({
                     "id": e[:32].hex(),
-                    "type": "Data" if type_byte == TYPE_DATA else "Tree",
+                    "type": BLOB_TYPES.get(blob_type, f"Unknown({blob_type})"),
+                    "compressed": bool(type_byte & 0x80),
                     "offset": off, "length": blen,
                     "raw_length": struct.unpack('<I', e[37:41])[0]
                 })

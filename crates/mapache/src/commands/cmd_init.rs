@@ -51,16 +51,6 @@ impl ToExitCode for InitError {
         storage bucket. The storage backend is determined by the --repo URL scheme."
 )]
 pub struct CmdArgs {
-    /// Repository format version.
-    ///
-    /// Not exposed on the command line: `init` always creates a repository in
-    /// the current format. Retained as an internal knob so integration tests
-    /// can still construct v1 repositories to exercise the read and migrate
-    /// paths until v1 support is removed.
-    // TODO(v1-removal): Remove this field along with v1 support.
-    #[clap(skip = THIS_REPOSITORY_VERSION)]
-    pub format: u32,
-
     /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
     ///
     /// A value of 0 disables ECC. When set, pack files, index files,
@@ -104,7 +94,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
     tracing::info!(target: "init", "Calling Repository::init");
 
     let manifest = Repository::init(
-        args.format,
+        THIS_REPOSITORY_VERSION,
         &auth,
         global_args.key.as_ref(),
         backend.clone(),
@@ -127,7 +117,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
     if !global_args.json {
         ui::cli::log!(
             "Created repo v{} with id {} at {}\n",
-            args.format,
+            manifest.version(),
             manifest.id().to_short_hex(SHORT_REPO_ID_LEN),
             global_args.repo
         );

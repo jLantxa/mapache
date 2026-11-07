@@ -62,9 +62,9 @@ Mapache is feature-complete and production-oriented, but relatively new. Users
 should validate their own backup/restore workflows before relying on it for
 mission-critical data.
 
-Repository v1 support is scheduled for removal in v0.9.0. Migrate v1
-repositories before upgrading to that release; see
-[`migrate`](#migrate--migrate-repository-format).
+Repository format v1 is no longer supported. Migrate existing v1 repositories
+to v2 with the last release that includes the `migrate` command before
+upgrading.
 
 ---
 
@@ -566,8 +566,7 @@ You will be prompted for a username and password. A manifest file is created
 with a unique repository ID and the current mapache version. **Do not lose
 your password** — there is no password recovery mechanism.
 
-New repositories are created in format v2. To upgrade an existing v1 repository,
-see [`migrate`](#migrate--migrate-repository-format).
+New repositories use format v2. Existing repositories must also use format v2.
 
 ---
 
@@ -640,8 +639,7 @@ their file IDs are re-derived at the destination (blob IDs stay identical, as
 they hash the plaintext). Any `parent`/`amends` links between copied snapshots
 are remapped to the new IDs.
 
-Source and destination must use the same format version (`v1` and `v2` cannot be
-mixed). Use `mapache migrate` to upgrade a v1 repository to v2.
+Both source and destination must be valid format v2 repositories.
 
 Supports `--json` for machine-readable progress events.
 
@@ -672,9 +670,7 @@ The sync operation:
 3. copies missing or changed files
 4. synchronizes the manifest last to ensure destination validity.
 
-Source and destination must use the same format version (`v1` and `v2` cannot be
-mixed): `sync` replicates the raw storage layout, so version-mixed replicas would
-be unreadable. Use `mapache migrate` to upgrade a v1 repository to v2.
+`sync` replicates the raw storage layout, so both endpoints must use format v2.
 
 ---
 
@@ -699,40 +695,7 @@ The command will:
 
 ---
 
-### `migrate` — Migrate Repository Format
-
-```bash
-mapache migrate -r <URL>
-mapache migrate --dry-run -r <URL>
-```
-
-Migrates a repository from format v1 to v2. The migration performs four steps:
-
-1. **Re-encrypt packs** — Every pack file is re-encrypted with the nonce placed
-   at the end (v2) instead of the start (v1). This changes each pack's ID
-   (the hash depends on the ciphertext).
-2. **Re-encrypt snapshots** — Snapshot metadata files are re-encrypted with the
-   new nonce position.
-3. **Rebuild index** — A new binary index (v2 format) is built from the
-   re-encrypted packs, replacing the old JSON index files.
-4. **Update manifest** — The manifest version is updated to `2`, completing the
-   migration atomically.
-
-The original files are kept while the new packs, snapshots, and index are
-written. Updating the manifest is the migration's commit point; only after it
-succeeds are the old files removed. This makes the migration safe to interrupt:
-before the commit point, the original repository remains intact, and after it,
 the repository uses the new format.
-
-| Flag | Description |
-|---|---|
-| `--dry-run` | Simulate the migration without making changes |
-
-> **Important:** Back up your repository before migrating. While the migration
-> is designed to be safe, having a backup is always recommended for
-> destructive operations. Repository v1 support is scheduled for removal in
-> v0.9.0, so migrate before upgrading to that release.
-
 ---
 
 ## 8. Taking Snapshots
@@ -1641,8 +1604,7 @@ Bundle-specific options:
 | `--cache-size-mib <MIB>` | Data cache size (default: 256 MiB, mount mode) |
 
 Bundles are password-protected (AES-GCM-SIV). The password is independent
-from the repository password. New bundles use the current format (v2); legacy
-v1 bundles can still be read, but cannot be created with the current command.
+from the repository password. Only bundle format v2 is supported.
 
 ---
 
@@ -1937,10 +1899,7 @@ the repository requires no extra configuration. Metadata (footers, index,
 snapshots) is always compressed regardless of this setting. `none` is also
 available in the TOML config as `compression = "none"`.
 
-> **Note:** `none` requires repository format v2. The v1 format always stores
-> blobs zstd-compressed and has no per-blob compression marker, so using
-> `--compression none` (or `compression = "none"`) against a v1
-> repository fails — migrate it to v2 first (`mapache migrate -r <URL>`).
+> **Note:** `none` is supported by repository format v2.
 
 ### Skipping Compression for Incompressible Files
 
@@ -1966,8 +1925,7 @@ encrypted files) wastes CPU and can even grow a blob slightly. Mapache decides
 As a final safety net, a blob is stored uncompressed whenever compression does
 not make it smaller, so compression never expands the repository.
 
-Content skipping is **enabled by default** and requires repository format v2
-(v1 has no per-blob compression marker and always compresses).
+Content skipping is **enabled by default** for the supported repository format.
 
 Patterns match the file name (not the full path), e.g. `*.mp4`, `*.zip`,
 `cache-*`. They can be given on the command line or in the TOML config:
@@ -2024,8 +1982,8 @@ mapache init -r <URL>
   --calibrate-kdf        Benchmark Argon2id parameters for this hardware
 ```
 
-New repositories are created using format v2. Use `mapache migrate` to upgrade
-an existing v1 repository.
+Only repository format v2 is supported. Upgrade existing v1 repositories with
+the last release that includes the `migrate` command.
 
 ### `mapache snapshot`
 
@@ -2239,8 +2197,7 @@ mapache ecc regenerate -r <URL>            # Regenerate all sidecars
 | `set-percent <PERCENT>` | Change the ECC overhead percentage; deletes old sidecars and regenerates with the new setting |
 | `regenerate` | Regenerate all sidecars using the current ECC config (useful after corruption or parameter changes) |
 
-`ecc` requires repository format v2. Use `mapache migrate` to upgrade v1
-repositories before enabling ECC.
+`ecc` is available for all supported repositories, which use format v2.
 
 ### `mapache bundle`
 
@@ -2325,15 +2282,6 @@ Rebuild the index by scanning all packs.
 
 ```
 mapache rebuild-index -r <URL>
-  --dry-run               Simulate without making changes
-```
-
-### `mapache migrate`
-
-Migrate repository format from v1 to v2.
-
-```
-mapache migrate -r <URL>
   --dry-run               Simulate without making changes
 ```
 

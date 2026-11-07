@@ -60,8 +60,6 @@ use crate::{
 //     ^ (41 bytes)
 //
 //   The compression algorithm is repo-wide (declared in the manifest), so a single
-//   bit suffices per blob. Legacy v1 entries also use this 41-byte layout, but the
-//   high bit is not meaningful there: v1 blobs are always zstd-compressed.
 
 static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -387,7 +385,6 @@ impl Packer {
         backend: &dyn StorageBackend,
         secure_storage: &SecureStorage,
         pack_id: &ID,
-        nonce_at_end: bool,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         let pack_path = repo.get_path(ContentIdType::Pack, pack_id);
 
@@ -411,12 +408,7 @@ impl Packer {
             )
             .await?;
 
-        Self::parse_footer(
-            secure_storage,
-            &footer_data,
-            nonce_at_end,
-            repo.repo_version(),
-        )
+        Self::parse_footer(secure_storage, &footer_data)
     }
 
     /// Decodes a slice of footer bytes into a list of descriptors.
@@ -424,15 +416,9 @@ impl Packer {
     /// This function validates the trailer length, decrypts the footer,
     /// and filters out any "Padding" blobs used during the packing process.
     ///
-    /// `repo_version` decides whether the high bit of the type byte is a
-    /// meaningful compression marker: v2 honors it, while v1 entries always
-    /// decode as zstd-compressed (the bit is not meaningful there).
-    // TODO(v1-removal): Remove repo_version parameter, always honor the marker.
     pub fn parse_footer(
         secure_storage: &SecureStorage,
         footer_data: &[u8],
-        nonce_at_end: bool,
-        repo_version: u32,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         if footer_data.len() < 4 {
             return Err(MapacheError::Format("pack footer too short".to_string()));
@@ -452,56 +438,43 @@ impl Packer {
 
         let footer_slice =
             &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4];
-        let decrypted = match secure_storage.decrypt_inner(footer_slice, nonce_at_end)? {
+        let decrypted = match secure_storage.decrypt_inner(footer_slice)? {
             crate::backend::WriteContents::Owned(v) => v,
             crate::backend::WriteContents::Borrowed(b) => b.to_vec(),
         };
         let footer_blob_info = secure_storage.decompress(&decrypted)?;
         let mut cur = footer_blob_info.as_slice();
-        let has_v2_footer_header = cur.starts_with(&FOOTER_MAGIC);
-        // TODO(v1-removal): Remove this legacy branch and always parse the v2
-        // self-identifying footer header.
-        if repo_version >= 2 || has_v2_footer_header {
-            if cur.len() < FOOTER_HEADER_SIZE {
-                return Err(MapacheError::Format(
-                    "pack footer header is truncated".to_string(),
-                ));
-            }
-            if get_array::<4>(&mut cur)? != FOOTER_MAGIC {
-                return Err(MapacheError::Format(
-                    "invalid pack footer magic".to_string(),
-                ));
-            }
-            if get_u16(&mut cur)? != FOOTER_FORMAT_VERSION {
-                return Err(MapacheError::Format(
-                    "unsupported pack footer format version".to_string(),
-                ));
-            }
-            if get_u16(&mut cur)? != 0 {
-                return Err(MapacheError::Format(
-                    "invalid pack footer flags".to_string(),
-                ));
-            }
-            if !cur.len().is_multiple_of(FOOTER_BLOB_LEN) {
-                return Err(MapacheError::Format(
-                    "pack footer has a partial blob descriptor".to_string(),
-                ));
-            }
+        if cur.len() < FOOTER_HEADER_SIZE {
+            return Err(MapacheError::Format(
+                "pack footer header is truncated".to_string(),
+            ));
+        }
+        if get_array::<4>(&mut cur)? != FOOTER_MAGIC {
+            return Err(MapacheError::Format(
+                "invalid pack footer magic".to_string(),
+            ));
+        }
+        if get_u16(&mut cur)? != FOOTER_FORMAT_VERSION {
+            return Err(MapacheError::Format(
+                "unsupported pack footer format version".to_string(),
+            ));
+        }
+        if get_u16(&mut cur)? != 0 {
+            return Err(MapacheError::Format(
+                "invalid pack footer flags".to_string(),
+            ));
+        }
+        if !cur.len().is_multiple_of(FOOTER_BLOB_LEN) {
+            return Err(MapacheError::Format(
+                "pack footer has a partial blob descriptor".to_string(),
+            ));
         }
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
-        // TODO(v1-removal): Remove the v1 interpretation and always honor the
-        // compression marker in the v2 footer.
-        let has_compression_marker = repo_version >= 2 || has_v2_footer_header;
 
         while !cur.is_empty() {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);
             let (blob_type, compressed) = BlobType::from_byte(get_u8(&mut cur)?)?;
-            let compressed = if has_compression_marker {
-                compressed
-            } else {
-                true
-            };
             let length = get_u32(&mut cur)?;
             let raw_length = get_u32(&mut cur)?;
 
@@ -963,7 +936,7 @@ mod tests {
         assert!(!result.data.is_empty());
 
         // If you want to verify the "round-trip" through the parser:
-        let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data, true, 2)?;
+        let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data)?;
         // The parser filters out Padding, so we should get exactly 2 back
         assert_eq!(parsed_descriptors.len(), 2);
 
@@ -1042,7 +1015,7 @@ mod tests {
         let mut footer_data = encoded_footer.clone();
         footer_data.extend_from_slice(&(encoded_footer.len() as u32).to_le_bytes());
 
-        let err = Packer::parse_footer(&secure_storage, &footer_data, true, 2)
+        let err = Packer::parse_footer(&secure_storage, &footer_data)
             .expect_err("offsets over u32::MAX must be rejected");
 
         assert!(

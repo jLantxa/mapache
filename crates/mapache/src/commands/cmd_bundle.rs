@@ -36,7 +36,7 @@ use crate::{
         calculate_lcp, get_absolute_normalized_path,
         tree::{FSNodeStream, NodeDiff, Tree},
     },
-    repository::{self, lock::LockHandle, manifest::EccConfig, repo::Repository},
+    repository::{lock::LockHandle, manifest::EccConfig, repo::Repository},
     ui::{
         cli::{self, color::Colorize},
         default_bar_draw_target, default_progress_style,
@@ -108,14 +108,6 @@ fn open_bundle_with_retry(
             }
         }
     }
-}
-
-/// TODO(v1-removal): Remove this function when v1 support is dropped.
-fn warn_v1_bundle() {
-    cli::warning!(
-        "Bundle format v1 is deprecated and will be unsupported in a future release.\n\
-        Consider using v2 (default) which includes ECC protection: `mapache bundle --format 2`\n"
-    );
 }
 
 /// Creates a progress bar with rate estimation for byte-transfer operations
@@ -214,16 +206,6 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS, value_parser = parse_readers)]
     pub readers: usize,
 
-    /// Bundle format version.
-    ///
-    /// Not exposed on the command line: new bundles are always written in the
-    /// current format. Retained as an internal knob so integration tests can
-    /// still construct v1 bundles to exercise the read paths until v1 support
-    /// is removed.
-    // TODO(v1-removal): Remove this field along with v1 support.
-    #[clap(skip = repository::repo::THIS_REPOSITORY_VERSION)]
-    pub format: u32,
-
     /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
     ///
     /// A value of 0 disables ECC. When set, the bundle data section is
@@ -277,7 +259,6 @@ impl Default for CmdArgs {
             allow_other: false,
             metadata_only: false,
             data_cache_size_mib: 256.0,
-            format: repository::repo::THIS_REPOSITORY_VERSION,
             ecc: None,
             internal_password: None,
             calibrate_kdf: false,
@@ -298,7 +279,6 @@ impl Default for CmdArgs {
             exclude: vec![],
             as_root: None,
             readers: DEFAULT_SNAPSHOT_READERS,
-            format: repository::repo::THIS_REPOSITORY_VERSION,
             ecc: None,
             internal_password: None,
             calibrate_kdf: false,
@@ -478,7 +458,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             global.compression_level.to_level(),
             !matches!(global.compression_level, Compression::None),
             global.compress_policy(),
-            args.format as u16,
             ecc_config,
             args.calibrate_kdf,
         )
@@ -576,10 +555,6 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
     let destination = args.output.as_deref().unwrap_or(std::path::Path::new("."));
 
     let reader = open_bundle_with_retry(bundle, &args.internal_password)?;
-    // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
-    if reader.version < 2 {
-        warn_v1_bundle();
-    }
     let root_tree_id = reader.trailer.root_tree;
     let loader = Arc::new(reader);
 
@@ -688,7 +663,6 @@ async fn export_snapshot_impl(
             global.compression_level.to_level(),
             !matches!(global.compression_level, Compression::None),
             global.compress_policy(),
-            args.format as u16,
             ecc_config,
             args.calibrate_kdf,
         )
@@ -948,12 +922,7 @@ async fn run_import_bundle(
 
     let reader = open_bundle_with_retry(bundle_path, internal_password)?;
 
-    // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
-    if reader.version < 2 {
-        warn_v1_bundle();
-    }
-
-    // Block importing v1 bundles into v2 repos and vice versa.
+    // Keep bundle and repository formats aligned.
     let repo_version = repo.repo_version();
     if reader.version != repo_version as u16 {
         return Err(BundleError::Config(format!(
@@ -1326,10 +1295,6 @@ async fn run_mount(args: &CmdArgs) -> Result<(), BundleError> {
     let canonical_mountpoint = get_absolute_normalized_path(&actual_mountpoint)?;
 
     let reader = open_bundle_with_retry(bundle, &args.internal_password)?;
-    // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
-    if reader.version < 2 {
-        warn_v1_bundle();
-    }
     let root_tree_id = reader.trailer.root_tree;
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 

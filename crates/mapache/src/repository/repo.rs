@@ -55,16 +55,6 @@ pub(crate) type OpenWithLockResult = (Arc<Repository>, Arc<SecureStorage>, LockH
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
-pub fn warn_v1_deprecated() {
-    ui::cli::warning!(
-        "Repository format v1 is deprecated and will be removed in the future.\n\
-        Creating new v1 repositories will be disabled soon.\n\
-        Existing repositories can still be \
-        read until v1 support is removed entirely.\n\
-        Consider migrating to v2: `mapache migrate --repo <repo-path>`\n"
-    );
-}
-
 /// A pair of sizes representing raw and encoded (compressed/encrypted) bytes.
 #[derive(Debug, Default, Copy, Clone)]
 pub struct SizePair {
@@ -202,7 +192,6 @@ impl RepoStats {
 /// or [Repository::try_open_unlocked].
 pub struct Repository {
     manifest: Manifest,
-    repo_version: u32,
 
     // Storage
     backend: Arc<dyn StorageBackend>,
@@ -251,10 +240,7 @@ impl BlobSaver for Repository {
     }
 
     fn probe_compression_hint(&self, sample: &[u8]) -> Option<CompressionHint> {
-        if !self.has_compression_marker()
-            || matches!(self.compression, Compression::None)
-            || !self.compress_policy.probe
-        {
+        if matches!(self.compression, Compression::None) || !self.compress_policy.probe {
             return None;
         }
         Some(if self.is_compressible(sample) {
@@ -307,15 +293,16 @@ impl Repository {
         ecc_config: Option<EccConfig>,
         calibrate_kdf: bool,
     ) -> Result<Manifest> {
+        if repo_version != THIS_REPOSITORY_VERSION {
+            return Err(MapacheError::Repo(format!(
+                "unsupported repository format version '{repo_version}'"
+            )));
+        }
+
         tracing::info!(target: "repo", "Checking for existing repository");
         if backend.path_exists(Path::new(MANIFEST_PATH)).await {
             tracing::error!(target: "repo", "Repository already exists");
             return Err(MapacheError::RepoAlreadyExists);
-        }
-
-        // TODO(v1-removal)
-        if repo_version == 1 {
-            warn_v1_deprecated();
         }
 
         backend
@@ -334,7 +321,7 @@ impl Repository {
         // Create new key
         tracing::info!(target: "repo", "Generating master key and keyfile");
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(auth, &master_key, repo_version, calibrate_kdf)
+        let keyfile = KeyManager::generate_key_file(auth, &master_key, calibrate_kdf)
             .inspect_err(|e| tracing::error!(target: "repo", "Key generation failed: {e}"))
             .map_err(|e| MapacheError::Crypto(format!("could not generate key: {e}")))?;
         tracing::info!(
@@ -378,14 +365,12 @@ impl Repository {
         let locks_path = PathBuf::from(LOCKS_DIR);
 
         // Save new manifest
-        tracing::info!(target: "repo", "Creating manifest v{repo_version}");
+        tracing::info!(target: "repo", "Creating manifest v{THIS_REPOSITORY_VERSION}");
         let manifest = match ecc_config {
-            Some(ecc) => Manifest::new_with_ecc(repo_version, ecc),
-            None => Manifest::new(repo_version),
+            Some(ecc) => Manifest::new_with_ecc(THIS_REPOSITORY_VERSION, ecc),
+            None => Manifest::new(THIS_REPOSITORY_VERSION),
         };
 
-        // TODO(v1-removal): Nonce position depends on repo version.
-        secure_storage.set_nonce_at_end(repo_version >= 2);
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_bytes = serde_json::to_string_pretty(&manifest)?.into_bytes();
         let encoded_manifest = secure_storage.encode(&manifest_bytes)?;
@@ -462,28 +447,16 @@ impl Repository {
 
         let version = repo.manifest().version();
         tracing::info!(target: "repo", "Repository version: {version}");
-        if version > THIS_REPOSITORY_VERSION {
+        if version != THIS_REPOSITORY_VERSION {
             return Err(MapacheError::Repo(format!(
-                "invalid repository version '{version}'"
+                "unsupported repository format version '{version}' (expected '{}')",
+                THIS_REPOSITORY_VERSION
             )));
         }
 
         repo.manifest().validate_algorithms()?;
 
-        // TODO(v1-removal): The v1 format has no per-blob compression marker.
-        if version < 2 && matches!(config.compression, Compression::None) {
-            return Err(MapacheError::Repo(
-                "compression 'none' is not supported in repository format v1; \
-                 migrate the repository to v2 first"
-                    .to_string(),
-            ));
-        }
-
-        // TODO(v1-removal): Nonce position depends on repo version.
-        let nonce_at_end = matches!(version, 2);
-        tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
-        secure_storage.set_nonce_at_end(nonce_at_end);
-
+        tracing::info!(target: "repo", "Nonce position: end");
         Ok((repo, secure_storage))
     }
 
@@ -493,8 +466,7 @@ impl Repository {
         secure_storage: Arc<SecureStorage>,
         config: RepoConfig,
     ) -> Result<Arc<Self>> {
-        let (manifest, _manifest_nonce_at_end) =
-            Self::load_manifest(secure_storage.clone(), backend.clone()).await?;
+        let manifest = Self::load_manifest(secure_storage.clone(), backend.clone()).await?;
 
         // If use cache, wrap the backend in a cache
         let backend = match config.use_cache {
@@ -508,15 +480,8 @@ impl Repository {
 
         let master_index = Arc::new(MasterIndex::new(config.index_mode));
 
-        // TODO(v1-removal)
-        let repo_version = manifest.version();
-        if repo_version == 1 {
-            warn_v1_deprecated();
-        }
-
         let repo = Repository {
             manifest,
-            repo_version,
             backend,
             objects_path: PathBuf::from(OBJECTS_DIR),
             snapshot_path: PathBuf::from(SNAPSHOTS_DIR),
@@ -564,33 +529,7 @@ impl Repository {
 
     /// Returns the repository format version.
     pub fn repo_version(&self) -> u32 {
-        self.repo_version
-    }
-
-    // ── v1/v2 format helpers ──────────────────────────────────────────────
-    // Use these instead of `repo_version >= 2` checks so that v1 removal is
-    // a single-point edit.  Every site guarded by these helpers is tagged
-    // `TODO(v1-removal)`.
-
-    /// v2: nonce at end `[ct | tag | nonce]`.  v1: nonce at start.
-    pub fn nonce_at_end(&self) -> bool {
-        matches!(self.repo_version, 2)
-    }
-
-    /// v2: compact binary index.  v1: JSON index.
-    pub fn uses_binary_index(&self) -> bool {
-        matches!(self.repo_version, 2)
-    }
-
-    /// v2: high bit of type byte is a compression marker.
-    /// v1: always zstd-compressed, bit is not meaningful.
-    pub fn has_compression_marker(&self) -> bool {
-        matches!(self.repo_version, 2)
-    }
-
-    /// v2: `--compression none` is supported.
-    pub fn supports_compression_none(&self) -> bool {
-        matches!(self.repo_version, 2)
+        THIS_REPOSITORY_VERSION
     }
 
     /// Get the repository backend
@@ -625,15 +564,6 @@ impl Repository {
     /// This lets a single snapshot override the repository-wide default without
     /// reopening the repository.
     pub(crate) fn with_compression(&self, compression: Compression) -> Result<Arc<Self>> {
-        // TODO(v1-removal): The v1 format has no per-blob compression marker.
-        if matches!(compression, Compression::None) && !self.supports_compression_none() {
-            return Err(MapacheError::Repo(
-                "compression 'none' is not supported in repository format v1; \
-                 migrate the repository to v2 first"
-                    .to_string(),
-            ));
-        }
-
         let secure_storage = Arc::new(
             self.secure_storage
                 .with_compression_level(compression.to_level()),
@@ -641,7 +571,6 @@ impl Repository {
 
         Ok(Arc::new(Self {
             manifest: self.manifest.clone(),
-            repo_version: self.repo_version,
             backend: self.backend.clone(),
             secure_storage,
             compression,
@@ -661,13 +590,9 @@ impl Repository {
 
     /// Decides whether a blob should be compressed.
     ///
-    /// v1 has no per-blob compression marker, so it always compresses.
-    /// Otherwise a `Store` hint and a `--compression none` preset disable
-    /// compression, and `Auto`/`Compress` fall back to the content probe.
+    /// A `Store` hint and a `--compression none` preset disable compression;
+    /// `Auto` and `Compress` fall back to the content probe.
     fn should_compress_blob(&self, hint: CompressionHint, data: &[u8]) -> bool {
-        if !self.has_compression_marker() {
-            return true;
-        }
         if matches!(self.compression, Compression::None) {
             return false;
         }
@@ -758,25 +683,7 @@ impl Repository {
         id: ID,
         hint: CompressionHint,
     ) -> Result<ID> {
-        // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
-        // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
-        //
-        // BlobType::Zero only exists in repository format v2. v1 footers have no
-        // zero type and no per-blob compression marker, so `Index::persist`
-        // downgrades zero entries to BlobType::Data with length=0. A zero blob
-        // stored that way is unrestorable: `load_blob` only takes the zero-blob
-        // fast path when the locator type is Zero, so it would instead read zero
-        // bytes out of the pack and fail to decrypt them. Downgrade to Data here,
-        // at the single point every zero blob passes through, so the v1 index is
-        // written with a normal full-length Data blob and v1 never stores one.
-        //
-        // TODO(v1-removal): Drop this branch along with the v1 format.
-        let blob_type = if blob_type == BlobType::Zero && self.repo_version() < 2 {
-            BlobType::Data
-        } else {
-            blob_type
-        };
-
+        // Zero blobs use a footer descriptor without occupying pack data bytes.
         if blob_type == BlobType::Zero {
             let raw_length = u32::try_from(data.len()).map_err(|_| {
                 MapacheError::Integrity(format!(
@@ -811,8 +718,7 @@ impl Repository {
 
         // Decide per blob whether to run zstd. A `--compression none` preset and
         // a `Store` hint win outright; `Auto`/`Compress` fall back to the content
-        // heuristic. v1 has no per-blob marker, so it always compresses.
-        let has_marker = self.has_compression_marker();
+        // heuristic.
         let want_compress = self.should_compress_blob(hint, data.as_ref());
 
         let mut encoded_data = if want_compress {
@@ -822,10 +728,9 @@ impl Repository {
         };
 
         // Raw-store fallback: if compression did not pay off, store the plain
-        // (encrypted) bytes instead of a larger zstd frame. Only meaningful for
-        // formats with a per-blob compression marker.
+        // (encrypted) bytes instead of a larger zstd frame.
         let mut compressed = want_compress;
-        if has_marker && want_compress && encoded_data.len() >= data.len() {
+        if want_compress && encoded_data.len() >= data.len() {
             encoded_data = self.secure_storage.encrypt(&data)?;
             compressed = false;
         }
@@ -901,18 +806,16 @@ impl Repository {
             .await?;
 
         let secure_storage = self.secure_storage.clone();
-        let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
 
         tokio::task::spawn_blocking(move || {
             file_id.verify_content(&index_data)?;
             let decoded = secure_storage.decode(&index_data)?;
-            let index_file =
-                index::IndexFile::deserialize(&decoded, repo_version).map_err(|e| {
-                    MapacheError::Format(format!(
-                        "failed to load index file {}: {e}",
-                        file_id.to_short_hex(4)
-                    ))
-                })?;
+            let index_file = index::IndexFile::deserialize(&decoded).map_err(|e| {
+                MapacheError::Format(format!(
+                    "failed to load index file {}: {e}",
+                    file_id.to_short_hex(4)
+                ))
+            })?;
             Ok(Index::from_index_file(index_file, file_id))
         })
         .await
@@ -1305,59 +1208,21 @@ impl Repository {
             )
             .await?;
 
-        // TODO(v1-removal): Remove repo_version parameter after v1 support is dropped.
-        index::IndexFile::deserialize(&data, self.repo_version)
+        index::IndexFile::deserialize(&data)
     }
 
-    /// Loads the repository manifest.
-    ///
-    /// Tries decoding with nonce-at-end first, then nonce-at-start, to support
-    /// both v1 (nonce at start) and v2 (nonce at end) manifests. The returned
-    /// `bool` indicates which nonce position was used.
-    // TODO(v1-removal): Remove the nonce-at-start fallback.
+    /// Loads the repository manifest using the current nonce layout.
     async fn load_manifest(
         secure_storage: Arc<SecureStorage>,
         backend: Arc<dyn StorageBackend>,
-    ) -> Result<(Manifest, bool)> {
+    ) -> Result<Manifest> {
         let raw = backend
             .read(&Handle::new(Path::new(MANIFEST_PATH)), 0, 0)
             .await?;
-
-        // Try nonce-at-end first, then nonce-at-start.
-        let primary_err = match secure_storage.decrypt_inner(&raw, true) {
-            Ok(decoded) => {
-                let decompressed = secure_storage.decompress(&decoded)?;
-                let manifest = serde_json::from_slice(&decompressed)?;
-                return Ok((manifest, true));
-            }
-            Err(e) => e,
-        };
-        let decoded = secure_storage.decrypt_inner(&raw, false).map_err(|e| {
-            MapacheError::Crypto(format!(
-                "failed to decrypt manifest with both nonce positions \
-                 (primary: {primary_err}, fallback: {e})"
-            ))
-        })?;
+        let decoded = secure_storage.decrypt_inner(&raw)?;
         let decompressed = secure_storage.decompress(&decoded)?;
         let manifest = serde_json::from_slice(&decompressed)?;
-        Ok((manifest, false))
-    }
-
-    /// Load the manifest to determine the repository version.
-    ///
-    /// This is useful for commands (like `key add`) that need to know the
-    /// repository version without opening the full repository.
-    pub async fn load_manifest_version(
-        master_key: &[u8],
-        backend: Arc<dyn StorageBackend>,
-    ) -> Result<u32> {
-        let secure_storage = Arc::new(
-            SecureStorage::new()
-                .with_compression(Compression::Fast.to_level())
-                .with_key(master_key)?,
-        );
-        let (manifest, _) = Self::load_manifest(secure_storage, backend).await?;
-        Ok(manifest.version())
+        Ok(manifest)
     }
 
     /// Loads a lock file.
@@ -1721,7 +1586,6 @@ impl Repository {
         // the GC believe it had a fully resident index when it did not.
         let staged_index = MasterIndex::new(index_mode);
 
-        let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
         let budget = match index_mode {
             IndexMode::Eager => u64::MAX, // Load all
             IndexMode::Lazy(budget) => budget,
@@ -1759,7 +1623,7 @@ impl Repository {
             let index_file = tokio::task::spawn_blocking(move || {
                 file_id.verify_content(&index_data)?;
                 let decoded = secure_storage.decode_owned(index_data)?;
-                index::IndexFile::deserialize(&decoded, repo_version).map_err(|e| {
+                index::IndexFile::deserialize(&decoded).map_err(|e| {
                     MapacheError::Format(format!(
                         "failed to load index file {}: {e}",
                         file_id.to_short_hex(4)
@@ -2270,22 +2134,49 @@ mod tests {
         Ok(())
     }
 
-    /// The v1 format has no per-blob compression marker, so `none` is rejected.
     #[tokio::test]
-    async fn test_with_compression_rejects_none_on_v1() -> Result<()> {
+    async fn test_open_rejects_v1_repository() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(1, &auth, None, backend.clone(), None, false).await?;
-        let (repo, _ss) =
-            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+            None,
+            false,
+        )
+        .await?;
+        let (repo, secure_storage) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        let mut manifest = repo.manifest().clone();
+        manifest.set_version(1);
+        let manifest_bytes = serde_json::to_string_pretty(&manifest)?.into_bytes();
+        backend
+            .write(
+                &Handle::new(Path::new(MANIFEST_PATH)),
+                WriteContents::Owned(secure_storage.encode(&manifest_bytes)?),
+            )
+            .await?;
 
-        assert!(matches!(
-            repo.with_compression(Compression::None),
-            Err(MapacheError::Repo(_))
-        ));
-        // Real compression presets remain allowed on v1.
-        assert!(repo.with_compression(Compression::Fast).is_ok());
+        let err = Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG)
+            .await
+            .err()
+            .expect("v1 repository must be rejected");
 
+        assert!(
+            err.to_string()
+                .contains("unsupported repository format version '1'")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_init_rejects_v1_format() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        let result = Repository::init(1, &auth, None, backend, None, false).await;
+        assert!(result.is_err());
         Ok(())
     }
 
@@ -2583,7 +2474,6 @@ mod tests {
                 repo.backend().as_ref(),
                 secure_storage.as_ref(),
                 &pack_id,
-                repo.nonce_at_end(),
             )
             .await?;
             total_entries += descriptors.iter().filter(|d| d.id == expected_id).count();
@@ -2648,7 +2538,7 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile_value = KeyManager::generate_key_file(&auth, &master_key.clone(), 2, false)?;
+        let keyfile_value = KeyManager::generate_key_file(&auth, &master_key.clone(), false)?;
         let keyfile: keys::KeyFile = serde_json::from_value(keyfile_value)?;
 
         let salt = utils::base64::decode(&keyfile.salt)?;
@@ -2659,35 +2549,6 @@ mod tests {
         let ss = SecureStorage::new()
             .with_compression(Compression::Fast.to_level())
             .with_key(&*intermediate_key)?;
-
-        let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
-
-        assert_eq!(*master_key, decrypted_key.as_slice());
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_generate_key_file_v1() -> Result<()> {
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: Zeroizing::new("password".to_string()),
-        };
-        let master_key = KeyManager::generate_new_master_key();
-        let keyfile_value = KeyManager::generate_key_file(&auth, &master_key.clone(), 1, false)?;
-        let keyfile: keys::KeyFile = serde_json::from_value(keyfile_value)?;
-
-        let salt = utils::base64::decode(&keyfile.salt)?;
-        let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
-
-        let intermediate_key =
-            SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params()?)?;
-        let ss = SecureStorage::new()
-            .with_compression(Compression::Fast.to_level())
-            .with_key(&*intermediate_key)?;
-        // v1 keyfiles use nonce-at-start
-        // TODO(v1-removal): Remove this test or adapt to only test v2.
-        ss.set_nonce_at_end(false);
 
         let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
 

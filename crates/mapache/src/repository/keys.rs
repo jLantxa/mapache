@@ -8,7 +8,7 @@ use std::{
 use argon2;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt, future::BoxFuture};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -54,82 +54,14 @@ pub struct Argon2Params {
 /// caps the unauthenticated zstd decompression performed before parsing.
 pub const MAX_KEYFILE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
 
-/// Key file struct (v2 layout with nested kdf object).
-///
-/// On disk, v1 repos use flat m/t/p fields ([`KeyFileV1`]). The custom
-/// [`Deserialize`] impl converts v1 format on read into this representation.
-#[derive(Debug, Serialize)]
+/// Key file struct.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct KeyFile {
     pub created: DateTime<Local>,
     pub username: String,
     pub kdf: KdfConfig,
     pub salt: String,
     pub encrypted_key: String,
-}
-
-/// v1 key file layout: flat m/t/p fields. Kept for backward-compatible serialization.
-#[derive(Debug, Serialize)]
-pub struct KeyFileV1 {
-    pub created: DateTime<Local>,
-    pub username: String,
-    pub m: u32,
-    pub t: u32,
-    pub p: u32,
-    pub salt: String,
-    pub encrypted_key: String,
-}
-
-// TODO(v1-removal): Remove this custom Deserialize impl and use #[derive(Deserialize)].
-// The default deserialization handles the v2 format (kdf object) correctly.
-impl<'de> Deserialize<'de> for KeyFile {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawKeyFile {
-            created: DateTime<Local>,
-            username: String,
-            kdf: Option<KdfConfig>,
-            m: Option<u32>,
-            t: Option<u32>,
-            p: Option<u32>,
-            salt: String,
-            encrypted_key: String,
-        }
-
-        let raw = RawKeyFile::deserialize(deserializer)?;
-
-        // v2: kdf field present
-        if let Some(kdf) = raw.kdf {
-            return Ok(KeyFile {
-                created: raw.created,
-                username: raw.username,
-                kdf,
-                salt: raw.salt,
-                encrypted_key: raw.encrypted_key,
-            });
-        }
-
-        // v1: flat m/t/p fields, assume Argon2id
-        let m = raw
-            .m
-            .ok_or_else(|| serde::de::Error::missing_field("kdf or m"))?;
-        let t = raw
-            .t
-            .ok_or_else(|| serde::de::Error::missing_field("kdf or t"))?;
-        let p = raw
-            .p
-            .ok_or_else(|| serde::de::Error::missing_field("kdf or p"))?;
-
-        Ok(KeyFile {
-            created: raw.created,
-            username: raw.username,
-            kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
-            salt: raw.salt,
-            encrypted_key: raw.encrypted_key,
-        })
-    }
 }
 
 impl KeyFile {
@@ -302,33 +234,20 @@ impl KeyManager {
             .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&*intermediate_key)?;
 
-        // TODO(v1-removal): Try the default nonce position (v2: nonce at end). If that fails,
-        // fall back to the other position (v1: nonce at start).
-        let primary_err = match ss.decrypt(&encrypted_key) {
-            Ok(c) => return Ok(Zeroizing::new(c.into_owned())),
-            Err(e) => e,
-        };
-        ss.set_nonce_at_end(!ss.nonce_at_end());
         ss.decrypt(&encrypted_key)
             .map(|c| Zeroizing::new(c.into_owned()))
             .map_err(|e| {
                 MapacheError::Crypto(format!(
-                    "could not retrieve master key from this keyfile \
-                     (primary: {primary_err}, fallback: {e})"
+                    "could not retrieve master key from this keyfile: {e}"
                 ))
             })
     }
 
     /// Generates a new key file for the master key with a new password.
     ///
-    /// Returns a `serde_json::Value` serialized in the format matching `repo_version`:
-    /// v1 uses flat m/t/p fields and nonce-at-start, v2+ uses a nested kdf object
-    /// and nonce-at-end.
-    // TODO(v1-removal): Remove repo_version parameter, always use nonce-at-end and kdf object.
     pub fn generate_key_file(
         auth: &Auth,
         master_key: &[u8],
-        repo_version: u32,
         calibrate_kdf: bool,
     ) -> Result<serde_json::Value> {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
@@ -347,37 +266,19 @@ impl KeyManager {
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&*intermediate_key)?;
-        // TODO(v1-removal): v1 binaries only try nonce-at-start; use that position for v1 repos
-        // so they remain backward-compatible.
-        ss.set_nonce_at_end(matches!(repo_version, 2));
-
         let encrypted_key = ss.encrypt(master_key)?;
 
-        let m = argon2_params.m_cost();
-        let t = argon2_params.t_cost();
-        let p = argon2_params.p_cost();
-
-        // TODO(v1-removal): Remove the v1 branch; always use KeyFile.
-        let value = match repo_version {
-            2 => serde_json::to_value(KeyFile {
-                created: create_time,
-                username: auth.username.clone(),
-                kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
-                salt: utils::base64::encode(&salt),
-                encrypted_key: utils::base64::encode(&encrypted_key),
-            })?,
-            _ => serde_json::to_value(KeyFileV1 {
-                created: create_time,
-                username: auth.username.clone(),
-                m,
-                t,
-                p,
-                salt: utils::base64::encode(&salt),
-                encrypted_key: utils::base64::encode(&encrypted_key),
-            })?,
-        };
-
-        Ok(value)
+        Ok(serde_json::to_value(KeyFile {
+            created: create_time,
+            username: auth.username.clone(),
+            kdf: KdfConfig::Argon2id(Argon2Params {
+                m: argon2_params.m_cost(),
+                t: argon2_params.t_cost(),
+                p: argon2_params.p_cost(),
+            }),
+            salt: utils::base64::encode(&salt),
+            encrypted_key: utils::base64::encode(&encrypted_key),
+        })?)
     }
 
     /// Retrieve the master key from all available keys in a folder
@@ -608,7 +509,7 @@ mod tests {
         };
         let master_key = KeyManager::generate_new_master_key();
 
-        let key_file_value = KeyManager::generate_key_file(&auth, &master_key, 2, false)?;
+        let key_file_value = KeyManager::generate_key_file(&auth, &master_key, false)?;
         let key_file: KeyFile = serde_json::from_value(key_file_value)?;
         assert_eq!(key_file.username, "test_user");
 

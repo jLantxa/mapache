@@ -212,7 +212,6 @@ pub struct MetadataFileStats {
 pub async fn verify_metadata_file(
     backend: Arc<dyn StorageBackend>,
     secure_storage: Arc<SecureStorage>,
-    repo_version: u32,
     file_type: ContentIdType,
     file_id: Option<ID>,
     file_path: std::path::PathBuf,
@@ -267,7 +266,7 @@ pub async fn verify_metadata_file(
         }
         ContentIdType::Index => {
             let plaintext = ss.decode_owned(raw_data_clone)?;
-            IndexFile::deserialize(&plaintext, repo_version)
+            IndexFile::deserialize(&plaintext)
                 .map_err(|e| MapacheError::Format(format!("corrupt index structure: {e}")))?;
             Ok(())
         }
@@ -386,12 +385,7 @@ async fn verify_pack_inline(
             let file_hash = ID::from_content(&raw_data);
             let bit_rot = file_hash != pack_id;
 
-            let pack_header = Packer::parse_footer(
-                &secure_storage,
-                &raw_data,
-                secure_storage.nonce_at_end(),
-                repo.repo_version(),
-            )?;
+            let pack_header = Packer::parse_footer(&secure_storage, &raw_data)?;
 
             let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
                 .par_iter()
@@ -496,12 +490,7 @@ async fn verify_pack_streaming(
         .await
         .map_err(|e| MapacheError::Backend(format!("failed to read pack footer: {}", e.inner())))?;
 
-    let pack_header = Packer::parse_footer(
-        &secure_storage,
-        &footer_raw,
-        secure_storage.nonce_at_end(),
-        repo.repo_version(),
-    )?;
+    let pack_header = Packer::parse_footer(&secure_storage, &footer_raw)?;
 
     let data_end = pack_header
         .last()

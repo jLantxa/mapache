@@ -29,24 +29,16 @@ mod tests {
         path: &std::path::Path,
         auth: &mapache::repository::repo::Auth,
     ) -> Result<()> {
-        init_repo_at_version(
-            path,
-            auth,
-            mapache::repository::repo::THIS_REPOSITORY_VERSION,
-        )
-        .await
-    }
-
-    /// Initialize a repo at the given path with the test auth and format version.
-    async fn init_repo_at_version(
-        path: &std::path::Path,
-        auth: &mapache::repository::repo::Auth,
-        version: u32,
-    ) -> Result<()> {
         let backend = Arc::new(LocalFS::new(path.to_path_buf()));
-        let _ =
-            mapache::repository::repo::Repository::init(version, auth, None, backend, None, false)
-                .await?;
+        let _ = mapache::repository::repo::Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            auth,
+            None,
+            backend,
+            None,
+            false,
+        )
+        .await?;
         Ok(())
     }
 
@@ -457,28 +449,6 @@ mod tests {
         let dst_ids = get_snapshot_ids(&ctx.repo_path)?;
         assert_eq!(dst_ids.len(), 2, "Should copy exactly two snapshots");
 
-        Ok(())
-    }
-
-    #[tokio::test]
-    // TODO(v1-removal): Delete this test when v1 repos stop being supported.
-    async fn test_copy_version_mismatch_v1_to_v2() -> Result<()> {
-        let ctx = TestContext::new().await?;
-
-        // Destination is a v2 repository
-        ctx.init_repo().await?;
-
-        // Source is a v1 repository
-        let src_repo_path = ctx._tmp_dir.path().join("copy_src_v1");
-        init_repo_at_version(&src_repo_path, &ctx.auth, 1).await?;
-
-        let src_path_str = src_repo_path.to_string_lossy().to_string();
-        let output = ctx.run_mapache(&["copy", "--all", "--from", &src_path_str])?;
-
-        assert!(
-            !output.status.success(),
-            "copy between different formats should fail"
-        );
         Ok(())
     }
 

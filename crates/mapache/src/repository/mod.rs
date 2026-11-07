@@ -1,11 +1,9 @@
 pub mod gc;
 pub mod index;
 pub mod keys;
-pub mod legacy;
 pub mod loader;
 pub mod lock;
 pub mod manifest;
-pub mod migration;
 pub mod packer;
 pub mod repo;
 pub mod retention;

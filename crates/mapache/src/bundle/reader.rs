@@ -145,9 +145,7 @@ impl BundleReader {
             ));
         }
 
-        // TODO(v1-removal): Accept only bundle format v2 once v1 bundles are
-        // no longer supported.
-        if !matches!(header.version, 1 | 2) {
+        if header.version != crate::repository::repo::THIS_REPOSITORY_VERSION as u16 {
             return Err(MapacheError::Format(format!(
                 "unsupported bundle format version {}",
                 header.version
@@ -688,7 +686,7 @@ mod tests {
         // bytes than the file actually holds.
         let header = BundleHeader {
             magic: *BUNDLE_MAGIC_START,
-            version: 1,
+            version: 2,
             salt: [7u8; crate::bundle::format::BUNDLE_SALT_LEN],
             argon2_t: 3,
             argon2_m: 65536,

@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use aes_gcm_siv::{
     aead::{AeadInOut, inout::InOutBuf},
     {Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead},
@@ -64,7 +62,6 @@ const MAX_PRESIZED_DECOMPRESS: u64 = 64 * size::MiB;
 pub struct SecureStorage {
     compression_level: i32,
     cipher: Option<Aes256GcmSiv>,
-    nonce_at_end: AtomicBool,
     compressor_pool: Mutex<Vec<EncodingContext>>,
     decompressor_pool: Mutex<Vec<zstd::bulk::Decompressor<'static>>>,
 }
@@ -80,21 +77,9 @@ impl SecureStorage {
         Self {
             compression_level: defaults::DEFAULT_COMPRESSION.to_level(),
             cipher: None,
-            nonce_at_end: AtomicBool::new(true),
             compressor_pool: Mutex::new(Vec::new()),
             decompressor_pool: Mutex::new(Vec::new()),
         }
-    }
-
-    /// Place the nonce at the end of the ciphertext (`[ct | tag | nonce]`) instead
-    /// of the beginning (`[nonce | ct | tag]`). Eliminates a memmove on decrypt.
-    /// Default: `true`.
-    pub fn set_nonce_at_end(&self, nonce_at_end: bool) {
-        self.nonce_at_end.store(nonce_at_end, Ordering::Relaxed);
-    }
-
-    pub(crate) fn nonce_at_end(&self) -> bool {
-        self.nonce_at_end.load(Ordering::Relaxed)
     }
 
     /// Set compression level
@@ -105,13 +90,12 @@ impl SecureStorage {
 
     /// Returns a copy of this storage that compresses at `level`.
     ///
-    /// The cipher and nonce placement are preserved; the compressor pool is
+    /// The cipher is preserved; the compressor pool is
     /// left empty and repopulated lazily.
     pub fn with_compression_level(&self, level: i32) -> Self {
         Self {
             compression_level: level,
             cipher: self.cipher.clone(),
-            nonce_at_end: AtomicBool::new(self.nonce_at_end()),
             compressor_pool: Mutex::new(Vec::new()),
             decompressor_pool: Mutex::new(Vec::new()),
         }
@@ -149,14 +133,13 @@ impl SecureStorage {
     }
 
     fn transform_into(&self, ctx: Option<&mut EncodingContext>, data: &[u8]) -> Result<Vec<u8>> {
-        self.transform_into_inner(ctx, data, self.nonce_at_end())
+        self.transform_into_inner(ctx, data)
     }
 
     fn transform_into_inner(
         &self,
         ctx: Option<&mut EncodingContext>,
         data: &[u8],
-        nonce_at_end: bool,
     ) -> Result<Vec<u8>> {
         let mut out = if let Some(c) = ctx {
             let bound = zstd::zstd_safe::compress_bound(data.len());
@@ -180,23 +163,12 @@ impl SecureStorage {
                 })?;
             let nonce = Nonce::from(nonce_bytes);
             // InOutBuf shares input/output memory — zero-copy in-place encryption.
-            // (The nonce-at-start v1 branch below allocates an extra Vec.)
             let tag = cipher
                 .encrypt_inout_detached(&nonce, b"", InOutBuf::from(&mut out[..]))
                 .map_err(|_| MapacheError::Crypto("encryption failed".to_string()))?;
 
-            if nonce_at_end {
-                out.extend_from_slice(tag.as_slice());
-                out.extend_from_slice(&nonce_bytes);
-            } else {
-                // TODO(v1-removal): Remove the v1 nonce-at-start branch.
-                let mut prefixed =
-                    Vec::with_capacity(AES_GCM_NONCE_LEN + out.len() + AES_GCM_TAG_LEN);
-                prefixed.extend_from_slice(&nonce_bytes);
-                prefixed.extend_from_slice(&out);
-                prefixed.extend_from_slice(tag.as_slice());
-                return Ok(prefixed);
-            }
+            out.extend_from_slice(tag.as_slice());
+            out.extend_from_slice(&nonce_bytes);
         }
 
         Ok(out)
@@ -330,33 +302,11 @@ impl SecureStorage {
         self.transform_into(None, data)
     }
 
-    /// Re-encrypt data from `old_nonce_at_end` position to `new_nonce_at_end` position.
-    /// Used during migration to change the nonce position of existing encrypted data.
-    pub fn re_encrypt(
-        &self,
-        data: &[u8],
-        old_nonce_at_end: bool,
-        new_nonce_at_end: bool,
-    ) -> Result<Vec<u8>> {
-        if self.cipher.is_none() {
-            return Ok(data.to_vec());
-        }
-        let decrypted = match self.decrypt_inner(data, old_nonce_at_end)? {
-            WriteContents::Owned(v) => v,
-            WriteContents::Borrowed(b) => b.to_vec(),
-        };
-        self.transform_into_inner(None, &decrypted, new_nonce_at_end)
-    }
-
     pub fn decrypt<'a>(&self, data: &'a [u8]) -> Result<WriteContents<'a>> {
-        self.decrypt_inner(data, self.nonce_at_end())
+        self.decrypt_inner(data)
     }
 
-    pub(crate) fn decrypt_inner<'a>(
-        &self,
-        data: &'a [u8],
-        nonce_at_end: bool,
-    ) -> Result<WriteContents<'a>> {
+    pub(crate) fn decrypt_inner<'a>(&self, data: &'a [u8]) -> Result<WriteContents<'a>> {
         let Some(cipher) = &self.cipher else {
             return Ok(WriteContents::Borrowed(data));
         };
@@ -365,7 +315,7 @@ impl SecureStorage {
             Err(MapacheError::Integrity("invalid ciphertext".to_string()))?;
         }
 
-        let (nonce, ciphertext_and_tag) = Self::extract_nonce_and_ct(data, nonce_at_end)?;
+        let (nonce, ciphertext_and_tag) = Self::extract_nonce_and_ct(data)?;
 
         let decrypted = cipher
             .decrypt(&nonce, ciphertext_and_tag)
@@ -375,12 +325,7 @@ impl SecureStorage {
 
     /// Decrypts the given data, reusing the input allocation when possible.
     ///
-    /// Tries the configured `nonce_at_end` position first. If that fails and
-    /// the repo is in a transitional state (v1 data with v2 config), falls back
-    /// to the other position. This fallback should be removed when v1 is
-    /// deprecated.
-    // TODO(v1-removal): Remove the fallback branch.
-    pub fn decrypt_in_place(&self, mut data: Vec<u8>) -> Result<Vec<u8>> {
+    pub fn decrypt_in_place(&self, data: Vec<u8>) -> Result<Vec<u8>> {
         let Some(cipher) = &self.cipher else {
             return Ok(data);
         };
@@ -389,54 +334,17 @@ impl SecureStorage {
             Err(MapacheError::Integrity("invalid ciphertext".to_string()))?;
         }
 
-        // Try the configured nonce position first.
-        let primary = self.nonce_at_end();
-        let primary_err = match Self::try_decrypt_in_place(cipher, &mut data, primary) {
-            Ok(()) => return Ok(data),
-            Err(e) => e,
-        };
-
-        // Fallback: try the other nonce position (needed for v1 data after migration).
-        Self::try_decrypt_in_place(cipher, &mut data, !primary).map_err(|e| {
-            MapacheError::Crypto(format!(
-                "decryption failed with both nonce positions \
-                 (primary: {primary_err}, fallback: {e})"
-            ))
-        })?;
-
-        Ok(data)
-    }
-
-    /// Extracts the nonce and ciphertext+tag according to the nonce position layout.
-    /// v2 uses nonce at end: `[ciphertext | tag | nonce]`
-    /// Legacy v1 uses nonce at start: `[nonce | ciphertext | tag]`
-    // TODO(v1-removal): Remove the v1 branch (nonce at start).
-    fn extract_nonce_and_ct(data: &[u8], nonce_at_end: bool) -> Result<(Nonce, &[u8])> {
-        if nonce_at_end {
-            let nonce_start = data.len() - AES_GCM_NONCE_LEN;
-            let nonce = Nonce::try_from(&data[nonce_start..])
-                .map_err(|_| MapacheError::Crypto("invalid nonce".to_string()))?;
-            Ok((nonce, &data[..nonce_start]))
-        } else {
-            let (nonce_bytes, ct_tag) = data.split_at(AES_GCM_NONCE_LEN);
-            let nonce = Nonce::try_from(nonce_bytes)
-                .map_err(|_| MapacheError::Crypto("invalid nonce".to_string()))?;
-            Ok((nonce, ct_tag))
-        }
-    }
-
-    /// Attempt to decrypt data in-place with the given nonce position.
-    fn try_decrypt_in_place(
-        cipher: &Aes256GcmSiv,
-        data: &mut Vec<u8>,
-        nonce_at_end: bool,
-    ) -> Result<()> {
-        let (nonce, ciphertext_and_tag) = Self::extract_nonce_and_ct(data, nonce_at_end)?;
-        let plaintext = cipher
+        let (nonce, ciphertext_and_tag) = Self::extract_nonce_and_ct(&data)?;
+        cipher
             .decrypt(&nonce, ciphertext_and_tag)
-            .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
-        *data = plaintext;
-        Ok(())
+            .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))
+    }
+
+    fn extract_nonce_and_ct(data: &[u8]) -> Result<(Nonce, &[u8])> {
+        let nonce_start = data.len() - AES_GCM_NONCE_LEN;
+        let nonce = Nonce::try_from(&data[nonce_start..])
+            .map_err(|_| MapacheError::Crypto("invalid nonce".to_string()))?;
+        Ok((nonce, &data[..nonce_start]))
     }
 
     pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
@@ -450,17 +358,6 @@ impl SecureStorage {
     #[inline]
     pub fn encode_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
         self.transform_into(Some(ctx), data)
-    }
-
-    /// Encode (compress + encrypt) with an explicit nonce position.
-    /// Used by migration to write metadata in the target format.
-    pub fn encode_with_nonce_position(
-        &self,
-        ctx: &mut EncodingContext,
-        data: &[u8],
-        nonce_at_end: bool,
-    ) -> Result<Vec<u8>> {
-        self.transform_into_inner(Some(ctx), data, nonce_at_end)
     }
 
     pub fn take_encoding_context(&self) -> Result<EncodingContext> {
@@ -756,35 +653,6 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let decoded_data = ss.decode_owned(encoded_data)?;
 
         assert_eq!(TEXT.as_slice(), decoded_data.as_slice());
-        Ok(())
-    }
-
-    // TODO(v1-removal): Remove this test with the v1 nonce-at-start support.
-    #[test]
-    fn test_nonce_at_start() -> Result<()> {
-        let key = TEST_KEY;
-
-        // Encrypt with nonce at start.
-        let ss_at_start = SecureStorage::new()
-            .with_key(&key)
-            .expect("valid 32-byte key");
-        ss_at_start.set_nonce_at_end(false);
-        let encrypted = ss_at_start.encrypt(TEXT)?;
-
-        // Wire format: [nonce(12) | ct | tag(16)]
-        assert!(encrypted.len() > AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN);
-        let nonce = &encrypted[..AES_GCM_NONCE_LEN];
-        assert_ne!(nonce, &[0u8; AES_GCM_NONCE_LEN]);
-
-        // Decrypt with nonce at end (default) — must NOT work.
-        let ss_at_end = SecureStorage::new()
-            .with_key(&key)
-            .expect("valid 32-byte key");
-        assert!(ss_at_end.decrypt(&encrypted).is_err());
-
-        // Decrypt with nonce at start — must work.
-        let decrypted = ss_at_start.decrypt(&encrypted)?;
-        assert_eq!(TEXT.as_slice(), &*decrypted);
         Ok(())
     }
 

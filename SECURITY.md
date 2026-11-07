@@ -27,9 +27,9 @@ Only the latest release receives security fixes:
 | latest | ✅ |
 | older | ❌ |
 
-If you are running an older version, upgrade before reporting. Repository
-format v1 is deprecated — migrate existing repositories to v2 with
-`mapache migrate` (see the [manual](https://jlantxa.github.io/mapache/manual.html)).
+If you are running an older version, upgrade before reporting. This release
+does not support repository format v1. Migrate v1 repositories to v2 with the
+last release that includes `mapache migrate` before upgrading.
 
 ## What's In Scope
 

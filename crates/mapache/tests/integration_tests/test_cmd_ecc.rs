@@ -7,7 +7,7 @@ mod tests {
 
     use mapache::{
         backend::{BackendNode, StorageBackend, localfs::LocalFS, read_backend_dir},
-        commands::cmd_ecc::{EccError, SubCmd},
+        commands::cmd_ecc::SubCmd,
         repository::{
             manifest::EccConfig,
             repo::{INDEX_DIR, OBJECTS_DIR, Repository, SNAPSHOTS_DIR},
@@ -353,38 +353,6 @@ mod tests {
             .run(&ctx.global)
             .await
             .context("verify after roundtrip should pass")?;
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    // TODO(v1-removal): Delete this test when v1 repos stop being supported.
-    async fn test_ecc_rejects_v1_repo() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
-
-        // Init repo as v1.
-        ctx.init_builder().format(1).run(&ctx.global).await?;
-
-        ctx.snapshot(vec![backup_data_tmp_path.join("file.txt")])
-            .await
-            .context("snapshot failed")?;
-
-        // ECC should be rejected on v1 repos.
-        let result = ctx
-            .ecc_builder(SubCmd::Enable { percent: 10 })
-            .run(&ctx.global)
-            .await;
-        assert!(result.is_err(), "ecc should be rejected on v1 repos");
-        assert!(
-            result
-                .unwrap_err()
-                .downcast_ref::<EccError>()
-                .is_some_and(|e| matches!(e, EccError::InvalidArg(_))),
-            "expected EccError::InvalidArg"
-        );
 
         Ok(())
     }

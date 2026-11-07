@@ -318,8 +318,6 @@ impl BlobLoader {
         let backend = repo.backend();
         let footer_secure_storage = repo.secure_storage();
         let decode_secure_storage = footer_secure_storage.clone();
-        let nonce_at_end = repo.nonce_at_end();
-
         let segment_stream = stream::iter(pack_ids)
             .map(move |pack_id| {
                 let repo = repo.clone();
@@ -332,7 +330,6 @@ impl BlobLoader {
                         backend.as_ref(),
                         secure_storage.as_ref(),
                         &pack_id,
-                        nonce_at_end,
                     )
                     .await?;
                     descriptors.retain(|blob| {

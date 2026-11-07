@@ -56,10 +56,8 @@ mod test_corrupt_repo;
 mod test_golden_repo;
 mod test_hooks;
 mod test_lock_cleanup;
-mod test_migration; // TODO(v1-removal): remove this module
 mod test_permission_denied;
 mod test_retry_backoff;
-mod test_v1; // TODO(v1-removal): remove this module
 mod test_zeroize;
 
 #[cfg(all(feature = "mount", unix))]
@@ -350,16 +348,10 @@ impl InitBuilder {
         use cmd_init;
         Self {
             args: cmd_init::CmdArgs {
-                format: mapache::repository::repo::THIS_REPOSITORY_VERSION,
                 ecc: None,
                 calibrate_kdf: false,
             },
         }
-    }
-
-    pub fn format(mut self, format: u32) -> Self {
-        self.args.format = format;
-        self
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
@@ -799,11 +791,6 @@ impl BundleBuilder {
 
     pub fn import(mut self, import: bool) -> Self {
         self.args.import = import;
-        self
-    }
-
-    pub fn format(mut self, format: u32) -> Self {
-        self.args.format = format;
         self
     }
 

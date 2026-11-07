@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Create a golden fixture repository (v1 or v2) for the format-compatibility test.
+Create a golden v2 fixture repository for the format-compatibility test.
 
 The fixture is a real mapache repository containing:
   (a) a snapshot of the `crates/` subtree of the given source,
@@ -22,14 +22,11 @@ The convention is to drop these into crates/mapache/tests/fixtures/golden_repo/.
 The manifest uses BLAKE3 to match mapache's own content IDs; the Python
 `blake3` module is required (pip install blake3).
 
-Use the official v0.6.0 binary for --format v1 and a current master build for
---format v2 (which needs --format and --ecc support).
-
 Usage:
   python3 tools/make_golden_fixture.py \
       --source /path/to/mapache-src \
       --mapache /path/to/mapache \
-      --format v2 --ecc 20 \
+    --ecc 20 \
       --out crates/mapache/tests/fixtures/golden_repo
 """
 
@@ -160,7 +157,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--mapache", required=True, type=Path)
-    parser.add_argument("--format", required=True, choices=["v1", "v2"])
     parser.add_argument("--ecc", type=int, default=None)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
@@ -172,7 +168,6 @@ def main():
     if not mapache.is_file():
         parser.error(f"mapache binary not found: {mapache}")
 
-    format_num = int(args.format[1])
     if args.ecc is not None and not (0 <= args.ecc <= 100):
         parser.error("--ecc must be in 0..=100")
 
@@ -180,13 +175,10 @@ def main():
     info["_commands"] = []
     info["_capabilities"] = {}
 
-    has_format = "--format " in command_help(mapache, "init")
     has_ecc = "--ecc " in command_help(mapache, "init")
-    info["_capabilities"] = {"init_format": has_format, "init_ecc": has_ecc}
+    info["_capabilities"] = {"init_ecc": has_ecc}
 
-    if format_num == 2 and not has_format:
-        sys.exit("v2 fixtures require a master build with --format support")
-    if format_num == 2 and args.ecc is not None and not has_ecc:
+    if args.ecc is not None and not has_ecc:
         sys.exit("the binary does not support --ecc; use a master build")
 
     info["snapshots"] = {}
@@ -205,9 +197,6 @@ def main():
         restore_root.mkdir()
 
         init_args = ["init", "-r", repo]
-        if has_format:
-            init_args.append("--format")
-            init_args.append(str(format_num))
         if args.ecc is not None:
             init_args.append("--ecc")
             init_args.append(str(args.ecc))
@@ -271,7 +260,7 @@ def main():
             sys.exit("restore verification failed; fixture not produced")
 
         args.out.mkdir(parents=True, exist_ok=True)
-        archive = args.out / f"golden_{args.format}.tar.gz"
+        archive = args.out / "golden_v2.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             for path in sorted(repo.rglob("*")):
                 tar.add(
@@ -280,18 +269,18 @@ def main():
                     recursive=False,
                 )
 
-        (args.out / f"golden_{args.format}.tar.gz.sha256").write_text(
+        (args.out / "golden_v2.tar.gz.sha256").write_text(
             hashlib.sha256(archive.read_bytes()).hexdigest() + "\n"
         )
-        (args.out / f"expected_{args.format}.json").write_text(
+        (args.out / "expected_v2.json").write_text(
             json.dumps({"a": expected_a, "b": expected_b, "c": expected_c}, indent=1)
         )
-        (args.out / f"provenance_{args.format}.json").write_text(
+        (args.out / "provenance_v2.json").write_text(
             json.dumps(info, indent=1)
         )
 
     print(
-        f"Created golden_{args.format}.tar.gz in {args.out}\n"
+        f"Created golden_v2.tar.gz in {args.out}\n"
         f"  snapshots: a={info['snapshots']['a']} "
         f"b={info['snapshots']['b']} c={info['snapshots']['c']}\n"
         f"  mapache: {info['mapache']}"

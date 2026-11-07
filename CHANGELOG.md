@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- Repository and bundle format v1 support, including the migration command,
+  has been removed. Migrate existing v1 repositories with mapache v0.8.0 before
+  upgrading.
+
 ## v0.8.0 (2026-11-07)
 
 ### Added

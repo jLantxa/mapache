@@ -2,7 +2,7 @@
  "source": "/home/jlantxa/workspace/mapache-v0.6.0",
  "mapache": "mapache v0.6.0+dev compiled with rustc 1.98.1 (x86_64-unknown-linux-gnu)",
  "_commands": [
-  "init -r /tmp/mapache-golden-21htxrwl/repo --format 2 --ecc 10",
+    "init -r /tmp/mapache-golden-21htxrwl/repo --ecc 10",
   "snapshot a <- /home/jlantxa/workspace/mapache-v0.6.0/crates",
   "snapshot b <- /home/jlantxa/workspace/mapache-v0.6.0",
   "snapshot c <- /home/jlantxa/workspace/mapache-v0.6.0",
@@ -12,7 +12,6 @@
   "restore c"
  ],
  "_capabilities": {
-  "init_format": true,
   "init_ecc": true
  },
  "snapshots": {

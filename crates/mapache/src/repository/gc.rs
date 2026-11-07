@@ -468,7 +468,6 @@ async fn find_packs_with_duplicate_footers(
     let backend = repo.backend();
     let secure_storage = repo.secure_storage();
     let index = repo.index();
-    let nonce_at_end = repo.nonce_at_end();
     let pos = Arc::new(AtomicU64::new(0));
 
     let duplicates: IdSet<ID> = futures::stream::iter(pack_ids.iter().copied())
@@ -487,7 +486,6 @@ async fn find_packs_with_duplicate_footers(
                     backend.as_ref(),
                     secure_storage.as_ref(),
                     &pack_id,
-                    nonce_at_end,
                 )
                 .await
                 .map_err(|e| {
@@ -1474,7 +1472,6 @@ mod tests {
                 repo.backend().as_ref(),
                 secure_storage.as_ref(),
                 &pack_id,
-                repo.nonce_at_end(),
             )
             .await?;
             a_entries += descriptors.iter().filter(|d| d.id == blob_a).count();

@@ -38,8 +38,6 @@ pub enum SyncError {
     BackendError(String),
     #[error("sync failed: {0}")]
     SyncFailed(String),
-    #[error("cannot synchronize repositories with different formats: {0}")]
-    FormatMismatch(String),
     #[error("sync interrupted by user")]
     Interrupted,
     #[error(transparent)]
@@ -53,7 +51,6 @@ impl ToExitCode for SyncError {
         match self {
             SyncError::RepoOpenFail(_) => 10,
             SyncError::BackendError(_) => 11,
-            SyncError::FormatMismatch(_) => 13,
             SyncError::SyncFailed(_) => 20,
             SyncError::Interrupted => 130,
             SyncError::Repo(_) => 3,
@@ -185,20 +182,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         .map_err(|e| SyncError::RepoOpenFail(e.to_string()))?
     };
 
-    // Sync replicates the raw storage layout byte-for-byte (excluding the
-    // manifest), so source and destination must use the exact same format
-    // version. A destination that is not yet a repository (bootstrap) is
-    // exempt: it simply adopts the source layout.
-    let ensure_same_format = |src: u32, dst: u32| -> std::result::Result<(), SyncError> {
-        if src != dst {
-            return Err(SyncError::FormatMismatch(format!(
-                "source repository is v{} while destination is v{} (use `mapache migrate` to upgrade a v1 repository)",
-                src, dst
-            )));
-        }
-        Ok(())
-    };
-
     // Try to open the destination repo with the source auth to acquire a lock.
     let dst_lock = if global_args.no_lock {
         match Repository::try_open_unlocked(
@@ -209,18 +192,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         )
         .await
         {
-            Ok((repo, _ss)) => {
-                ensure_same_format(_src_repo.repo_version(), repo.repo_version())?;
-                Some(LockHandle::new(
-                    repo.clone(),
-                    Arc::new(parking_lot::Mutex::new(Lock::new(false))),
-                    true,
-                ))
-            }
+            Ok((repo, _ss)) => Some(LockHandle::new(
+                repo.clone(),
+                Arc::new(parking_lot::Mutex::new(Lock::new(false))),
+                true,
+            )),
             Err(_) => None,
         }
     } else {
-        if let Ok((dst_repo, _, lock)) = Repository::try_open_with_lock(
+        if let Ok((_, _, lock)) = Repository::try_open_with_lock(
             &auth,
             global_args.key.as_ref(),
             dst_backend.clone(),
@@ -230,7 +210,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         )
         .await
         {
-            ensure_same_format(_src_repo.repo_version(), dst_repo.repo_version())?;
             Some(lock)
         } else {
             // Never silently proceed without a lock against a repository that

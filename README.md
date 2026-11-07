@@ -17,13 +17,9 @@ designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
 their own validation before relying on it for primary backups.
 
-> **Repository format v1:** Support for v1 repositories is scheduled for removal
-> in v0.9.0. New repositories use v2. Migrate existing v1 repositories before
-> upgrading to v0.9.0 with
-> `mapache migrate -r <path/to/repo>`, adding `--dry-run` to preview the
-> changes first. See the
-> [manual](https://jlantxa.github.io/mapache/manual.html#migrate--migrate-repository-format)
-> for details.
+> **Repository format v1:** This release no longer opens v1 repositories.
+> Migrate existing repositories to v2 with `mapache migrate` from the last
+> release that supports v1 before upgrading.
 
 ## Documentation
 
@@ -31,7 +27,6 @@ Full documentation is available at **[jlantxa.github.io/mapache](https://jlantxa
 
 - [Manual](https://jlantxa.github.io/mapache/manual.html) — complete usage reference
 - [Design](https://jlantxa.github.io/mapache/design_v2.html) — repository format and architecture
-- [Design v1 (Deprecated)](https://jlantxa.github.io/mapache/design_v1.html) — legacy v1 format specification
 
 ## Key Features
 

@@ -192,7 +192,7 @@ proptest! {
     fn pack_footer_arbitrary_input_never_panics(input in prop::collection::vec(any::<u8>(), 0..3500)) {
 
         let ss = SecureStorage::new();
-        let _ = Packer::parse_footer(&ss, &input, true, 2);
+        let _ = Packer::parse_footer(&ss, &input);
     }
 
     #[test]
@@ -232,7 +232,7 @@ proptest! {
 
         // Any changed byte breaks either the AEAD tag or the footer-length
         // framing, so a corrupted footer must always be rejected.
-        let err = Packer::parse_footer(&ss, &footer_data, true, 2)
+        let err = Packer::parse_footer(&ss, &footer_data)
             .expect_err("corrupted pack footer must be rejected");
         prop_assert!(!(err.to_string().is_empty()));
     }

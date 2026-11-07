@@ -177,11 +177,6 @@ impl BlobType {
     /// type and whether the payload is compressed.
     #[inline]
     pub(crate) fn from_byte(byte: u8) -> Result<(Self, bool)> {
-        // TODO(v1-removal): legacy alias — v1 footers wrote Padding as 0xff.
-        // Remove this branch together with all v1 support.
-        if byte == 0xff {
-            return Ok((BlobType::Padding, false));
-        }
         let compressed = byte & 0x80 != 0;
         Ok((Self::try_from(byte & 0x7f)?, compressed))
     }

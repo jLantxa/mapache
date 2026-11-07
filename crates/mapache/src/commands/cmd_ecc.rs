@@ -97,15 +97,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), EccErro
             let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
-            // TODO(v1-removal): Remove this check after v1 support is dropped.
-            if repo.manifest().version() < 2 {
-                return Err(EccError::InvalidArg(
-                    "ECC is not supported in repository format v1; \
-                     migrate to v2 first with 'mapache migrate'"
-                        .into(),
-                ));
-            }
-
             match &args.subcmd {
                 SubCmd::Enable { percent } => {
                     cmd_enable(&repo, &backend, &secure_storage, &cleanup_handler, *percent).await

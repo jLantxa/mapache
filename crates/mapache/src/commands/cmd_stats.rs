@@ -408,7 +408,6 @@ async fn scan_pack_footers(
                     backend.as_ref(),
                     secure_storage.as_ref(),
                     &pack_id,
-                    secure_storage.nonce_at_end(),
                 )
                 .await
                 .map_err(|e| {

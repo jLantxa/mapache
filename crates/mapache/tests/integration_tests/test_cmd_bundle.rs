@@ -1,7 +1,7 @@
 mod tests {
     use anyhow::{Context, Result};
 
-    use mapache::commands::{UseSnapshot, cmd_bundle::BundleError};
+    use mapache::commands::UseSnapshot;
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext},
@@ -315,7 +315,6 @@ mod tests {
 
         ctx.bundle_builder()
             .bundle(true)
-            .format(2)
             .ecc(Some(10))
             .input(vec![backup_data_path.clone()])
             .output(bundle_path.clone())
@@ -357,181 +356,6 @@ mod tests {
 
         let backup_dir_name = backup_data_path.file_name().unwrap();
         synthetic.verify_all_exact(&extract_path.join(backup_dir_name))?;
-
-        Ok(())
-    }
-
-    // ============================================================================
-    // v1 bundle tests (TODO(v1-removal): remove these tests when v1 is dropped)
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_v1_bundle_create_and_extract() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
-
-        let bundle_path = ctx._tmp_dir.path().join("v1_bundle.mapache");
-        let extract_path = ctx._tmp_dir.path().join("extracted_v1");
-
-        // Create a v1 bundle
-        ctx.bundle_builder()
-            .bundle(true)
-            .format(1)
-            .input(vec![backup_data_path.clone()])
-            .output(bundle_path.clone())
-            .password("test_password".to_string())
-            .run(&ctx.global.clone())
-            .await?;
-
-        assert!(bundle_path.exists());
-
-        // Extract and verify
-        ctx.bundle_builder()
-            .extract(true)
-            .input(vec![bundle_path.clone()])
-            .output(extract_path.clone())
-            .password("test_password".to_string())
-            .run(&ctx.global.clone())
-            .await?;
-
-        let backup_dir_name = backup_data_path.file_name().unwrap();
-        synthetic.verify_all_exact(&extract_path.join(backup_dir_name))?;
-
-        Ok(())
-    }
-
-    // ============================================================================
-    // Cross-version protection tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_v2_bundle_rejected_by_v1_repo_on_import() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
-
-        // Create a v2 bundle (default format)
-        let bundle_path = ctx._tmp_dir.path().join("v2_for_v1.mapache");
-        ctx.bundle_builder()
-            .bundle(true)
-            .format(2)
-            .input(vec![backup_data_path.clone()])
-            .output(bundle_path.clone())
-            .password("pass".to_string())
-            .run(&ctx.global.clone())
-            .await?;
-
-        // Init a v1 repo
-        ctx.init_builder()
-            .format(1)
-            .run(&ctx.global)
-            .await
-            .context("Failed to init v1 repo")?;
-
-        // Importing a v2 bundle into a v1 repo should fail
-        let result = ctx
-            .bundle_builder()
-            .import(true)
-            .input(vec![bundle_path.clone()])
-            .password("pass".to_string())
-            .run(&ctx.global.clone())
-            .await;
-
-        assert!(
-            result.is_err(),
-            "importing v2 bundle into v1 repo should fail"
-        );
-        assert!(
-            result
-                .unwrap_err()
-                .downcast_ref::<BundleError>()
-                .is_some_and(|e| matches!(e, BundleError::Config(_))),
-            "expected BundleError::Config"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_v1_bundle_rejected_by_v2_repo_on_import() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
-
-        // Create a v1 bundle
-        let bundle_path = ctx._tmp_dir.path().join("v1_for_v2.mapache");
-        ctx.bundle_builder()
-            .bundle(true)
-            .format(1)
-            .input(vec![backup_data_path.clone()])
-            .output(bundle_path.clone())
-            .password("pass".to_string())
-            .run(&ctx.global.clone())
-            .await?;
-
-        // Init a v2 repo (default)
-        ctx.init_repo().await?;
-
-        // Importing a v1 bundle into a v2 repo should fail
-        let result = ctx
-            .bundle_builder()
-            .import(true)
-            .input(vec![bundle_path.clone()])
-            .password("pass".to_string())
-            .run(&ctx.global.clone())
-            .await;
-
-        assert!(
-            result.is_err(),
-            "importing v1 bundle into v2 repo should fail"
-        );
-        assert!(
-            result
-                .unwrap_err()
-                .downcast_ref::<BundleError>()
-                .is_some_and(|e| matches!(e, BundleError::Config(_))),
-            "expected BundleError::Config"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_v1_repo_export_succeeds() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
-
-        // Init a v1 repo and create a snapshot
-        ctx.init_builder()
-            .format(1)
-            .run(&ctx.global)
-            .await
-            .context("Failed to init v1 repo")?;
-        ctx.snapshot_builder(vec![backup_data_path.clone()])
-            .no_scan(true)
-            .run(&ctx.global)
-            .await?;
-
-        let src_ids = ctx.get_snapshot_ids()?;
-        let snap_prefix = &src_ids[0][..8];
-
-        // v1 repositories remain readable: exporting a snapshot produces a
-        // bundle in the current (v2) format.
-        let bundle_path = ctx._tmp_dir.path().join("v1_repo_export.mapache");
-        ctx.bundle_builder()
-            .export_snapshot(UseSnapshot::SnapshotId(snap_prefix.to_string()))
-            .output(bundle_path.clone())
-            .password("pass".to_string())
-            .run(&ctx.global.clone())
-            .await?;
-
-        assert!(bundle_path.exists(), "bundle was not created");
 
         Ok(())
     }

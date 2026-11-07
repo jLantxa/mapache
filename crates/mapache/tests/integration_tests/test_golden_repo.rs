@@ -178,13 +178,6 @@ mod tests {
     }
 
     #[test]
-    // TODO(v1-removal): Delete this test (and the "v1" golden repo fixtures)
-    // when v1 support is dropped.
-    fn test_golden_v1_compat() -> Result<()> {
-        roundtrip("v1")
-    }
-
-    #[test]
     fn test_golden_v2_compat() -> Result<()> {
         roundtrip("v2")
     }

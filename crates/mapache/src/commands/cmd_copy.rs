@@ -42,8 +42,6 @@ pub enum CopyError {
     BackendError(String),
     #[error("copy failed: {0}")]
     CopyFailed(String),
-    #[error("cannot copy between repositories with different formats: {0}")]
-    FormatMismatch(String),
     #[error("invalid arguments: {0}")]
     InvalidArguments(String),
     #[error("copy interrupted by user")]
@@ -59,7 +57,6 @@ impl ToExitCode for CopyError {
         match self {
             CopyError::RepoOpenFail(_) => 10,
             CopyError::BackendError(_) => 11,
-            CopyError::FormatMismatch(_) => 12,
             CopyError::CopyFailed(_) => 20,
             CopyError::InvalidArguments(_) => 2,
             CopyError::Interrupted => 130,
@@ -199,18 +196,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
         .map_err(|e| CopyError::RepoOpenFail(e.to_string()))?;
         (repo, ss, Some(lock))
     };
-
-    // Both repositories must use the same format version: blobs, trees and
-    // snapshots are re-encoded for the destination, but a silent version mix
-    // could corrupt either repository or leak v2-only features into v1.
-    let src_version = src_repo.repo_version();
-    let dst_version = dst_repo.repo_version();
-    if src_version != dst_version {
-        return Err(CopyError::FormatMismatch(format!(
-            "source repository is v{} while destination is v{} (use `mapache migrate` to upgrade a v1 repository)",
-            src_version, dst_version
-        )));
-    }
 
     // Reload master indices for blob lookup
     src_repo.reload_master_index().await?;

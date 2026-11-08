@@ -527,9 +527,9 @@ impl Repository {
         Ok(())
     }
 
-    /// Returns the repository format version.
+    /// Returns the format version of the repository that was opened.
     pub fn repo_version(&self) -> u32 {
-        THIS_REPOSITORY_VERSION
+        self.manifest.version()
     }
 
     /// Get the repository backend
@@ -2164,10 +2164,8 @@ mod tests {
             .err()
             .expect("v1 repository must be rejected");
 
-        assert!(
-            err.to_string()
-                .contains("unsupported repository format version '1'")
-        );
+        let message = err.to_string();
+        assert!(message.contains("unsupported repository format version '1'"));
         Ok(())
     }
 

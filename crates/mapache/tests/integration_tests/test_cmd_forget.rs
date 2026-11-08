@@ -3,7 +3,11 @@
 mod tests {
     use anyhow::Result;
 
-    use mapache::{commands::cmd_forget, repository::repo::SNAPSHOTS_DIR, utils};
+    use mapache::{
+        commands::cmd_forget,
+        repository::{repo::SNAPSHOTS_DIR, retention::GroupBy},
+        utils,
+    };
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext},
@@ -111,6 +115,36 @@ mod tests {
             .await?;
 
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_forget_group_by_tags_keeps_last_per_tag() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        for tag in ["alpha", "alpha", "beta", "beta"] {
+            ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+                .tags(tag.to_string())
+                .run(&ctx.global)
+                .await?;
+        }
+
+        let args = cmd_forget::CmdArgs {
+            group_by: vec![GroupBy::Tags],
+            keep_last: Some(1),
+            force: true,
+            ..Default::default()
+        };
+        cmd_forget::run(&ctx.global, &args, None).await?;
+
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
+        assert_eq!(utils::count_files(&snapshots_dir)?, 2);
 
         Ok(())
     }

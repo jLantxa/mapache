@@ -1,11 +1,14 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::Hash,
+    path::PathBuf,
+    str::FromStr,
 };
 
 use chrono::{
     DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     common::ID,
@@ -374,6 +377,113 @@ pub fn filter_snapshots_by_hosts<'a>(
         .collect()
 }
 
+/// A dimension used to partition snapshots before retention rules are applied.
+///
+/// Grouping makes each dimension an independent retention domain: `--keep-last
+/// 1 --group-by host` keeps the newest snapshot for every host instead of the
+/// newest snapshot overall. When no grouping is requested, rules apply to all
+/// in-scope snapshots together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupBy {
+    /// Partition by the snapshot's recorded hostname.
+    Host,
+    /// Partition by the snapshot's source paths.
+    Paths,
+    /// Partition by the snapshot's tags.
+    Tags,
+}
+
+impl GroupBy {
+    /// The canonical name used in configuration and output.
+    pub fn name(self) -> &'static str {
+        match self {
+            GroupBy::Host => "host",
+            GroupBy::Paths => "paths",
+            GroupBy::Tags => "tags",
+        }
+    }
+}
+
+impl FromStr for GroupBy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "host" | "hostname" => Ok(GroupBy::Host),
+            "path" | "paths" => Ok(GroupBy::Paths),
+            "tag" | "tags" => Ok(GroupBy::Tags),
+            other => Err(format!(
+                "invalid group-by value '{other}' (expected host, paths, or tags)"
+            )),
+        }
+    }
+}
+
+/// The value of one grouping dimension for a snapshot.
+///
+/// A typed key keeps dimensions from colliding (a host literally named `paths`
+/// cannot be confused with the paths dimension) and gives deterministic ordering
+/// for output.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupValue {
+    Host(Option<String>),
+    Paths(Vec<PathBuf>),
+    Tags(BTreeSet<String>),
+}
+
+fn group_key(entry: &SnapshotEntry, group_by: &[GroupBy]) -> Vec<GroupValue> {
+    group_by
+        .iter()
+        .map(|dimension| match dimension {
+            GroupBy::Host => GroupValue::Host(entry.snapshot.hostname.clone()),
+            GroupBy::Paths => {
+                let mut paths = entry.snapshot.paths.clone();
+                paths.sort_unstable();
+                paths.dedup();
+                GroupValue::Paths(paths)
+            }
+            GroupBy::Tags => GroupValue::Tags(entry.snapshot.tags.clone()),
+        })
+        .collect()
+}
+
+fn format_group_key(key: &[GroupValue]) -> String {
+    key.iter()
+        .map(|value| match value {
+            GroupValue::Host(Some(host)) => format!("host={host}"),
+            GroupValue::Host(None) => "host=<none>".to_string(),
+            GroupValue::Paths(paths) => {
+                let joined = paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "paths={}",
+                    if joined.is_empty() {
+                        "<none>"
+                    } else {
+                        joined.as_str()
+                    }
+                )
+            }
+            GroupValue::Tags(tags) => {
+                let joined = tags.iter().cloned().collect::<Vec<_>>().join(",");
+                format!(
+                    "tags={}",
+                    if joined.is_empty() {
+                        "<none>"
+                    } else {
+                        joined.as_str()
+                    }
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Host and tag pre-filters applied before retention rules.
 ///
 /// These are *not* retention rules: they remove snapshots from consideration
@@ -408,14 +518,35 @@ pub struct ForgetPlan {
     /// In-scope snapshots that no rule kept and that must therefore be removed.
     /// Empty when no rules are given.
     pub remove: IdSet<ID>,
+    /// Per-group summary, in deterministic key order. Empty when no grouping is
+    /// requested.
+    pub groups: Vec<ForgetGroup>,
+}
+
+/// Counts for one retention group, used by front ends to explain the plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgetGroup {
+    /// Human-readable group key, e.g. `host=laptop, paths=/home`.
+    pub label: String,
+    /// Number of snapshots in this group that passed the pre-filters.
+    pub in_scope: usize,
+    /// Number of snapshots kept by the retention rules.
+    pub kept: usize,
+    /// Number of snapshots that no rule kept.
+    pub removed: usize,
 }
 
 /// Applies host/tag pre-filters and retention rules to `snapshots`.
 ///
 /// This is the single source of truth for the keep/remove decision shared by the
 /// CLI `forget` command and the TUI retention form: given the same snapshots,
-/// [`ForgetFilter`], rules, `keep_min` and `now`, both compute exactly the same
-/// result.
+/// [`ForgetFilter`], `group_by`, rules, `keep_min` and `now`, both compute
+/// exactly the same result.
+///
+/// When `group_by` is non-empty, in-scope snapshots are partitioned by the
+/// requested dimensions and the rules (including `keep_min`) are applied to each
+/// group independently. With an empty `group_by`, the rules apply to the whole
+/// in-scope set, which preserves the historical behavior.
 ///
 /// Snapshots excluded by the filters are left untouched: they appear in none of
 /// [`ForgetPlan::in_scope`], [`ForgetPlan::keep`] or [`ForgetPlan::remove`].
@@ -424,6 +555,7 @@ pub struct ForgetPlan {
 pub fn build_forget_plan(
     snapshots: &[&SnapshotEntry],
     filter: &ForgetFilter,
+    group_by: &[GroupBy],
     rules: &[RetentionRule],
     keep_min: Option<usize>,
     now: DateTime<Local>,
@@ -440,11 +572,43 @@ pub fn build_forget_plan(
             in_scope: in_scope_ids,
             keep: IdMap::default(),
             remove: IdSet::default(),
+            groups: Vec::new(),
         };
     }
 
     in_scope.sort_unstable_by_key(|e| e.snapshot.timestamp);
-    let keep = apply_retention_rules_with_reasons(&in_scope, rules, keep_min, now);
+
+    let mut groups = Vec::new();
+    let keep = if group_by.is_empty() {
+        apply_retention_rules_with_reasons(&in_scope, rules, keep_min, now)
+    } else {
+        let mut grouped: BTreeMap<Vec<GroupValue>, Vec<&SnapshotEntry>> = BTreeMap::new();
+        for entry in &in_scope {
+            grouped
+                .entry(group_key(entry, group_by))
+                .or_default()
+                .push(entry);
+        }
+
+        let mut keep = IdMap::default();
+        for (key, entries) in grouped {
+            let group_keep = apply_retention_rules_with_reasons(&entries, rules, keep_min, now);
+            let group_ids: IdSet<ID> = entries.iter().map(|entry| entry.id).collect();
+            let removed = group_ids
+                .iter()
+                .filter(|id| !group_keep.contains_key(id))
+                .count();
+
+            groups.push(ForgetGroup {
+                label: format_group_key(&key),
+                in_scope: entries.len(),
+                kept: group_keep.len(),
+                removed,
+            });
+            keep.extend(group_keep);
+        }
+        keep
+    };
 
     let remove: IdSet<ID> = in_scope_ids
         .iter()
@@ -456,6 +620,7 @@ pub fn build_forget_plan(
         in_scope: in_scope_ids,
         keep,
         remove,
+        groups,
     }
 }
 
@@ -985,7 +1150,7 @@ mod tests {
     fn test_build_forget_plan_no_filter_no_rules_keeps_all_in_scope() {
         let snapshots = create_mock_snapshots();
         let refs: Vec<_> = snapshots.iter().collect();
-        let plan = build_forget_plan(&refs, &ForgetFilter::default(), &[], None, test_now());
+        let plan = build_forget_plan(&refs, &ForgetFilter::default(), &[], &[], None, test_now());
 
         assert_eq!(plan.in_scope.len(), snapshots.len());
         assert!(plan.keep.is_empty());
@@ -1024,6 +1189,7 @@ mod tests {
         let plan = build_forget_plan(
             &refs,
             &filter,
+            &[],
             &[RetentionRule::KeepLast(1)],
             None,
             test_now(),
@@ -1053,6 +1219,7 @@ mod tests {
         let plan = build_forget_plan(
             &refs,
             &filter,
+            &[],
             &[RetentionRule::KeepLast(1)],
             None,
             test_now(),
@@ -1065,6 +1232,156 @@ mod tests {
         // Newest server snapshot is kept, the older server one is removed.
         assert!(plan.keep.contains_key(&create_id(2)));
         assert!(plan.remove.contains(&create_id(0)));
+    }
+
+    #[test]
+    fn test_group_by_host_applies_rules_per_host() {
+        let snapshots = [
+            create_snapshot(0, test_now() - Duration::days(2), &[], Some("server")),
+            create_snapshot(1, test_now() - Duration::days(1), &[], Some("server")),
+            create_snapshot(2, test_now() - Duration::days(2), &[], Some("laptop")),
+            create_snapshot(3, test_now() - Duration::days(1), &[], Some("laptop")),
+        ];
+        let refs: Vec<_> = snapshots.iter().collect();
+
+        // Without grouping, KeepLast(1) keeps a single snapshot overall.
+        let global = build_forget_plan(
+            &refs,
+            &ForgetFilter::default(),
+            &[],
+            &[RetentionRule::KeepLast(1)],
+            None,
+            test_now(),
+        );
+        assert_eq!(global.keep.len(), 1);
+        assert_eq!(global.remove.len(), 3);
+        assert!(global.groups.is_empty());
+
+        // Grouping by host keeps the newest snapshot of each host.
+        let grouped = build_forget_plan(
+            &refs,
+            &ForgetFilter::default(),
+            &[GroupBy::Host],
+            &[RetentionRule::KeepLast(1)],
+            None,
+            test_now(),
+        );
+        assert_eq!(grouped.keep.len(), 2);
+        assert!(grouped.keep.contains_key(&create_id(1)));
+        assert!(grouped.keep.contains_key(&create_id(3)));
+        assert_eq!(grouped.remove.len(), 2);
+        assert!(grouped.remove.contains(&create_id(0)));
+        assert!(grouped.remove.contains(&create_id(2)));
+        assert_eq!(grouped.groups.len(), 2);
+        assert_eq!(grouped.groups[0].label, "host=laptop");
+        assert_eq!(grouped.groups[0].in_scope, 2);
+        assert_eq!(grouped.groups[0].kept, 1);
+        assert_eq!(grouped.groups[0].removed, 1);
+    }
+
+    #[test]
+    fn test_group_by_multiple_dimensions() {
+        let mut snapshots = [
+            create_snapshot(0, test_now() - Duration::days(2), &["db"], Some("server")),
+            create_snapshot(1, test_now() - Duration::days(1), &["db"], Some("server")),
+            create_snapshot(2, test_now() - Duration::days(2), &["web"], Some("server")),
+            create_snapshot(3, test_now() - Duration::days(1), &["web"], Some("server")),
+            create_snapshot(4, test_now() - Duration::days(2), &["db"], Some("laptop")),
+            create_snapshot(5, test_now() - Duration::days(1), &["db"], Some("laptop")),
+        ];
+        for entry in &mut snapshots {
+            entry.snapshot.paths = vec![match entry.snapshot.hostname.as_deref() {
+                Some("laptop") => PathBuf::from("/home"),
+                _ => PathBuf::from("/srv"),
+            }];
+        }
+        let refs: Vec<_> = snapshots.iter().collect();
+        let plan = build_forget_plan(
+            &refs,
+            &ForgetFilter::default(),
+            &[GroupBy::Host, GroupBy::Paths, GroupBy::Tags],
+            &[RetentionRule::KeepLast(1)],
+            None,
+            test_now(),
+        );
+
+        assert_eq!(plan.keep.len(), 3);
+        assert_eq!(plan.groups.len(), 3);
+        assert!(
+            plan.groups
+                .iter()
+                .any(|group| group.label == "host=laptop, paths=/home, tags=db")
+        );
+        assert!(
+            plan.groups
+                .iter()
+                .any(|group| group.label == "host=server, paths=/srv, tags=db")
+        );
+        assert!(
+            plan.groups
+                .iter()
+                .any(|group| group.label == "host=server, paths=/srv, tags=web")
+        );
+    }
+
+    #[test]
+    fn test_group_by_paths_ignores_order_and_duplicates() {
+        let mut snapshots = [
+            create_snapshot(0, test_now() - Duration::days(1), &[], Some("server")),
+            create_snapshot(1, test_now(), &[], Some("server")),
+        ];
+        snapshots[0].snapshot.paths = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
+        snapshots[1].snapshot.paths = vec![
+            PathBuf::from("/etc"),
+            PathBuf::from("/home"),
+            PathBuf::from("/home"),
+        ];
+        let refs: Vec<_> = snapshots.iter().collect();
+
+        let plan = build_forget_plan(
+            &refs,
+            &ForgetFilter::default(),
+            &[GroupBy::Paths],
+            &[RetentionRule::KeepLast(1)],
+            None,
+            test_now(),
+        );
+
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].in_scope, 2);
+        assert_eq!(plan.groups[0].kept, 1);
+        assert_eq!(plan.groups[0].removed, 1);
+        assert!(plan.keep.contains_key(&create_id(1)));
+        assert!(plan.remove.contains(&create_id(0)));
+    }
+
+    #[test]
+    fn test_group_by_keep_min_is_per_group() {
+        let snapshots = [
+            create_snapshot(0, test_now() - Duration::days(3), &[], Some("server")),
+            create_snapshot(1, test_now() - Duration::days(2), &[], Some("server")),
+            create_snapshot(2, test_now() - Duration::days(1), &[], Some("laptop")),
+            create_snapshot(3, test_now(), &[], Some("laptop")),
+        ];
+        let refs: Vec<_> = snapshots.iter().collect();
+        let plan = build_forget_plan(
+            &refs,
+            &ForgetFilter::default(),
+            &[GroupBy::Host],
+            &[RetentionRule::KeepLast(1)],
+            Some(2),
+            test_now(),
+        );
+
+        // keep_min is applied to each group, so each host keeps both snapshots.
+        assert_eq!(plan.keep.len(), 4);
+        assert!(plan.remove.is_empty());
+        assert_eq!(plan.groups.len(), 2);
+        assert!(
+            plan.groups
+                .iter()
+                .all(|group| group.kept == 2 && group.removed == 0)
+        );
     }
 
     #[test]

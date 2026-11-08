@@ -62,10 +62,6 @@ Mapache is feature-complete and production-oriented, but relatively new. Users
 should validate their own backup/restore workflows before relying on it for
 mission-critical data.
 
-Repository format v1 is no longer supported. Migrate existing v1 repositories
-to v2 with the last release that includes the `migrate` command before
-upgrading.
-
 ---
 
 ## 2. Installation
@@ -1233,6 +1229,25 @@ Use `--force` for immediate deletion.
 
 A snapshot is kept if **any** rule applies. Rules are inclusive, not exclusive.
 
+### Grouping
+
+By default, retention rules apply to every in-scope snapshot together. Use
+`--group-by` to apply them independently to each group instead:
+
+```bash
+# Keep the newest snapshot of every host and source path set
+mapache forget --keep-last 1 --group-by host,paths -r /backup/myrepo
+
+# Keep seven daily snapshots per host
+mapache forget --keep-daily 7 --group-by host -r /backup/myrepo
+```
+
+Valid dimensions are `host`, `paths`, and `tags`; combine them with commas.
+`--keep-min` is applied per group as well, so every group keeps at least that
+many snapshots. `forget` prints a per-group summary before the snapshot
+tables. Grouping is opt-in in this release: without `--group-by`, behavior is
+unchanged.
+
 In the `[forget]` section of the TOML config, any `keep-*` setting (including
 `keep-within`, `keep-tags`, and `keep-min`) accepts the quoted string `"None"`
 (case-insensitive) to disable it without removing the setting:
@@ -1244,6 +1259,7 @@ keep-daily = "None"
 keep-within = "None"
 keep-tags = "None"
 keep-min = "None"
+group-by = ["host", "paths"]
 ```
 
 `"None"` behaves like an omitted setting, and an explicit CLI value still takes
@@ -1982,9 +1998,6 @@ mapache init -r <URL>
   --calibrate-kdf        Benchmark Argon2id parameters for this hardware
 ```
 
-Only repository format v2 is supported. Upgrade existing v1 repositories with
-the last release that includes the `migrate` command.
-
 ### `mapache snapshot`
 
 Create a new backup snapshot.
@@ -2050,6 +2063,7 @@ mapache forget [SNAPSHOT_IDS...] -r <URL>
   --force                 Immediately delete (don't just mark)
   --tags <TAGS>           Filter by tags
   --host <HOST>           Filter by host (repeatable)
+  --group-by <DIMS>       Apply rules per group: host,paths,tags
   --keep-last <N|all>     Keep last N snapshots (or all)
   --keep-within <DUR>     Keep snapshots within duration
   --keep-hourly <N|all>   Keep N hourly snapshots

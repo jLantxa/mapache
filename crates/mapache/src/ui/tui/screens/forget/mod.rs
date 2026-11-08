@@ -133,6 +133,7 @@ impl ForgetScreen {
         let plan = build_forget_plan(
             &refs,
             &filter,
+            self.retention.group_by(),
             &rules,
             self.retention.keep_min(),
             Local::now(),

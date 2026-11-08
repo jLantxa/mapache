@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Grouped retention**: `mapache forget --group-by host,paths,tags` applies
+  retention rules independently to each group of snapshots, so `--keep-last 1`
+  with `--group-by host` keeps the newest snapshot of every host instead of
+  the newest snapshot overall. `--keep-min` is applied per group as well. Without
+  the flag, rules keep applying to all in-scope snapshots together. The TUI
+  retention screen honors a configured `group-by`, and `forget` reports a
+  per-group summary in text and JSON output.
+
 ### Removed
 
 - Repository and bundle format v1 support, including the migration command,

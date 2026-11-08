@@ -17,10 +17,6 @@ designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
 their own validation before relying on it for primary backups.
 
-> **Repository format v1:** This release no longer opens v1 repositories.
-> Migrate existing repositories to v2 with `mapache migrate` from the last
-> release that supports v1 before upgrading.
-
 ## Documentation
 
 Full documentation is available at **[jlantxa.github.io/mapache](https://jlantxa.github.io/mapache/)**.

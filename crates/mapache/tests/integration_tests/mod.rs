@@ -831,6 +831,7 @@ impl ForgetBuilder {
                 tags_str: None,
                 keep_tags: None,
                 hosts: Vec::new(),
+                group_by: Vec::new(),
                 keep_min: None,
                 hook_args: Default::default(),
             },

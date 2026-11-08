@@ -3,13 +3,14 @@ use ratatui::{Frame, layout::Rect};
 
 use crate::{
     commands::cmd_forget,
-    repository::retention::{ForgetFilter, RetentionOptions, RetentionRule},
+    repository::retention::{ForgetFilter, GroupBy, RetentionOptions, RetentionRule},
     ui::tui::widgets::{Form, FormCommand, FormField, split_csv},
     utils,
 };
 
 pub struct RetentionConfig {
     pub form: Form,
+    group_by: Vec<GroupBy>,
 }
 
 impl RetentionConfig {
@@ -73,8 +74,9 @@ impl RetentionConfig {
         ];
 
         let form = Form::new(fields, 15);
+        let group_by = config.map(|args| args.group_by.clone()).unwrap_or_default();
 
-        Self { form }
+        Self { form, group_by }
     }
 
     pub fn handle_key(&mut self, key: KeyCode) -> RetentionAction {
@@ -125,7 +127,22 @@ impl RetentionConfig {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        self.form.render(frame, area, "Retention Rules");
+        self.form.render(frame, area, &self.render_title());
+    }
+
+    fn render_title(&self) -> String {
+        if self.group_by.is_empty() {
+            "Retention Rules".to_string()
+        } else {
+            format!(
+                "Retention Rules (group-by: {})",
+                self.group_by
+                    .iter()
+                    .map(|dimension| dimension.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
     }
 
     pub fn hosts(&self) -> Vec<String> {
@@ -148,6 +165,11 @@ impl RetentionConfig {
 
     pub fn force(&self) -> bool {
         self.form.get_toggle_by_label("Force:").unwrap_or(false)
+    }
+
+    /// Grouping inherited from the CLI/config, if any.
+    pub fn group_by(&self) -> &[GroupBy] {
+        &self.group_by
     }
 
     /// The host/tag pre-filters grouped for the shared `build_forget_plan`.
@@ -270,6 +292,19 @@ mod tests {
         assert_eq!(filter.tags.len(), 2);
         assert!(filter.tags.contains("release"));
         assert!(filter.tags.contains("important"));
+    }
+
+    #[test]
+    fn render_title_shows_configured_grouping() {
+        let args = cmd_forget::CmdArgs {
+            group_by: vec![GroupBy::Host, GroupBy::Tags],
+            ..Default::default()
+        };
+        let config = RetentionConfig::new(Some(&args));
+        assert_eq!(
+            config.render_title(),
+            "Retention Rules (group-by: host, tags)"
+        );
     }
 
     #[test]

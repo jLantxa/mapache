@@ -732,8 +732,7 @@ additional KDFs in the future without changing the on-disk format. Currently the
 only supported value is `"argon2id"`.
 
 > **Note:** Only keyfiles with the nested `kdf` object are supported. Keyfiles
-> using the legacy top-level `m`, `t`, `p` fields must be migrated with the
-> last release that supports repository format v1 before upgrading.
+> using the legacy top-level `m`, `t`, `p` fields are unsupported.
 
 ## Local cache
 

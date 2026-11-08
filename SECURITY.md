@@ -27,9 +27,7 @@ Only the latest release receives security fixes:
 | latest | ✅ |
 | older | ❌ |
 
-If you are running an older version, upgrade before reporting. This release
-does not support repository format v1. Migrate v1 repositories to v2 with the
-last release that includes `mapache migrate` before upgrading.
+If you are running an older version, upgrade before reporting.
 
 ## What's In Scope
 

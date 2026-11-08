@@ -16,7 +16,9 @@ use crate::{
     },
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
-        retention::{ForgetFilter, KeepReason, RetentionOptions, RetentionRule, build_forget_plan},
+        retention::{
+            ForgetFilter, GroupBy, KeepReason, RetentionOptions, RetentionRule, build_forget_plan,
+        },
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{
@@ -92,6 +94,12 @@ pub struct CmdArgs {
     #[serde(rename = "host", alias = "hosts")]
     pub hosts: Vec<String>,
 
+    /// Apply retention rules independently per group. Comma-separated list of
+    /// `host`, `paths`, and `tags`. Without this flag, rules apply to all
+    /// in-scope snapshots together.
+    #[arg(long = "group-by", value_delimiter = ',')]
+    pub group_by: Vec<GroupBy>,
+
     /// Keep the last N snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_retention_opt")]
@@ -163,6 +171,7 @@ impl CmdArgs {
             force: false,
             tags_str: None,
             hosts: Vec::new(),
+            group_by: Vec::new(),
             keep_last: Some(10),
             keep_within: None,
             keep_yearly: Some(1),
@@ -189,6 +198,9 @@ impl Merge for CmdArgs {
         merge_opt(&mut self.tags_str, other.tags_str);
         if self.hosts.is_empty() {
             self.hosts = other.hosts;
+        }
+        if self.group_by.is_empty() {
+            self.group_by = other.group_by;
         }
 
         merge_opt(&mut self.keep_last, other.keep_last);
@@ -409,6 +421,7 @@ async fn forget_phase(
     let plan = build_forget_plan(
         &snapshots_sorted.iter().collect::<Vec<_>>(),
         &filter,
+        &args.group_by,
         &retention_rules,
         args.keep_min,
         Local::now(),
@@ -448,6 +461,16 @@ async fn forget_phase(
     }
 
     policy.extend(retention_rules.iter().map(RetentionRule::label));
+    if !args.group_by.is_empty() && !retention_rules.is_empty() {
+        policy.push(format!(
+            "group-by ({})",
+            args.group_by
+                .iter()
+                .map(|dimension| dimension.name())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
     if let Some(min) = args.keep_min {
         policy.push(format!("min({min})"));
     }
@@ -536,6 +559,16 @@ async fn forget_phase(
                 policy: &policy,
                 kept: with_reasons(&kept_snapshots, &reasons),
                 removed: with_reasons(&removed_snapshots, &reasons),
+                groups: plan
+                    .groups
+                    .iter()
+                    .map(|group| MsgForgetGroup {
+                        label: &group.label,
+                        in_scope: group.in_scope,
+                        kept: group.kept,
+                        removed: group.removed,
+                    })
+                    .collect(),
             },
         );
     } else {
@@ -550,6 +583,20 @@ async fn forget_phase(
         } else {
             ui::cli::log!("{} {}", "Policy:".bold(), policy.join(", "));
             ui::cli::log!();
+
+            if !plan.groups.is_empty() {
+                ui::cli::log!("{}", "Groups:".bold());
+                for group in &plan.groups {
+                    ui::cli::log!(
+                        "  {} — {} in scope, {} kept, {} removed",
+                        group.label,
+                        group.in_scope,
+                        group.kept,
+                        group.removed
+                    );
+                }
+                ui::cli::log!();
+            }
 
             for (id, rules) in &retained_by_policy {
                 ui::cli::warning!(
@@ -618,10 +665,19 @@ struct MsgForgetEntry<'a> {
 }
 
 #[derive(Serialize)]
+struct MsgForgetGroup<'a> {
+    label: &'a str,
+    in_scope: usize,
+    kept: usize,
+    removed: usize,
+}
+
+#[derive(Serialize)]
 struct MsgForget<'a> {
     policy: &'a [String],
     kept: Vec<MsgForgetEntry<'a>>,
     removed: Vec<MsgForgetEntry<'a>>,
+    groups: Vec<MsgForgetGroup<'a>>,
 }
 
 fn with_reasons<'a>(
@@ -741,5 +797,26 @@ mod tests {
         let args = CmdArgs::try_parse_from(["forget", "--keep-last", "all"])
             .expect("--keep-last all must parse");
         assert_eq!(args.keep_last, Some(usize::MAX));
+    }
+
+    #[test]
+    fn group_by_parses_dimensions_and_rejects_unknown_ones() {
+        let args = CmdArgs::try_parse_from([
+            "forget",
+            "--keep-last",
+            "1",
+            "--group-by",
+            "host,paths,tags",
+        ])
+        .expect("--group-by must parse");
+        assert_eq!(
+            args.group_by,
+            vec![GroupBy::Host, GroupBy::Paths, GroupBy::Tags]
+        );
+
+        assert!(
+            CmdArgs::try_parse_from(["forget", "--keep-last", "1", "--group-by", "bogus"]).is_err(),
+            "--group-by bogus must be rejected"
+        );
     }
 }

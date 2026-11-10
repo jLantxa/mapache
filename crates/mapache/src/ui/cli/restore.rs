@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use indicatif::{MultiProgress, ProgressBar, ProgressState};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::{
@@ -32,6 +32,7 @@ struct CliRestoreState {
     num_expected_items: Arc<AtomicU64>,
     num_expected_bytes: Arc<AtomicU64>,
     rate_estimator: Arc<Mutex<RateEstimator>>,
+    determined_style: ProgressStyle,
 }
 
 impl CliRestoreState {
@@ -55,6 +56,8 @@ impl CliRestoreState {
         self.progress_bar.set_length(num_expected_bytes);
         self.processed_items_count.store(0, Ordering::Relaxed);
         self.skipped_bytes_count.store(0, Ordering::Relaxed);
+        self.rate_estimator.lock().reset();
+        self.progress_bar.set_style(self.determined_style.clone());
     }
 
     fn processed_item(&self, _path: &Path) {
@@ -133,49 +136,60 @@ pub(crate) fn make_event_sender(
 
     let companion_bar = mp.add(ProgressBar::no_length());
 
-    progress_bar.set_style(
-        default_progress_style()
-            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
-            .expect("Invalid progress bar template for restore progress")
-            .tick_chars(SPINNER_TICK_CHARS)
-            .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+    let base_style = default_progress_style()
+        .tick_chars(SPINNER_TICK_CHARS)
+        .with_key(
+            "custom_elapsed",
+            |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let _ = w.write_str(&utils::pretty_print_duration(_state.elapsed()));
-            })
-            .with_key("processed_bytes_fmt", move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            },
+        )
+        .with_key(
+            "processed_bytes_fmt",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let current = state.pos();
                 let total = state.len().unwrap_or(0);
-                let s = format!(
-                    "{} / {}",
-                    utils::format_size_binary(current, 3),
-                    utils::format_size_binary(total, 3)
-                );
-                let _ = w.write_str(&s);
-            })
-            .with_key("custom_eta", {
-                let re = rate_estimator.clone();
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let pos = state.pos() as f64;
-                    let total = state.len().map(|l| l as f64);
-                    match re.lock().eta(pos, total.unwrap_or(pos)) {
-                        Some(d) => {
-                            let _ = w.write_str(&utils::pretty_print_duration(d));
-                        }
-                        None => {
-                            let _ = w.write_str("--");
-                        }
+                let _ = w.write_str(&utils::format_size_binary(current, 3));
+                if total > current {
+                    let _ = write!(w, " / {}", utils::format_size_binary(total, 3));
+                }
+            },
+        )
+        .with_key("custom_eta", {
+            let re = rate_estimator.clone();
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let pos = state.pos() as f64;
+                let total = state.len().map(|l| l as f64);
+                match re.lock().eta(pos, total.unwrap_or(pos)) {
+                    Some(d) => {
+                        let _ = w.write_str(&utils::pretty_print_duration(d));
+                    }
+                    None => {
+                        let _ = w.write_str("--");
                     }
                 }
-            })
-            .with_key(
-                "data_rate",
-                {
-                    let re = rate_estimator.clone();
-                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let rate = re.lock().rate().floor() as u64;
-                        let _ = w.write_str(&utils::format_size_binary(rate, 2));
-                    }
-                },
-            ),
+            }
+        })
+        .with_key("data_rate", {
+            let re = rate_estimator.clone();
+            move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let rate = re.lock().rate().floor() as u64;
+                let _ = w.write_str(&utils::format_size_binary(rate, 2));
+            }
+        });
+    let determined_style = base_style
+        .clone()
+        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
+        .expect("Invalid progress bar template for restore progress");
+    let scanning_style = base_style
+        .template("[{custom_elapsed}] [{processed_bytes_fmt}]")
+        .expect("Invalid progress bar template for restore scan");
+    progress_bar.set_style(
+        if num_expected_items.is_some() && num_expected_bytes.is_some() {
+            determined_style.clone()
+        } else {
+            scanning_style
+        },
     );
     progress_bar.enable_steady_tick(refresh_interval);
 
@@ -194,7 +208,7 @@ pub(crate) fn make_event_sender(
                     let items = items_clone.load(Ordering::Relaxed);
                     let total = num_items_clone.load(Ordering::Relaxed);
 
-                    if items <= total {
+                    if items < total {
                         let _ = write!(w, "{items} / {total} items");
                     } else {
                         let _ = write!(w, "{items} items");
@@ -237,6 +251,7 @@ pub(crate) fn make_event_sender(
         num_expected_items: num_expected_items_atom,
         num_expected_bytes: num_expected_bytes_atom,
         rate_estimator,
+        determined_style,
     });
 
     let sender: EventSender = Arc::new(move |event: Event| {

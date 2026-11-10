@@ -37,6 +37,7 @@ use crate::{
     fs::{
         filter::WalkOptions,
         node::{Metadata, Node, NodeType},
+        scanner::spawn_background_scanner,
         tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
     },
     repository::{
@@ -91,6 +92,9 @@ pub struct SnapshotOptions<'a> {
 /// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
 /// It tracks progress, completion status, and fatal errors.
 pub(crate) struct PipelineStatus {
+    /// Signals that the pipeline has finished so auxiliary tasks (like the
+    /// background scanner) can stop early.
+    finished_flag: AtomicBool,
     /// This error flag signals a fatal error to all running tasks so they can
     /// abort execution early. Only fatal, unrecoverable errors should be signaled.
     fatal_error_flag: AtomicBool,
@@ -110,6 +114,7 @@ impl PipelineStatus {
         shutdown_signal: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            finished_flag: AtomicBool::new(false),
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
             shutdown_signal,
@@ -117,6 +122,14 @@ impl PipelineStatus {
             event_sender,
             progress,
         }
+    }
+
+    pub(crate) fn signal_finished(&self) {
+        self.finished_flag.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished_flag.load(Ordering::Relaxed)
     }
 
     pub(crate) fn signal_fatal(&self, err: error::MapacheError) {
@@ -393,6 +406,47 @@ fn spawn_forwarder(
     })
 }
 
+/// Spawns a background scanner task used for progress estimation.
+///
+/// The scanner walks the source tree independently from the archival pipeline.
+/// It only stats entries, so it finishes far ahead of the archiver and gives
+/// the progress UI a stable total while processing is still catching up.
+fn spawn_scanner_task(
+    absolute_source_paths: Vec<PathBuf>,
+    exclude_paths: Vec<PathBuf>,
+    walk_options: WalkOptions,
+    one_file_system: bool,
+    status: Arc<PipelineStatus>,
+    event_sender: EventSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tracing::info!(target: "archiver", "Starting background scanner");
+        let status_clone = status.clone();
+        let handle = spawn_background_scanner(
+            absolute_source_paths,
+            exclude_paths,
+            walk_options,
+            one_file_system,
+            event_sender,
+            move || status_clone.is_failed() || status_clone.is_finished(),
+        );
+
+        match handle.await {
+            Ok(Ok(_stats)) => {
+                tracing::info!(target: "archiver", "Background scanner finished");
+            }
+            Ok(Err(e)) => {
+                status.signal_fatal(error::MapacheError::Internal(e));
+            }
+            Err(e) => {
+                status.signal_fatal(error::MapacheError::Internal(format!(
+                    "scanner task join error: {e}"
+                )));
+            }
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot entry point
 // ---------------------------------------------------------------------------
@@ -415,6 +469,8 @@ pub(crate) async fn snapshot(
     ));
 
     let is_stdin = snapshot_options.stdin;
+
+    let mut scanner_handle = None;
 
     if is_stdin {
         tracing::info!(target: "archiver", "Reading backup data from stdin (scanner skipped)");
@@ -465,28 +521,15 @@ pub(crate) async fn snapshot(
         })
     } else {
         tracing::info!(target: "archiver", "Setting up input streams");
-        let fs_stream = if snapshot_options.no_scan {
-            FSNodeStream::from_paths_tracking_skips(
-                snapshot_options.absolute_source_paths.clone(),
-                snapshot_options.exclude_paths.clone(),
-                snapshot_options.with_atime,
-                snapshot_options.one_file_system,
-                status.skipped_items.clone(),
-                snapshot_options.walk_options.clone(),
-            )
-            .await?
-        } else {
-            FSNodeStream::from_paths_tracking_skips_with_progress(
-                snapshot_options.absolute_source_paths.clone(),
-                snapshot_options.exclude_paths.clone(),
-                snapshot_options.with_atime,
-                snapshot_options.one_file_system,
-                status.skipped_items.clone(),
-                snapshot_options.walk_options.clone(),
-                event_sender.clone(),
-            )
-            .await?
-        };
+        let fs_stream = FSNodeStream::from_paths_tracking_skips(
+            snapshot_options.absolute_source_paths.clone(),
+            snapshot_options.exclude_paths.clone(),
+            snapshot_options.with_atime,
+            snapshot_options.one_file_system,
+            status.skipped_items.clone(),
+            snapshot_options.walk_options.clone(),
+        )
+        .await?;
 
         let previous_tree_stream = SerializedNodeStream::new(
             repo.clone(),
@@ -498,6 +541,19 @@ pub(crate) async fn snapshot(
         .await?;
 
         let mut diff_stream = NodeDiffStream::new(previous_tree_stream, fs_stream);
+
+        // Start the progress scanner only after the fallible stream setup has
+        // succeeded, so an early return cannot leave it running detached.
+        if !snapshot_options.no_scan {
+            scanner_handle = Some(spawn_scanner_task(
+                snapshot_options.absolute_source_paths.clone(),
+                snapshot_options.exclude_paths.clone(),
+                snapshot_options.walk_options.clone(),
+                snapshot_options.one_file_system,
+                status.clone(),
+                event_sender.clone(),
+            ));
+        }
 
         tokio::spawn(async move {
             tracing::trace!(target: "archiver", "Diff Producer task started");
@@ -540,12 +596,21 @@ pub(crate) async fn snapshot(
     )
     .await;
 
+    status.signal_finished();
+
     // Wait for the producer to finish
     if let Err(e) = producer_task.await {
         tracing::error!(target: "archiver", "Producer task panicked: {e}");
         status.signal_fatal(error::MapacheError::Internal(
             "producer task panicked".to_string(),
         ));
+    }
+
+    // The scanner stops early once the pipeline is done.
+    if let Some(handle) = scanner_handle
+        && let Err(e) = handle.await
+    {
+        tracing::warn!(target: "archiver", "Scanner task panicked: {e}");
     }
 
     // ------------------------------------------------------------------

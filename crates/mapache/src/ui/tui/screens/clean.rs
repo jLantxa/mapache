@@ -78,7 +78,7 @@ impl CleanScreen {
             phase: CleanPhase::Config,
             form,
             session: TaskSession::new(),
-            progress: PhaseProgress::new("Starting garbage collection\u{2026}"),
+            progress: PhaseProgress::new("Clean", "Starting garbage collection\u{2026}"),
             summary: None,
             toasts: ToastSink::default(),
         }
@@ -101,7 +101,7 @@ impl CleanScreen {
 
         self.session.begin(rx);
         self.phase = CleanPhase::Progress;
-        self.progress = PhaseProgress::new("Starting garbage collection\u{2026}");
+        self.progress = PhaseProgress::new("Clean", "Starting garbage collection\u{2026}");
         self.summary = None;
 
         let repo = self.repo.clone();

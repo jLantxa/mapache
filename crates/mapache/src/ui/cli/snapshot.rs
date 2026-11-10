@@ -223,6 +223,10 @@ pub fn make_event_sender(
         .template("[{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s]")
         .expect("Invalid progress bar template for snapshot progress (undetermined)");
 
+    let scanning_style = base_style
+        .template("[{custom_elapsed}] [{processed_bytes_fmt}]")
+        .expect("Invalid progress bar template for snapshot scan");
+
     progress_bar.set_style(undetermined_style.clone());
 
     let error_counter_for_style = Arc::clone(&error_counter);
@@ -441,7 +445,9 @@ pub fn make_event_sender(
             BackupEvent::Finished(_) => {
                 state.finalize();
             }
-            BackupEvent::ScanStarted => {}
+            BackupEvent::ScanStarted => {
+                state.progress_bar.set_style(scanning_style.clone());
+            }
         }
     })
 }

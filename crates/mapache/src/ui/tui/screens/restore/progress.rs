@@ -17,8 +17,10 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
             total_items,
             total_bytes,
         } => {
+            state.scanning = false;
             state.processed_items = 0;
             state.start_time = Instant::now();
+            state.rate_estimator.reset();
             state.set_expected(total_items, total_bytes);
         }
         RestoreEvent::ItemProcessed(_) => {
@@ -45,7 +47,7 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
 }
 
 pub fn render_progress(frame: &mut Frame, area: Rect, state: &TaskProgressState) {
-    let widget = TaskProgressWidget::new(state, "Restore Progress");
+    let widget = TaskProgressWidget::new(state, "Restore");
     let inner = area.inner(theme::CONTENT_MARGIN);
     widget.render(frame, inner);
 }

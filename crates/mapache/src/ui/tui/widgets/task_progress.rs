@@ -20,7 +20,7 @@ use crate::{
     utils::rate_estimator::RateEstimator,
 };
 
-use super::Spinner;
+use super::{Spinner, progress_bar::bar_spans};
 
 pub struct TaskProgressState {
     pub expected_bytes: u64,
@@ -53,10 +53,14 @@ pub struct PhaseProgress {
 
     spinner: Spinner,
     idle: &'static str,
+    title: String,
+    details_title: String,
 }
 
 impl PhaseProgress {
-    pub fn new(idle: &'static str) -> Self {
+    /// Creates a progress view for `operation` (for example `"Clean"`), using
+    /// it to title both the bar and the details panel.
+    pub fn new(operation: &str, idle: &'static str) -> Self {
         Self {
             current: None,
             entries: VecDeque::new(),
@@ -64,6 +68,8 @@ impl PhaseProgress {
             cancelling: false,
             spinner: Spinner::default(),
             idle,
+            title: format!("{operation} Progress"),
+            details_title: format!("{operation} Details"),
         }
     }
 
@@ -113,13 +119,11 @@ impl PhaseProgress {
         };
         let mut spans = match total.filter(|total| *total > 0) {
             Some(total) => {
-                let filled = ((*pos).min(total) as f64 / total as f64 * 30.0) as usize;
-                vec![
-                    Span::raw("  "),
-                    Span::styled("\u{2501}".repeat(filled), theme::THEME.stat_value),
-                    Span::styled("\u{2500}".repeat(30 - filled), theme::THEME.footer),
-                    Span::raw(format!("  {pos}/{total}  ")),
-                ]
+                let ratio = (*pos).min(total) as f64 / total as f64;
+                let mut spans = vec![Span::raw("  ")];
+                spans.extend(bar_spans(ratio, 30));
+                spans.push(Span::raw(format!("  {pos}/{total}  ")));
+                spans
             }
             None => vec![Span::styled(
                 format!("  {} ", self.spinner.glyph()),
@@ -146,7 +150,7 @@ impl PhaseProgress {
             )));
         }
 
-        frame.render_widget(Paragraph::new(lines).block(theme::block("Progress")), area);
+        frame.render_widget(Paragraph::new(lines).block(theme::block(&self.title)), area);
     }
 
     pub fn render_details(&self, frame: &mut Frame, area: Rect) {
@@ -172,7 +176,10 @@ impl PhaseProgress {
             })
             .collect();
 
-        frame.render_widget(Paragraph::new(lines).block(theme::block("Details")), area);
+        frame.render_widget(
+            Paragraph::new(lines).block(theme::block(&self.details_title)),
+            area,
+        );
     }
 }
 
@@ -258,14 +265,19 @@ impl TaskProgressState {
 
 pub struct TaskProgressWidget<'a> {
     state: &'a TaskProgressState,
-    title: String,
+    progress_title: String,
+    details_title: String,
 }
 
 impl<'a> TaskProgressWidget<'a> {
-    pub fn new(state: &'a TaskProgressState, title: impl Into<String>) -> Self {
+    /// Creates a progress view titled after `operation` (for example
+    /// `"Restore"`), so both panels name the task they belong to.
+    pub fn new(state: &'a TaskProgressState, operation: impl AsRef<str>) -> Self {
+        let operation = operation.as_ref();
         Self {
             state,
-            title: title.into(),
+            progress_title: format!("{operation} Progress"),
+            details_title: format!("{operation} Details"),
         }
     }
 
@@ -280,7 +292,7 @@ impl<'a> TaskProgressWidget<'a> {
             ])
             .split(area);
 
-        let progress_bar = self.state.progress_bar();
+        let progress_bar = self.state.progress_bar().title(&self.progress_title);
 
         frame.render_widget(progress_bar.render(), chunks[0]);
 
@@ -303,7 +315,7 @@ impl<'a> TaskProgressWidget<'a> {
             }
         }
 
-        let widget = Paragraph::new(Text::from(lines)).block(theme::block(&self.title));
+        let widget = Paragraph::new(Text::from(lines)).block(theme::block(&self.details_title));
         frame.render_widget(widget, chunks[1]);
 
         frame.render_widget(Paragraph::new(Text::from(footer)), chunks[2]);
@@ -316,7 +328,7 @@ mod tests {
 
     #[test]
     fn phase_progress_preserves_order_counts_and_severity() {
-        let mut progress = PhaseProgress::new("Starting");
+        let mut progress = PhaseProgress::new("Test", "Starting");
         progress.handle_event(TaskEvent::Started {
             name: "phase",
             total: Some(10),
@@ -333,6 +345,8 @@ mod tests {
             progress.render_bar(frame, Rect::new(0, 0, 80, 4));
             progress.render_details(frame, Rect::new(0, 4, 80, 6));
         });
+        assert!(text.contains("Test Progress"));
+        assert!(text.contains("Test Details"));
         assert!(text.contains("2/10  phase"));
         assert!(text.contains("Cancelling"));
         assert!(text.find("older warning").unwrap() < text.find("newer error").unwrap());
@@ -351,7 +365,7 @@ mod tests {
 
     #[test]
     fn phase_progress_keeps_the_total_within_a_phase_but_not_across_phases() {
-        let mut progress = PhaseProgress::new("Starting");
+        let mut progress = PhaseProgress::new("Test", "Starting");
         // GC reports the total when the task starts and omits it on updates.
         progress.set_phase("Repacking blobs", 0, Some(40));
         progress.set_phase("Repacking blobs", 7, None);
@@ -374,7 +388,7 @@ mod tests {
 
     #[test]
     fn phase_progress_bounds_log_and_error_history() {
-        let mut progress = PhaseProgress::new("Starting");
+        let mut progress = PhaseProgress::new("Test", "Starting");
         for index in 0..510 {
             progress.handle_event(TaskEvent::Error(index.to_string()));
         }

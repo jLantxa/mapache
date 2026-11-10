@@ -68,6 +68,7 @@ impl RestoreScreen {
     fn start_restore(&mut self) {
         self.phase = RestorePhase::Progress;
         self.progress.start_time = Instant::now();
+        self.progress.scanning = true;
 
         let repo = self.repo.clone();
         let snapshot_pair = SnapshotPair {

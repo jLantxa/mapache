@@ -139,7 +139,14 @@ pub fn render_progress(frame: &mut Frame, state: &ProgressState, dry_run: bool) 
 }
 
 fn render_progress_bar(frame: &mut Frame, area: Rect, state: &ProgressState) {
-    frame.render_widget(state.core.progress_bar().render(), area);
+    frame.render_widget(
+        state
+            .core
+            .progress_bar()
+            .title("Snapshot Progress")
+            .render(),
+        area,
+    );
 }
 
 fn render_recent_nodes(frame: &mut Frame, area: Rect, state: &ProgressState) {
@@ -163,7 +170,7 @@ fn render_recent_nodes(frame: &mut Frame, area: Rect, state: &ProgressState) {
         })
         .collect();
 
-    let list = List::new(items).block(theme::block("Processing"));
+    let list = List::new(items).block(theme::block("Snapshot Processing"));
     frame.render_widget(list, area);
 }
 
@@ -174,7 +181,7 @@ fn render_errors(frame: &mut Frame, area: Rect, state: &ProgressState) {
         .map(|e| ListItem::new(Line::from(Span::styled(e.clone(), theme::THEME.error))))
         .collect();
 
-    let list = List::new(items).block(theme::block("Errors"));
+    let list = List::new(items).block(theme::block("Snapshot Errors"));
     frame.render_widget(list, area);
 }
 

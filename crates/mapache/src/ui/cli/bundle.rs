@@ -109,6 +109,10 @@ pub fn make_event_sender(
         ))
         .expect("invalid progress bar template for bundle bytes (undetermined)");
 
+    let scanning_style = base_style
+        .template(&format!("{bytes_label:<6} {{processed_bytes_fmt}}"))
+        .expect("invalid progress bar template for bundle scan");
+
     //  Data Bar
     let data_bar = if total_bytes > 0 {
         mp.add(ProgressBar::new(total_bytes))
@@ -209,6 +213,9 @@ pub fn make_event_sender(
     Arc::new(move |event: Event| {
         let Event::Backup(ev) = event else { return };
         match ev {
+            BackupEvent::ScanStarted => {
+                state.data_bar.set_style(scanning_style.clone());
+            }
             BackupEvent::NodeProcessing {
                 ref path,
                 diff,
@@ -260,7 +267,6 @@ pub fn make_event_sender(
                 state.data_bar.set_style(determined_style.clone());
                 state.data_bar.set_length(total_bytes);
             }
-            _ => {}
         }
     })
 }

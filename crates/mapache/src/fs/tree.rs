@@ -264,27 +264,6 @@ impl FSNodeStream {
         .await
     }
 
-    pub(crate) async fn from_paths_tracking_skips_with_progress(
-        paths: Vec<PathBuf>,
-        exclude_paths: Vec<PathBuf>,
-        with_atime: bool,
-        one_file_system: bool,
-        skipped_items: Arc<AtomicU64>,
-        walk_options: WalkOptions,
-        event_sender: EventSender,
-    ) -> Result<Self> {
-        Self::from_paths_inner(
-            paths,
-            exclude_paths,
-            with_atime,
-            one_file_system,
-            Some(skipped_items),
-            walk_options,
-            Some(ScanProgress::new(event_sender)),
-        )
-        .await
-    }
-
     async fn from_paths_inner(
         paths: Vec<PathBuf>,
         exclude_paths: Vec<PathBuf>,

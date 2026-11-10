@@ -84,7 +84,7 @@ impl VerifyScreen {
             phase: VerifyPhase::Config,
             form,
             session: TaskSession::new(),
-            progress: PhaseProgress::new("Verifying\u{2026}"),
+            progress: PhaseProgress::new("Verify", "Verifying\u{2026}"),
             summary: None,
             toasts: ToastSink::default(),
         }
@@ -136,7 +136,7 @@ impl VerifyScreen {
 
         self.session.begin(rx);
         self.phase = VerifyPhase::Progress;
-        self.progress = PhaseProgress::new("Verifying\u{2026}");
+        self.progress = PhaseProgress::new("Verify", "Verifying\u{2026}");
         self.summary = None;
 
         let repo = self.repo.clone();

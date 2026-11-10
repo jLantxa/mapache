@@ -262,8 +262,6 @@ pub async fn run_with_repo(
             },
         );
     } else {
-        let net_deleted_bytes = report.net_freed();
-
         ui::cli::log!();
 
         if report.unresolved_references > 0 {
@@ -277,30 +275,46 @@ pub async fn run_with_repo(
                 "{} Repository is already clean — no action needed",
                 "[SUCCESS]".bold().green()
             );
-        } else if net_deleted_bytes >= 0 {
-            ui::cli::log!(
-                "{} Cleaned repository in {} — freed {}",
-                "[SUCCESS]".bold().green(),
-                utils::pretty_print_duration(duration),
-                utils::format_size_binary(net_deleted_bytes as u64, 3)
-                    .bold()
-                    .green()
-            );
         } else {
             ui::cli::log!(
-                "{} Cleaned repository in {} — net added {}",
+                "{} Cleaned repository in {}",
                 "[SUCCESS]".bold().green(),
-                utils::pretty_print_duration(duration),
-                utils::format_size_binary(net_deleted_bytes.unsigned_abs(), 3)
-                    .bold()
-                    .yellow()
+                utils::pretty_print_duration(duration)
             );
+            log_byte_breakdown(&report);
         }
     }
 
     tracing::info!(target: "clean", "Clean command completed in {:?}", duration);
 
     Ok(())
+}
+
+/// Logs the bytes added, deleted and freed (or net added) by a run, matching
+/// the TUI summary.
+fn log_byte_breakdown(report: &CleanReport) {
+    let net = report.net_freed();
+    ui::cli::log!(
+        "  Added:     {}",
+        utils::format_size_binary(report.added_bytes, 3)
+    );
+    ui::cli::log!(
+        "  Deleted:   {}",
+        utils::format_size_binary(report.deleted_bytes, 3)
+    );
+    if net >= 0 {
+        ui::cli::log!(
+            "  Net freed: {}",
+            utils::format_size_binary(net as u64, 3).bold().green()
+        );
+    } else {
+        ui::cli::log!(
+            "  Net added: {}",
+            utils::format_size_binary(net.unsigned_abs(), 3)
+                .bold()
+                .yellow()
+        );
+    }
 }
 
 /// Result of a garbage-collection run, independent of how it is presented.

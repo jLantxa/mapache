@@ -6,7 +6,6 @@ rust-version = "1.96.0"
 description = "Fast, secure, deduplicating, incremental backup tool"
 license = "GPL-3.0-only"
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 readme = "../../README.md"
 keywords = ["backup", "deduplication", "incremental", "encryption", "s3"]

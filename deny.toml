@@ -9,12 +9,10 @@ feature-depth = 1
 ignore = []
 
 [licenses]
-# Trimmed to exactly the licenses the current dependency graph requires.
-# Each entry is load-bearing: removing any one makes `cargo deny check licenses`
-# fail. `unused-allowed-license = "deny"` keeps it that way.
 allow = [
   "MIT",
   "Apache-2.0",
+  "BSD-2-Clause",
   "BSD-3-Clause",
   "Unicode-3.0",
   "GPL-3.0-only",
@@ -27,7 +25,9 @@ allow = [
   # pulled in by rust-s3's TLS support (tokio-rustls-tls-ring).
   "MPL-2.0",
   "CDLA-Permissive-2.0",
-]
+] # Trimmed to exactly the licenses the current dependency graph requires.
+# Each entry is load-bearing: removing any one makes `cargo deny check licenses`
+# fail. `unused-allowed-license = "deny"` keeps it that way.
 confidence-threshold = 0.8
 unused-allowed-license = "deny"
 exceptions = []

@@ -1881,6 +1881,69 @@ mod tests {
         Ok(())
     }
 
+    /// Interrupting a repack after the in-memory index has been rewritten must
+    /// leave every referenced blob resolvable on disk. A lazy index persists
+    /// the rewritten (obsolete-pack-free) index before repacking, so the old
+    /// index files and their packs are what keeps the repository intact until
+    /// the repack completes and flushes the new index.
+    #[tokio::test]
+    async fn test_repack_aborts_after_index_cleanup_and_preserves_blobs() -> Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbbb"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![make_node("a.txt", vec![blob_a, blob_b])]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        // Exercise the path that persists the rewritten index before repacking.
+        repo.index()
+            .set_index_mode(crate::repository::index::IndexMode::Lazy(1));
+
+        let signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal_for_sender = signal.clone();
+        let sender: EventSender = Arc::new(move |event| {
+            if matches!(
+                event,
+                Event::Gc(GcEvent::TaskProgress {
+                    kind: GcTaskKind::RepackingBlobs,
+                    ..
+                })
+            ) {
+                signal_for_sender.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        let err = match super::repack_all(repo.clone(), sender, signal).await {
+            Ok(_) => panic!("repack should fail when interrupted"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, MapacheError::Interrupted),
+            "expected Interrupted, got: {err}"
+        );
+
+        // The on-disk index (old files plus any pre-repack rewrite) must still
+        // resolve every referenced blob.
+        repo.reload_master_index().await?;
+        assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
+        assert_eq!(repo.load_blob(&blob_b).await?, b"bbbb");
+
+        Ok(())
+    }
+
     /// Zero blobs are real blobs: they get a footer entry in a real pack and an
     /// index entry, only their data section is empty. So the GC must treat them
     /// like any other blob and drop the unreferenced ones from the index.

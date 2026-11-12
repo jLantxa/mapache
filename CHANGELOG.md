@@ -11,6 +11,10 @@
   the flag, rules keep applying to all in-scope snapshots together. The TUI
   retention screen honors a configured `group-by`, and `forget` reports a
   per-group summary in text and JSON output.
+- **Repack progress and interruption**: `mapache repack` now shows elapsed time
+  and ETA on its progress bar, and can be interrupted safely with Ctrl+C
+  (SIGINT / SIGTERM), exiting with code `130`. Interruption leaves the on-disk
+  index and packs consistent.
 
 ### Removed
 

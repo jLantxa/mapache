@@ -7,7 +7,11 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::error::MapacheError,
     repository::gc,
-    ui::{self, cli::gc as cli_gc},
+    ui::{
+        self,
+        cli::gc as cli_gc,
+        events::{Event, GcEvent},
+    },
     utils,
 };
 
@@ -47,7 +51,18 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), Repack
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new();
+            let start = Instant::now();
+            let event_sender = cli_gc::make_event_sender();
+            let sender_for_cleanup = event_sender.clone();
+            let sender_for_finish = event_sender.clone();
+            let cleanup_handler = CleanupHandler::new_with_callback(move || {
+                // Clear the progress bar before the command unwinds so the
+                // interrupt message is not printed over a live bar.
+                sender_for_cleanup(Event::Gc(GcEvent::Finished {
+                    added_bytes: 0,
+                    deleted_bytes: 0,
+                }));
+            });
             cleanup_handler.add_lock(lock_handle);
             let shutdown_signal = cleanup_handler.interrupted.clone();
 
@@ -55,15 +70,17 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), Repack
             // rewritten index, so a lazy pool loses nothing.
             repo.reload_master_index().await?;
 
-            let start = Instant::now();
-            let event_sender = cli_gc::make_event_sender();
-
-            gc::repack_all(repo, event_sender, shutdown_signal.clone()).await?;
-
-            if shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
+            let result = gc::repack_all(repo, event_sender, shutdown_signal.clone()).await;
+            if result.is_err() && shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
+                tracing::info!(target: "repack", "Repack interrupted by user");
                 return Err(RepackError::Interrupted);
             }
+            result?;
 
+            sender_for_finish(Event::Gc(GcEvent::Finished {
+                added_bytes: 0,
+                deleted_bytes: 0,
+            }));
             ui::cli::log!(
                 "\nFinished in {}",
                 utils::pretty_print_duration(start.elapsed())

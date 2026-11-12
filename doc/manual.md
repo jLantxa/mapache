@@ -1417,7 +1417,9 @@ an exclusive lock and may take significant time on large repositories.
 Re-encoding and pack finalization run in parallel, bounded by
 `gc-repack-concurrency`, the available CPU count and a fixed segment-memory
 budget. Memory use stays comparable to `snapshot` even when the configured
-concurrency is high.
+concurrency is high. The progress bar shows elapsed time and ETA, and the
+command can be interrupted with Ctrl+C; an interrupted run leaves the existing
+index and packs intact.
 
 ---
 

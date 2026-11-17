@@ -20,10 +20,7 @@ use crate::{
         snapshot::Snapshot,
         storage::SecureStorage,
     },
-    utils::{
-        collections::{IdSet, ShardedIdSet},
-        size,
-    },
+    utils::collections::{IdSet, ShardedIdSet},
 };
 
 pub struct PackStats {
@@ -35,10 +32,12 @@ pub struct PackStats {
     pub repaired: bool,
 }
 
-const CHUNK_SIZE: usize = 64 * size::MiB as usize;
-const MAX_VERIFICATION_BATCH_SIZE: usize = 64 * size::MiB as usize;
-/// Concurrency for verification batches (channel buffer and in-flight limit).
-const VERIFY_BATCH_CONCURRENCY: usize = 4;
+#[derive(Clone, Copy)]
+struct VerifyLimits {
+    chunk_size: usize,
+    batch_size: usize,
+    batch_concurrency: usize,
+}
 
 /// Verify the checksum and contents of a pack.
 ///
@@ -61,8 +60,14 @@ pub async fn verify_pack(
     let pack_size = attr
         .size
         .ok_or_else(|| MapacheError::Internal("pack size unknown".to_string()))?;
+    let plan = common::parallelism::plan();
+    let limits = VerifyLimits {
+        chunk_size: plan.verify_chunk_size as usize,
+        batch_size: plan.verify_batch_size as usize,
+        batch_concurrency: plan.verify_batch_concurrency,
+    };
 
-    let mut stats = if pack_size <= CHUNK_SIZE as u64 {
+    let mut stats = if pack_size <= limits.chunk_size as u64 {
         tracing::trace!(target: "verify", "Using inline verification for pack {}", pack_id.to_short_hex(8));
         verify_pack_inline(
             repo.clone(),
@@ -80,6 +85,7 @@ pub async fn verify_pack(
             secure_storage.clone(),
             pack_id,
             pack_path.clone(),
+            limits,
         )
         .await?
     };
@@ -103,12 +109,19 @@ pub async fn verify_pack(
                     Ok(()) => {
                         tracing::info!(target: "verify", "ECC repair succeeded for pack {}, re-verifying", pack_id.to_short_hex(8));
                         // Re-verify the repaired pack to get correct blob stats.
-                        stats = if pack_size <= CHUNK_SIZE as u64 {
+                        stats = if pack_size <= limits.chunk_size as u64 {
                             verify_pack_inline(repo, backend, secure_storage, pack_id, pack_path)
                                 .await?
                         } else {
-                            verify_pack_streaming(repo, backend, secure_storage, pack_id, pack_path)
-                                .await?
+                            verify_pack_streaming(
+                                repo,
+                                backend,
+                                secure_storage,
+                                pack_id,
+                                pack_path,
+                                limits,
+                            )
+                            .await?
                         };
                         stats.repaired = true;
                     }
@@ -159,6 +172,9 @@ async fn repair_pack_with_ecc(
         .decode(&sidecar_encoded)
         .map_err(|e| MapacheError::Repo(format!("failed to decode ECC sidecar: {}", e)))?;
 
+    let _memory_permit = common::parallelism::acquire_verify_decode_memory(pack_size)
+        .await
+        .ok_or(MapacheError::Interrupted)?;
     // Run ECC decode (verifies + repairs in place) on a blocking thread.
     let (decoded, was_repaired) = tokio::task::spawn_blocking(move || {
         let mut decoded = raw_data;
@@ -250,6 +266,9 @@ pub async fn verify_metadata_file(
     let ss = secure_storage.clone();
     let ft = file_type;
     let raw_data_clone = raw_data.clone();
+    let _cpu_permit = common::parallelism::acquire_cpu()
+        .await
+        .ok_or(MapacheError::Interrupted)?;
     let decode_result = tokio::task::spawn_blocking(move || match ft {
         ContentIdType::Pack => Err(MapacheError::Internal(
             "use verify_pack for packs".to_string(),
@@ -360,7 +379,7 @@ pub async fn verify_metadata_file(
     Ok(stats)
 }
 
-/// Fast path for packs ≤ CHUNK_SIZE: one read, parallel verify.
+/// Fast path for packs that fit in the resolved chunk limit: one read, parallel verify.
 async fn verify_pack_inline(
     repo: Arc<Repository>,
     backend: Arc<dyn StorageBackend>,
@@ -380,6 +399,13 @@ async fn verify_pack_inline(
     // dangling count needs an async lookup once it returns.
     let index = repo.index();
 
+    // Memory first, then CPU, matching the streaming path's acquisition order.
+    let _memory_permit = common::parallelism::acquire_verify_decode_memory(raw_data.len() as u64)
+        .await
+        .ok_or(MapacheError::Interrupted)?;
+    let _cpu_permit = common::parallelism::acquire_cpu()
+        .await
+        .ok_or(MapacheError::Interrupted)?;
     let (pack_header, verified_blobs, corrupt_blobs, bytes_processed, bit_rot) =
         tokio::task::spawn_blocking(move || {
             let file_hash = ID::from_content(&raw_data);
@@ -465,7 +491,7 @@ async fn verify_pack_inline(
     })
 }
 
-/// Streaming path for packs > CHUNK_SIZE: read footer, then stream data in chunks,
+/// Streaming path for larger packs: read footer, then stream data in chunks,
 /// verify blobs in batches via spawn_blocking + rayon.
 async fn verify_pack_streaming(
     repo: Arc<Repository>,
@@ -473,8 +499,18 @@ async fn verify_pack_streaming(
     secure_storage: Arc<SecureStorage>,
     pack_id: ID,
     pack_path: std::path::PathBuf,
+    limits: VerifyLimits,
 ) -> Result<PackStats> {
     let handle = Handle::new(&pack_path);
+
+    // One pack holds up to `batch_concurrency` buffered chunks plus the copied
+    // blobs and the batch being verified: roughly three times chunk size each.
+    let stream_bytes = (limits.chunk_size as u64)
+        .saturating_mul(limits.batch_concurrency as u64)
+        .saturating_mul(3);
+    let _memory_permit = common::parallelism::acquire_verify_decode_memory(stream_bytes)
+        .await
+        .ok_or(MapacheError::Interrupted)?;
 
     // Read the pack footer: last 4 bytes = footer length, preceding = encrypted footer.
     let footer_len_bytes = backend.read(&handle, -4, 4).await.map_err(|e| {
@@ -500,7 +536,7 @@ async fn verify_pack_streaming(
     let mut bit_rot_hasher = common::hash::Hasher::new();
 
     let (batch_tx, mut batch_rx) =
-        mpsc::channel::<Vec<(ID, Vec<u8>, bool)>>(VERIFY_BATCH_CONCURRENCY);
+        mpsc::channel::<Vec<(ID, Vec<u8>, bool)>>(limits.batch_concurrency);
 
     let ss = secure_storage.clone();
     let verifier_handle = tokio::spawn(async move {
@@ -512,9 +548,15 @@ async fn verify_pack_streaming(
 
         loop {
             tokio::select! {
-                Some(batch) = batch_rx.recv(), if pending_verifications.len() < VERIFY_BATCH_CONCURRENCY => {
+                Some(batch) = batch_rx.recv(), if pending_verifications.len() < limits.batch_concurrency => {
+                    let Some(cpu_permit) = common::parallelism::acquire_cpu().await else {
+                        return Err(MapacheError::Interrupted);
+                    };
                     let ss = ss.clone();
-                    pending_verifications.push(tokio::task::spawn_blocking(move || batch_verify(&batch, &ss)));
+                    pending_verifications.push(tokio::task::spawn_blocking(move || {
+                        let _cpu_permit = cpu_permit;
+                        batch_verify(&batch, &ss)
+                    }));
                 }
                 Some(res) = pending_verifications.next() => {
                     let (v, c, b) = res
@@ -531,12 +573,11 @@ async fn verify_pack_streaming(
         Ok::<(usize, Vec<ID>, u64), MapacheError>((v_total, c_total, b_total))
     });
 
-    let chunk_size = CHUNK_SIZE;
-    let offsets: Vec<u64> = (0..data_end).step_by(chunk_size).collect();
+    let offsets: Vec<u64> = (0..data_end).step_by(limits.chunk_size).collect();
 
     let mut chunk_stream = stream::iter(offsets)
         .map(move |offset| {
-            let to_read = (data_end - offset).min(chunk_size as u64) as usize;
+            let to_read = (data_end - offset).min(limits.chunk_size as u64) as usize;
             let backend = backend.clone();
             let pack_path = pack_path.clone();
             async move {
@@ -558,7 +599,7 @@ async fn verify_pack_streaming(
                 Ok::<(u64, Vec<u8>), MapacheError>((offset, data))
             }
         })
-        .buffered(VERIFY_BATCH_CONCURRENCY);
+        .buffered(limits.batch_concurrency);
 
     let mut next_blob = 0usize;
     let mut blob_acc = Vec::new();
@@ -617,7 +658,7 @@ async fn verify_pack_streaming(
                 }
             }
 
-            if pending_blobs_size >= MAX_VERIFICATION_BATCH_SIZE {
+            if pending_blobs_size >= limits.batch_size {
                 batch_tx
                     .send(std::mem::take(&mut pending_blobs))
                     .await

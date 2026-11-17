@@ -21,9 +21,9 @@ use crate::{
     common::{
         self, ContentIdType, ID,
         config::{self, CommandHooks},
-        defaults::{DEFAULT_SNAPSHOT_PACKERS, DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        defaults::SHORT_SNAPSHOT_ID_LEN,
         error::MapacheError,
-        hooks,
+        hooks, parallelism,
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
     fs::{
@@ -232,8 +232,8 @@ impl CmdArgs {
             fail_on_skipped: Some(false),
             skip_if_unchanged: Some(false),
             parent: Some(UseSnapshot::Latest),
-            num_readers: Some(DEFAULT_SNAPSHOT_READERS),
-            num_packers: Some(DEFAULT_SNAPSHOT_PACKERS),
+            num_readers: None,
+            num_packers: None,
             dry_run: false,
             with_atime: Some(false),
             stdin: false,
@@ -323,6 +323,28 @@ impl From<&CmdArgs> for SnapshotRunOptions {
             exclude_if_present.push("CACHEDIR.TAG".to_string());
         }
 
+        let plan = parallelism::plan();
+        let num_readers = args.num_readers.unwrap_or(plan.snapshot_readers);
+        if args.num_readers.is_some() {
+            parallelism::warn_if_over_group_budget(
+                parallelism::Pipeline::Snapshot,
+                parallelism::BudgetGroup::Scan,
+                "snapshot.readers",
+                num_readers,
+                parallelism::snapshot_reader_bytes(),
+            );
+        }
+        let num_packers = args.num_packers.unwrap_or(plan.snapshot_packers);
+        if args.num_packers.is_some() {
+            parallelism::warn_if_over_group_budget(
+                parallelism::Pipeline::Snapshot,
+                parallelism::BudgetGroup::Pack,
+                "snapshot.packers",
+                num_packers,
+                parallelism::packer_worker_bytes(plan.pack_size),
+            );
+        }
+
         Self {
             paths: args.paths.clone(),
             as_root: args.as_root.unwrap_or(false),
@@ -337,10 +359,8 @@ impl From<&CmdArgs> for SnapshotRunOptions {
             fail_on_skipped: args.fail_on_skipped.unwrap_or(false),
             skip_if_unchanged: args.skip_if_unchanged.unwrap_or(false),
             with_atime: args.with_atime.unwrap_or(false),
-            num_readers: args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS),
-            num_packers: args
-                .num_packers
-                .unwrap_or(common::defaults::DEFAULT_SNAPSHOT_PACKERS),
+            num_readers,
+            num_packers,
             stdin: args.stdin,
             hostname: args.hostname.clone(),
             use_fs_snapshot: args.use_fs_snapshot.unwrap_or(false),
@@ -421,7 +441,7 @@ pub async fn run(
 
     let dry_run = args.dry_run;
 
-    let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);
+    let num_readers = options.num_readers;
     let json_output = global_args.json;
 
     let repo_result = with_repository_lock(

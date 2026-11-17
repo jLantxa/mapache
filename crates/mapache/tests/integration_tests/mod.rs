@@ -155,6 +155,8 @@ impl TestContext {
             ssh_privatekey: None,
             ssh_known_hosts: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
+            memory_budget: None,
+            cpu_scale: None,
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
@@ -370,7 +372,7 @@ impl VerifyBuilder {
         Self {
             args: cmd_verify::CmdArgs {
                 read_packs: false,
-                parallel: 4,
+                parallel: None,
                 with_cache: false,
                 fail_early: false,
                 sample: None,
@@ -392,7 +394,7 @@ impl VerifyBuilder {
     }
 
     pub fn parallel(mut self, parallel: usize) -> Self {
-        self.args.parallel = parallel;
+        self.args.parallel = Some(parallel);
         self
     }
 

@@ -20,6 +20,7 @@ use crate::{
         defaults::UI_RATE_ESTIMATOR_WINDOW,
         error::{MapacheError, Result},
         global::GlobalOpts,
+        parallelism,
     },
     repository::lock::{Lock, LockHandle},
     repository::repo::{self, LOCKS_DIR, Repository},
@@ -449,7 +450,7 @@ async fn sync_backends(
                     Ok::<(), MapacheError>(())
                 }
             })
-            .buffer_unordered(4);
+            .buffer_unordered(parallelism::plan().sync_concurrency);
 
         let results = stream.collect::<Vec<_>>().await;
         for res in results {
@@ -523,7 +524,7 @@ async fn sync_backends(
                     Ok::<(), MapacheError>(())
                 }
             })
-            .buffer_unordered(4); // Use 4 concurrent copy operations
+            .buffer_unordered(parallelism::plan().sync_concurrency);
 
         let results = stream.collect::<Vec<_>>().await;
         for res in results {

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use argon2::Params;
 
-use crate::{repository::storage::SecureStorage, ui::cli, utils::size};
+use crate::{common::sysinfo, repository::storage::SecureStorage, ui::cli, utils::size};
 
 /// Target wall-clock time for a single Argon2id derivation.
 pub const CALIBRATE_TARGET: Duration = Duration::from_millis(500);
@@ -83,29 +83,7 @@ pub fn default_params() -> Params {
 
 /// Return total physical memory in MiB.
 fn total_memory_mib() -> u64 {
-    #[cfg(unix)]
-    {
-        // SAFETY: sysconf(2) is always safe to call; returns -1 on error.
-        let (pages, page_size) = unsafe {
-            (
-                libc::sysconf(libc::_SC_PHYS_PAGES),
-                libc::sysconf(libc::_SC_PAGE_SIZE),
-            )
-        };
-        // Cast to u64 before multiply to avoid overflow on 32-bit systems.
-        (pages as u64) * (page_size as u64) / size::MiB
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-        // SAFETY: GlobalMemoryStatusEx is always safe to call; zeroed struct is valid.
-        let mut mem = unsafe { std::mem::zeroed::<MEMORYSTATUSEX>() };
-        mem.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
-        // SAFETY: `GlobalMemoryStatusEx` is a documented Win32 API that fills in a
-        // `MEMORYSTATUSEX` struct; the struct is properly initialized above.
-        unsafe { GlobalMemoryStatusEx(&mut mem) };
-        mem.ullTotalPhys / size::MiB
-    }
+    sysinfo::total_memory_mib()
 }
 
 /// Benchmark and return Argon2id parameters tuned for the current hardware.
@@ -178,9 +156,8 @@ fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
 
 /// Determine parallelism: use available cores, capped to 4.
 fn optimal_parallelism() -> u32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(1)
+    u32::try_from(sysinfo::profile().logical_cpus)
+        .unwrap_or(u32::MAX)
         .clamp(1, 4)
 }
 

@@ -15,7 +15,10 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, ID, config::CommandHooks, error::MapacheError, hooks, time::DateTime},
+    common::{
+        ContentIdType, ID, config::CommandHooks, error::MapacheError, hooks, parallelism,
+        time::DateTime,
+    },
     fs::tree::SerializedNodeStream,
     repository::{
         lock::LockHandle,
@@ -36,7 +39,7 @@ use crate::{
             VerifyReporter,
         },
     },
-    utils::{self, collections::IdSet},
+    utils::{self, collections::IdSet, size},
 };
 
 #[derive(Serialize)]
@@ -231,11 +234,10 @@ pub struct CmdArgs {
     #[clap(
         short,
         long,
-        default_value_t = 4,
         requires = "read_packs",
         value_parser = parse_parallel
     )]
-    pub parallel: usize,
+    pub parallel: Option<usize>,
 
     /// Use local cache
     #[clap(long, default_value_t = false)]
@@ -477,6 +479,18 @@ pub async fn run_with_repo(
     };
     cleanup_handler.add_lock(lock_handle);
 
+    let plan = parallelism::plan();
+    let parallel = args.parallel.unwrap_or(plan.verify_parallel);
+    if args.parallel.is_some() {
+        parallelism::warn_if_over_group_budget(
+            parallelism::Pipeline::Verify,
+            parallelism::BudgetGroup::Decode,
+            "verify.parallel",
+            parallel,
+            512 * size::MiB,
+        );
+    }
+
     if args.repair && repo.manifest().ecc().is_none() {
         return Err(VerifyError::VerifyFailed(
             "ECC is not enabled on this repository. \
@@ -548,7 +562,7 @@ pub async fn run_with_repo(
             cleanup_handler: &cleanup_handler,
             reporter: reporter.as_ref(),
             json_out,
-            parallel: args.parallel,
+            parallel,
             fail_early: args.fail_early,
             is_sampled: args.sample.is_some(),
             repair: args.repair,
@@ -669,7 +683,7 @@ pub async fn run_with_repo(
                     Ok::<(), MapacheError>(())
                 }
             })
-            .buffer_unordered(4)
+            .buffer_unordered(parallelism::plan().verify_aux_concurrency)
             .collect()
             .await;
 
@@ -959,9 +973,6 @@ async fn verify_metadata_files(
     Ok(())
 }
 
-/// Concurrency for the pack footer dump.
-const PACK_FOOTER_DUMP_CONCURRENCY: usize = 8;
-
 /// Dumps every blob descriptor found in the repository's pack footers to a
 /// plain-text file, one line per descriptor:
 ///
@@ -1051,7 +1062,7 @@ async fn dump_pack_blobs(
                 Ok::<_, VerifyError>(())
             }
         })
-        .buffer_unordered(PACK_FOOTER_DUMP_CONCURRENCY)
+        .buffer_unordered(parallelism::plan().verify_footer_concurrency)
         .try_collect::<Vec<_>>()
         .await?;
 
@@ -1327,7 +1338,7 @@ async fn verify_snapshots_logically(
                 (i, snapshot_id, res, json_out)
             }
         })
-        .buffered(4);
+        .buffered(parallelism::plan().verify_aux_concurrency);
 
     while let Some((i, snapshot_id, res, json_out)) = stream.next().await {
         let id = snapshot_id.to_short_hex(12);
@@ -1537,6 +1548,13 @@ mod tests {
             clap::error::ErrorKind::ValueValidation,
             "unexpected error kind: {err}"
         );
+    }
+
+    #[test]
+    fn parallel_defaults_to_adaptive() {
+        let parsed = VerifyArgsParse::try_parse_from(["--read-packs"])
+            .expect("verify args should parse without an explicit parallel count");
+        assert_eq!(parsed.args.parallel, None);
     }
 
     #[test]

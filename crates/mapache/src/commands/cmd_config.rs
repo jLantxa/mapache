@@ -2,7 +2,11 @@ use std::io;
 
 use clap::Args;
 
-use crate::{commands::ToExitCode, common::config::MapacheConfig};
+use crate::{
+    commands::ToExitCode,
+    common::{config::MapacheConfig, parallelism, sysinfo},
+    utils::format_size_binary,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -27,6 +31,9 @@ pub struct CmdArgs {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum ConfigCommand {
+    /// Show detected system resources and the resolved parallelism plan
+    #[command(alias = "show")]
+    Info,
     /// Print a template TOML configuration file to stdout or a file
     Template {
         /// Output file path
@@ -37,6 +44,72 @@ pub enum ConfigCommand {
 
 pub async fn run(args: &CmdArgs) -> Result<(), ConfigError> {
     match &args.command {
+        ConfigCommand::Info => {
+            let profile = sysinfo::profile();
+            let plan = parallelism::plan();
+            let limiters = parallelism::limiter_status();
+
+            println!("System");
+            println!("  Logical CPUs:      {}", profile.logical_cpus);
+            println!(
+                "  Available memory:  {}{}",
+                format_size_binary(profile.available_memory, 1),
+                if profile.cgroup_cpu_limit || profile.cgroup_memory_limit {
+                    " (cgroup-limited)"
+                } else {
+                    ""
+                }
+            );
+            println!(
+                "  Total memory:      {}",
+                format_size_binary(profile.total_memory, 1)
+            );
+            println!(
+                "  Memory budget:     {} (cpu scale {:.2})",
+                format_size_binary(plan.memory_budget, 1),
+                plan.cpu_scale
+            );
+
+            println!();
+            println!("Runtime");
+            println!(
+                "  Async workers:          {}",
+                parallelism::runtime_worker_threads()
+            );
+            println!(
+                "  Blocking threads (max): {}",
+                parallelism::runtime_max_blocking_threads()
+            );
+
+            println!();
+            println!("Parallelism");
+            println!("{}", plan.detailed_summary());
+
+            println!();
+            println!("Demand");
+            println!("{}", plan.demand.detailed_summary());
+
+            println!();
+            println!("Limiters");
+            println!(
+                "  CPU:             {} / {}",
+                limiters.cpu_used, limiters.cpu_capacity
+            );
+            println!(
+                "  Writes:          {} / {}",
+                limiters.writes_used, limiters.writes_capacity
+            );
+            println!(
+                "  Restore decode:  {} / {}",
+                format_size_binary(limiters.restore_decode_used_bytes, 1),
+                format_size_binary(limiters.restore_decode_capacity_bytes, 1)
+            );
+            println!(
+                "  Verify decode:   {} / {}",
+                format_size_binary(limiters.verify_decode_used_bytes, 1),
+                format_size_binary(limiters.verify_decode_capacity_bytes, 1)
+            );
+        }
         ConfigCommand::Template { output } => {
             let config = MapacheConfig::template();
             let toml_str = toml::to_string_pretty(&config)

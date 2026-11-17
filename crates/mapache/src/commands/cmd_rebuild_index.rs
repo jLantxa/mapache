@@ -11,7 +11,7 @@ use indicatif::ProgressBar;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{BlobType, ContentIdType, ID, error::MapacheError},
+    common::{BlobType, ContentIdType, ID, error::MapacheError, parallelism},
     repository::{
         index::MasterIndex,
         packer::{PackedBlobDescriptor, Packer},
@@ -123,7 +123,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                         (pack_id, res)
                     }
                 })
-                .buffered(8)
+                .buffered(parallelism::plan().rebuild_scan_concurrency)
                 .collect()
                 .await;
 
@@ -271,7 +271,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                         index_delete_bar.inc(1);
                     }
                 })
-                .buffer_unordered(5)
+                .buffer_unordered(parallelism::plan().rebuild_delete_concurrency)
                 .collect::<()>()
                 .await;
 

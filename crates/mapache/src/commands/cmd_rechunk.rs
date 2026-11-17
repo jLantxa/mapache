@@ -11,9 +11,7 @@ use crate::{
     backend::{StorageHint, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{
-        ContentIdType, SaveID,
-        defaults::{self, SHORT_SNAPSHOT_ID_LEN},
-        error::MapacheError,
+        ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, parallelism,
     },
     repository::{repo::Repository, snapshot::SnapshotStream},
     ui::{
@@ -86,7 +84,7 @@ async fn rechunk_with_repo(
     let num_snapshots = snapshot_stream.len();
     let mut rechunked_blob_list_map = HashMap::new();
 
-    repo.init_pack_saver(defaults::DEFAULT_SNAPSHOT_PACKERS)?;
+    repo.init_pack_saver(parallelism::plan().snapshot_packers)?;
 
     let mut index = 0;
     while let Some(res) = snapshot_stream.next().await {

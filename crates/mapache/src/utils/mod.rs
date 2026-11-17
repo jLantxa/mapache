@@ -329,6 +329,13 @@ pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
     Ok(product as u64)
 }
 
+/// Parses a human-readable size (e.g. `10MB`, `1GiB`, or a raw byte count) into
+/// bytes. This is the same grammar as [`parse_bandwidth`] but without the
+/// per-second suffix.
+pub(crate) fn parse_size(s: &str) -> Result<u64> {
+    parse_bandwidth(s)
+}
+
 // --- Permissions Utilities ---
 
 /// Converts a Unix file mode (as `u32`) into a human-readable permission string

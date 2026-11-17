@@ -1,6 +1,9 @@
 use std::process::{ExitCode, Termination};
 
-use mapache::commands;
+use mapache::{
+    commands,
+    common::{runtime_max_blocking_threads, runtime_worker_threads},
+};
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -30,9 +33,17 @@ impl Termination for MainExitCode {
     }
 }
 
-#[tokio::main]
-async fn main() -> MainExitCode {
-    // Parse arguments and execute commands.
-    // Return the exit code so destructors (e.g. lock handles) run on drop.
-    MainExitCode(commands::parse_and_run().await)
+fn main() -> MainExitCode {
+    // Build the runtime explicitly so Tokio's blocking pool cannot grow to its
+    // default maximum of 512 threads. Return the exit code so destructors (e.g.
+    // lock handles) run on drop.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("mapache-async")
+        .worker_threads(runtime_worker_threads())
+        .max_blocking_threads(runtime_max_blocking_threads())
+        .enable_all()
+        .build()
+        .expect("failed to build Tokio runtime");
+
+    MainExitCode(runtime.block_on(commands::parse_and_run()))
 }

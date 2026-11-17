@@ -17,7 +17,7 @@ use serde::Serialize;
 use crate::{
     backend::{BackendNode, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{BlobType, ID, error::MapacheError, global::GlobalOpts},
+    common::{BlobType, ID, error::MapacheError, global::GlobalOpts, parallelism},
     fs::tree::SerializedNodeStream,
     repository::{
         packer::Packer,
@@ -31,13 +31,6 @@ use crate::{
     ui::{self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target},
     utils::{self, collections::ShardedIdSet},
 };
-
-/// Snapshots analyzed concurrently. Each one walks its own tree, so this bounds
-/// the number of in-flight metadata reads against the backend.
-const SNAPSHOT_ANALYSIS_CONCURRENCY: usize = 4;
-
-/// Pack footers parsed concurrently when `--full` is requested.
-const PACK_FOOTER_CONCURRENCY: usize = 8;
 
 /// Width of the label column in the human readable report.
 const LABEL_WIDTH: usize = 26;
@@ -462,7 +455,7 @@ async fn scan_pack_footers(
                 Ok::<_, StatsError>(scan)
             }
         })
-        .buffer_unordered(PACK_FOOTER_CONCURRENCY)
+        .buffer_unordered(parallelism::plan().stats_footer_concurrency)
         .try_collect()
         .await?;
 
@@ -1079,7 +1072,7 @@ async fn analyze_snapshots(
                 Ok::<_, StatsError>(analysis)
             }
         })
-        .buffer_unordered(SNAPSHOT_ANALYSIS_CONCURRENCY)
+        .buffer_unordered(parallelism::plan().stats_analysis_concurrency)
         .try_collect()
         .await?;
 

@@ -43,12 +43,10 @@ use crate::{
     common::{
         ContentIdType,
         error::{MapacheError, Result},
+        parallelism,
     },
     ui,
 };
-
-/// Maximum number of concurrent subdirectories to explore in `list_dir_recursive`.
-const LIST_DIR_RECURSIVE_CONCURRENCY: usize = 8;
 
 /// Configuration for retry logic.
 #[derive(Debug, Clone)]
@@ -274,7 +272,7 @@ pub trait StorageBackend: Send + Sync {
                     }
                 }
             })
-            .buffer_unordered(LIST_DIR_RECURSIVE_CONCURRENCY)
+            .buffer_unordered(parallelism::plan().list_dir_concurrency)
             .try_fold(Vec::new(), |mut acc, sub| async move {
                 acc.extend(sub);
                 Ok::<_, MapacheError>(acc)

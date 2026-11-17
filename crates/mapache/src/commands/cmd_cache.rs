@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use crate::{
     backend::cache::CacheBackend,
     commands::ToExitCode,
-    common::{defaults::SHORT_REPO_ID_LEN, error::MapacheError},
+    common::{defaults::SHORT_REPO_ID_LEN, error::MapacheError, parallelism},
     ui::{
         self,
         cli::{
@@ -305,7 +305,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheErr
     let freed = AtomicU64::new(0);
     let printed = Mutex::new(0u64);
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
+        .num_threads(parallelism::plan().cache_threads)
         .build()
         .map_err(|e| CacheError::Io(io::Error::other(e)))?;
     pool.install(|| {

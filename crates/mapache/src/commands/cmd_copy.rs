@@ -25,6 +25,7 @@ use crate::{
         compression_policy::CompressionHint,
         defaults::{SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
+        parallelism,
     },
     fs::tree::Tree,
     repository::{
@@ -521,7 +522,7 @@ async fn copy_snapshots(
 
     // Transfer blobs
 
-    dst_repo.init_pack_saver(4)?;
+    dst_repo.init_pack_saver(parallelism::plan().copy_packers)?;
     let bytes_copied = Arc::new(AtomicU64::new(0));
 
     let copy_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
@@ -624,7 +625,7 @@ async fn copy_snapshots(
                 Ok::<_, CopyError>(())
             }
         })
-        .buffer_unordered(8);
+        .buffer_unordered(parallelism::plan().copy_concurrency);
 
     while let Some(result) = stream.next().await {
         result?;

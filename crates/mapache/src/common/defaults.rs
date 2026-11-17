@@ -4,16 +4,12 @@ use mapache_chunker::Normalization;
 
 use crate::{
     commands::Compression,
-    common::{compression_policy::CompressionPolicy, config},
+    common::{compression_policy::CompressionPolicy, config, parallelism},
     repository::{index::IndexMode, packer::MAX_PACK_DATA_SIZE, repo::RepoConfig},
     utils::size,
 };
 
 pub(crate) const APP_NAME: &str = "mapache";
-
-// --- Snapshot ---
-pub(crate) const DEFAULT_SNAPSHOT_READERS: usize = 4;
-pub(crate) const DEFAULT_SNAPSHOT_PACKERS: usize = 4;
 
 // --- Restore ---
 pub(crate) const DEFAULT_RESTORE_BLOB_CONCURRENCY: usize = 8;
@@ -89,45 +85,9 @@ pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 /// Default maximum concurrency for the GC repack pipeline.
 pub(crate) const DEFAULT_GC_REPACK_CONCURRENCY: usize = 8;
 
-/// Upper bound on the number of CPU-bound repack workers.
-///
-/// Each worker holds one decoded blob plus its re-encoded copy while the packer
-/// accepts it, so this is deliberately much lower than the core count. The
-/// snapshot path uses a similarly small fixed number of readers.
-pub(crate) const MAX_GC_REPACK_WORKERS: usize = 8;
-
-/// Maximum bytes of pack segment data held in memory at once during GC repack.
-///
-/// Segments are merged reads of adjacent blobs and can be much larger than a
-/// single blob. Bounding their total size, rather than only their count, keeps
-/// peak memory flat when the configured concurrency or the segment size is
-/// raised.
-pub(crate) const GC_REPACK_SEGMENT_BUDGET: u64 = 128 * size::MiB;
-
-/// Upper bound on the packer workers used while repacking. This matches the
-/// snapshot default: each packer can hold a full pack-sized buffer.
-pub(crate) const MAX_GC_REPACK_PACKERS: usize = DEFAULT_SNAPSHOT_PACKERS;
-
-/// Number of CPU-bound workers used to re-encode blobs during GC repack.
-///
-/// The configured concurrency is an upper bound, further limited by the number
-/// of available cores and by [`MAX_GC_REPACK_WORKERS`]. Following the configured
-/// value (instead of using every core) lets low-memory configurations stay
-/// low-memory; the default still runs more workers than the old pipeline.
-pub(crate) fn gc_repack_workers() -> usize {
-    let configured = runtime().gc_repack_concurrency.max(1);
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(configured)
-        .min(configured)
-        .clamp(1, MAX_GC_REPACK_WORKERS)
-}
-
-/// Number of packer workers used while repacking. Packer buffers dominate
-/// memory, so this never exceeds the snapshot default and never exceeds the
-/// encoder count.
+/// Number of packer workers used while repacking.
 pub(crate) fn gc_repack_packers() -> usize {
-    gc_repack_workers().clamp(1, MAX_GC_REPACK_PACKERS)
+    parallelism::plan().gc_repack_packers
 }
 
 // --- UI ---
@@ -203,19 +163,20 @@ pub struct RuntimeDefaults {
 impl RuntimeDefaults {
     pub fn new(config: Option<&config::RuntimeConfig>) -> Self {
         let c = config;
+        let plan = parallelism::plan();
         Self {
             restore_blob_concurrency: c
                 .and_then(|c| c.restore_blob_concurrency)
-                .unwrap_or(DEFAULT_RESTORE_BLOB_CONCURRENCY),
+                .unwrap_or(plan.restore_blob_concurrency),
             restore_decoded_budget: c
                 .and_then(|c| c.restore_decoded_budget)
-                .unwrap_or(DEFAULT_RESTORE_DECODED_BUDGET),
+                .unwrap_or(plan.restore_decoded_budget),
             restore_max_open_files: c
                 .and_then(|c| c.restore_max_open_files)
-                .unwrap_or(DEFAULT_RESTORE_MAX_OPEN_FILES),
+                .unwrap_or(plan.restore_max_open_files),
             restore_pack_prefetch: c
                 .and_then(|c| c.restore_pack_prefetch)
-                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH),
+                .unwrap_or(plan.restore_pack_prefetch),
             restore_pack_read_merge_threshold: c
                 .and_then(|c| c.restore_pack_read_merge_threshold)
                 .unwrap_or(DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD),
@@ -227,7 +188,7 @@ impl RuntimeDefaults {
                 .unwrap_or(DEFAULT_MIN_PACK_SIZE_FACTOR),
             gc_repack_concurrency: c
                 .and_then(|c| c.gc_repack_concurrency)
-                .unwrap_or(DEFAULT_GC_REPACK_CONCURRENCY),
+                .unwrap_or(plan.gc_repack_workers),
             blobs_per_index_file: c
                 .and_then(|c| c.blobs_per_index_file)
                 .unwrap_or(BLOBS_PER_INDEX_FILE),

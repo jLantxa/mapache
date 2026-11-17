@@ -5,7 +5,7 @@ use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
 use crate::{
     commands::{self, cmd_snapshot::SnapshotRunOptions},
-    common::defaults::{DEFAULT_SNAPSHOT_PACKERS, DEFAULT_SNAPSHOT_READERS},
+    common::parallelism,
     ui::tui::{
         theme,
         widgets::{Form, FormCommand, FormField, split_csv},
@@ -103,11 +103,11 @@ impl SnapshotForm {
             FormField::number("Readers:",
                     config_defaults
                         .and_then(|cfg| cfg.num_readers)
-                        .unwrap_or(DEFAULT_SNAPSHOT_READERS) as u32).help("Number of parallel readers used to scan the filesystem.").bounds(1, u32::MAX),
+                        .unwrap_or(parallelism::plan().snapshot_readers) as u32).help("Number of parallel readers used to scan the filesystem.").bounds(1, u32::MAX),
             FormField::number("Packers:",
                     config_defaults
                         .and_then(|cfg| cfg.num_packers)
-                        .unwrap_or(DEFAULT_SNAPSHOT_PACKERS) as u32).help("Number of parallel packers used to write blobs.").bounds(1, u32::MAX),
+                        .unwrap_or(parallelism::plan().snapshot_packers) as u32).help("Number of parallel packers used to write blobs.").bounds(1, u32::MAX),
             FormField::choice(
                 "Compression:",
                 0,
@@ -306,11 +306,13 @@ impl SnapshotForm {
             num_readers: self
                 .form
                 .get_number_by_label("Readers:")
-                .unwrap_or(DEFAULT_SNAPSHOT_READERS as u32) as usize,
+                .unwrap_or(parallelism::plan().snapshot_readers as u32)
+                as usize,
             num_packers: self
                 .form
                 .get_number_by_label("Packers:")
-                .unwrap_or(DEFAULT_SNAPSHOT_PACKERS as u32) as usize,
+                .unwrap_or(parallelism::plan().snapshot_packers as u32)
+                as usize,
             compression: self
                 .form
                 .get_choice_by_label("Compression:")

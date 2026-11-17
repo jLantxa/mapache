@@ -14,6 +14,7 @@ use crate::{
     common::{
         BlobType, ContentIdType, ID, defaults,
         error::{MapacheError, Result},
+        parallelism,
     },
     repository::{
         index::{BlobLocator, MasterIndex},
@@ -282,6 +283,21 @@ pub(crate) async fn restore_packs(
                     let data_arc_inner = data_arc.clone();
                     let min_offset = segment.min_offset;
 
+                    // Always acquire memory before CPU: other pipelines take
+                    // the same order, which avoids a lock-order inversion when
+                    // both limiters are saturated.
+                    let _memory_permit = if batch_raw_size > 0 {
+                        Some(
+                            parallelism::acquire_restore_decode_memory(batch_raw_size)
+                                .await
+                                .ok_or(MapacheError::Interrupted)?,
+                        )
+                    } else {
+                        None
+                    };
+                    let _cpu_permit = parallelism::acquire_cpu()
+                        .await
+                        .ok_or(MapacheError::Interrupted)?;
                     let decoded_results: Vec<Result<DecodedBlob>> = spawn_blocking(move || {
                         batch
                             .into_par_iter()
@@ -403,6 +419,9 @@ async fn flush_file_batches(
                 let file_path = ctx.files[file_idx].path.clone();
                 let file_path_for_write = file_path.clone();
                 let ctx_inner = ctx.clone();
+                let _write_permit = parallelism::acquire_write()
+                    .await
+                    .ok_or(MapacheError::Interrupted)?;
                 let write_result = spawn_blocking(move || -> Result<u64> {
                     let mut cache_guard = ctx_inner.handle_cache.get_shard(file_idx).lock();
                     let file = cache_guard.get_handle(
@@ -488,6 +507,9 @@ async fn flush_zero_batches(
                 let file_path = ctx.files[file_idx].path.clone();
                 let file_path_for_write = file_path.clone();
                 let ctx_inner = ctx.clone();
+                let _write_permit = parallelism::acquire_write()
+                    .await
+                    .ok_or(MapacheError::Interrupted)?;
                 let write_result = spawn_blocking(move || -> Result<u64> {
                     let mut cache_guard = ctx_inner.handle_cache.get_shard(file_idx).lock();
                     let file = cache_guard.get_handle(

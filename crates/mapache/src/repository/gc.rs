@@ -15,6 +15,7 @@ use crate::{
         compression_policy::CompressionHint,
         defaults,
         error::{MapacheError, Result},
+        parallelism,
     },
     fs::tree::Tree,
     repository::{
@@ -30,25 +31,6 @@ use crate::{
         size,
     },
 };
-
-/// Concurrency for tree traversal during referenced-blob discovery.
-const GC_TREE_FETCH_CONCURRENCY: usize = 8;
-/// Total decoded trees resident across all snapshots at once.
-///
-/// Bounds peak memory to this many decoded `Tree`s rather than
-/// GC_SNAPSHOT_CONCURRENCY x GC_TREE_FETCH_CONCURRENCY, while keeping enough
-/// in-flight backend requests to hide latency.
-const GC_TREE_BUDGET: usize = GC_SNAPSHOT_CONCURRENCY * GC_TREE_FETCH_CONCURRENCY / 2;
-/// Concurrency for snapshot-level processing during referenced-blob discovery.
-const GC_SNAPSHOT_CONCURRENCY: usize = 4;
-/// Concurrency for deleting unused packs from the backend.
-const GC_DELETE_CONCURRENCY: usize = 16;
-/// Concurrency for deleting old indices and obsolete packs.
-const GC_DELETE_SMALL_CONCURRENCY: usize = 8;
-/// Concurrency for listing directories when scanning for dropped files.
-const GC_DROPPED_SCAN_CONCURRENCY: usize = 4;
-/// Concurrency for parsing pack footers while detecting duplicate descriptors.
-const GC_DUP_SCAN_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 struct GcReporter(EventSender);
@@ -528,7 +510,7 @@ async fn find_packs_with_duplicate_footers(
                 Ok::<_, MapacheError>((pack_id, has_phantom))
             }
         })
-        .buffer_unordered(GC_DUP_SCAN_CONCURRENCY)
+        .buffer_unordered(parallelism::plan().gc_dup_scan_concurrency)
         .try_filter_map(|(pack_id, has_phantom)| async move {
             Ok(if has_phantom { Some(pack_id) } else { None })
         })
@@ -700,7 +682,7 @@ impl Plan {
             GcTaskKind::DeletingUnusedPacks,
             "unused pack",
             &r,
-            GC_DELETE_CONCURRENCY,
+            parallelism::plan().gc_delete_concurrency,
         )
         .await
     }
@@ -771,12 +753,11 @@ impl Plan {
         // Segment reads are the biggest transient allocation, so their count is
         // also capped by a byte budget. Without it a high configured concurrency
         // multiplies whole merged segments and dominates peak RSS.
-        let d = defaults::runtime();
-        let segment_max_size = d.restore_pack_segment_max_size.max(1);
-        let max_segment_window = (defaults::GC_REPACK_SEGMENT_BUDGET / segment_max_size).max(1);
-        let segment_window =
-            (d.gc_repack_concurrency.max(1) as u64).min(max_segment_window) as usize;
-        let encode_concurrency = defaults::gc_repack_workers();
+        let plan = parallelism::plan();
+        let segment_window = plan.gc_segment_window;
+        let encode_concurrency = plan.gc_repack_workers;
+        let segment_budget =
+            segment_window as u64 * defaults::runtime().restore_pack_segment_max_size;
         let mut pack_ids: Vec<ID> = self.obsolete_packs.iter().copied().collect();
         pack_ids.sort_unstable();
         tracing::info!(
@@ -785,7 +766,7 @@ impl Plan {
             pack_ids.len(),
             encode_concurrency,
             segment_window,
-            defaults::GC_REPACK_SEGMENT_BUDGET / size::MiB
+            segment_budget / size::MiB
         );
         let repack_blob_packs = Arc::new(parking_lot::Mutex::new(repack_blob_packs));
 
@@ -813,6 +794,9 @@ impl Plan {
                     // The concurrency limit also prevents exhausting the blocking
                     // thread pool (default 512), which would deadlock when
                     // LocalBackend::write calls spawn_blocking for file I/O.
+                    let _write_permit = common::parallelism::acquire_write()
+                        .await
+                        .ok_or(MapacheError::Interrupted)?;
                     tokio::task::spawn_blocking(move || {
                         let result = repo.encode_and_save_blob_with_hint(
                             blob_type,
@@ -854,7 +838,7 @@ impl Plan {
             GcTaskKind::DeletingOldIndices,
             "obsolete index file",
             &r,
-            GC_DELETE_SMALL_CONCURRENCY,
+            parallelism::plan().gc_delete_small_concurrency,
         )
         .await
     }
@@ -869,7 +853,7 @@ impl Plan {
             GcTaskKind::DeletingObsoletePacks,
             "obsolete pack",
             &r,
-            GC_DELETE_SMALL_CONCURRENCY,
+            parallelism::plan().gc_delete_small_concurrency,
         )
         .await
     }
@@ -899,7 +883,8 @@ async fn get_referenced_blobs_and_packs(
     // slows the reference-blob walk down relative to the previous 32. Halving
     // keeps half the memory win while retaining enough in-flight requests to
     // cover backend latency.
-    let tree_budget = Arc::new(tokio::sync::Semaphore::new(GC_TREE_BUDGET));
+    let plan = parallelism::plan();
+    let tree_budget = Arc::new(tokio::sync::Semaphore::new(plan.gc_tree_budget));
 
     let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
@@ -976,7 +961,7 @@ async fn get_referenced_blobs_and_packs(
                                 Ok::<_, MapacheError>((Some(tree), Some(permit)))
                             }
                         })
-                        .buffer_unordered(GC_TREE_FETCH_CONCURRENCY);
+                        .buffer_unordered(plan.gc_tree_fetch_concurrency);
 
                     while let Some(tree_res) = fetch_stream.next().await {
                         let (tree, _permit) = tree_res?;
@@ -1030,7 +1015,7 @@ async fn get_referenced_blobs_and_packs(
                 Ok::<(), MapacheError>(())
             }
         })
-        .buffer_unordered(GC_SNAPSHOT_CONCURRENCY)
+        .buffer_unordered(plan.gc_snapshot_concurrency)
         .try_collect::<Vec<_>>()
         .await?;
 
@@ -1141,7 +1126,7 @@ async fn delete_dropped_files(
                 Ok::<Vec<PathBuf>, MapacheError>(found)
             }
         })
-        .buffer_unordered(GC_DROPPED_SCAN_CONCURRENCY)
+        .buffer_unordered(parallelism::plan().gc_dropped_scan_concurrency)
         .try_collect::<Vec<Vec<PathBuf>>>()
         .await?
         .into_iter()

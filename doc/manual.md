@@ -319,18 +319,22 @@ ECC is configured per-repository at initialization time with `--ecc <PERCENT>`.
 | `MAPACHE_USERNAME` | Repository username |
 | `MAPACHE_PASSWORD` | Repository password |
 | `MAPACHE_PASSWORD_COMMAND` | Shell command that prints repository credentials as JSON |
+| `MAPACHE_CPU_COUNT` | CPU count to use for adaptive parallelism |
+| `MAPACHE_MEMORY_BUDGET` | Memory budget override, such as `4GiB` or `auto` |
+| `MAPACHE_CPU_SCALE` | CPU-derived parallelism scale from `0.25` to `4.0` |
 
 ### TOML Config File
 
 Mapache can read settings from a TOML configuration file specified via
 `--with-config <PATH>`. The file supports `[global]`, `[snapshot]`, `[restore]`,
-`[forget]`, `[runtime]`, and `[hooks]` sections.
+`[forget]`, `[verify]`, `[runtime]`, and `[hooks]` sections.
 
 Generate the canonical template with:
 
 ```bash
 mapache config template                             # Print to stdout
 mapache config template --output ./mapache.toml     # Write to file
+mapache config info                                 # Show detected resources and resolved parallelism plan
 ```
 
 All values are commented out; uncomment and adjust as needed.
@@ -385,6 +389,8 @@ keep-yearly = 2
 keep-min = 3
 
 [runtime]
+memory-budget = "auto"
+cpu-scale = 1.0
 restore-pack-prefetch = 4
 restore-blob-concurrency = 8
 restore-max-open-files = 128
@@ -395,6 +401,15 @@ index-flush-timeout-secs = 600
 lru-max-blobs = 1000000
 s3-multipart-threshold = 134217728
 s3-multipart-part-size = 134217728
+
+[runtime.group-shares]
+# Optional; shares within a pipeline must sum to at most 1.0
+snapshot-scan-cpu = 0.4
+snapshot-pack-cpu = 0.6
+restore-decode-memory = 0.35
+
+[verify]
+parallel = 4 # Explicit override; omit to use adaptive parallelism
 
 [hooks.snapshot.pre]
 command = "echo 'Starting snapshot'"
@@ -726,8 +741,8 @@ shared content across all of them.
 | `--fail-on-skipped` | Fail without saving snapshot metadata if any source item is skipped |
 | `--skip-if-unchanged` | Do not save a snapshot if no changes detected |
 | `--parent <ID\|"latest">` | Use a specific snapshot as the parent for diffing |
-| `--readers <N>` | Number of parallel file readers (default: 4) |
-| `--packers <N>` | Number of parallel writer/packer threads (default: 4) |
+| `--readers <N>` | Number of parallel file readers (default: adaptive) |
+| `--packers <N>` | Number of parallel writer/packer threads (default: adaptive) |
 | `--dry-run` | Simulate the backup without storing any data |
 | `--stdin` | Read backup data from stdin as a single file at `/stdin`. Mutually exclusive with paths, excludes, and parent snapshot |
 | `--with-atime` | Store file access times (off by default; may increase metadata size) |
@@ -863,8 +878,41 @@ tree with the parent's. If they match, no new snapshot file is created.
 - `--readers`: Controls how many files are read and chunked concurrently.
 - `--packers`: Controls how many threads compress, encrypt, and write pack
   files concurrently.
+- Omitted concurrency settings are derived from detected logical CPUs and
+  available memory. On Linux, CPU and memory limits from cgroups are included.
+- The automatic memory budget is 70% of available memory. `--memory-budget`
+  accepts `auto` or a size such as `4GiB`; `[runtime].memory-budget` and
+  `MAPACHE_MEMORY_BUDGET` provide config and environment overrides.
+- `--cpu-scale` adjusts CPU-derived limits from `0.25` to `4.0`; it can also be
+  set with `[runtime].cpu-scale` or `MAPACHE_CPU_SCALE`. `MAPACHE_CPU_COUNT`
+  overrides detected CPUs.
+- The Tokio runtime uses one async worker per detected CPU and caps its blocking
+  pool at twice that count (minimum 16, maximum 128). This prevents long
+  `verify --read-packs` runs from creating Tokio's default of up to 512 blocking
+  threads. Set `MAPACHE_MAX_BLOCKING_THREADS` to override the cap.
+- Each command pipeline splits the budget between the stages that can run at
+  the same time. For example, snapshot shares it between readers and packers,
+  restore between prefetch, decoding and writing, and verify between pack-level
+  work and per-pack batches. Group shares never add up to more than one whole
+  machine, so raising one stage automatically leaves less for the others.
+  Individual shares can be tuned with `[runtime.group-shares]` keys such as
+  `snapshot-scan-cpu = 0.4` or `restore-decode-memory = 0.35`. The shares of a
+  pipeline must still sum to at most `1.0`.
+- Decode and file-write work pass through process-wide CPU and write limiters.
+  This keeps nested concurrency (prefetch streams decoding in parallel, batches
+  inside several verified packs) from multiplying past the detected CPU cap.
+- Restore decoded buffers and verify batch buffers are also held against a
+  hard, MiB-granular memory limiter sized from their group's allocation. If an
+  explicit concurrency value asks for more buffer space than the group allows,
+  the work waits for memory instead of exceeding the budget.
+- Explicit command concurrency values are absolute and are not clamped. Mapache
+  warns when an explicit value's estimated memory use exceeds the group budget.
+- `mapache config info` prints the detected system profile, the runtime thread
+  limits, the resolved parallelism plan, a per-pipeline demand breakdown (cores and bytes
+  used versus budget), and the current limiter capacities and utilization.
 
-Higher values improve throughput on fast storage but consume more memory.
+Explicitly higher values can improve throughput on fast storage but consume
+more memory.
 
 ### Dry Run
 
@@ -1337,7 +1385,8 @@ Hooks are skipped when running with `--dry-run` (see [Hooks](#6-hooks)).
 mapache verify -r <URL>                    # Logical consistency check
 mapache verify --read-packs -r <URL>       # Full physical verification
 mapache verify --read-packs --sample 10%   # Verify 10% of packs
-mapache verify --read-packs --parallel 8   # Parallel verification
+mapache verify --read-packs                # Adaptive parallel verification
+mapache verify --read-packs --parallel 8   # Explicit parallel verification
 mapache verify --repair                    # Repair corrupt packs via ECC
 mapache verify --fail-early                # Stop on first error
 mapache verify --with-cache                # Use local cache
@@ -1414,10 +1463,9 @@ the compression of an existing repository after the fact (e.g.
 
 Old packs are removed after the replacement index is persisted. Repack requires
 an exclusive lock and may take significant time on large repositories.
-Re-encoding and pack finalization run in parallel, bounded by
-`gc-repack-concurrency`, the available CPU count and a fixed segment-memory
-budget. Memory use stays comparable to `snapshot` even when the configured
-concurrency is high. The progress bar shows elapsed time and ETA, and the
+Re-encoding, segment reads, pack finalization and deletion use separate limits
+derived from available CPUs and memory. `[runtime].gc-repack-concurrency` can
+override encode-worker parallelism. The progress bar shows elapsed time and ETA, and the
 command can be interrupted with Ctrl+C; an interrupted run leaves the existing
 index and packs intact.
 
@@ -1613,7 +1661,7 @@ Bundle-specific options:
 | `-i, --import` | Import mode: import bundle as snapshot (requires `-r`) |
 | `-e, --exclude <GLOB>` | Exclude patterns (bundle mode only; `**/` spans directories) |
 | `--as-root` | Use a single directory as the bundle root (bundle mode only) |
-| `--readers <N>` | Parallel readers (default: 4) |
+| `--readers <N>` | Parallel readers (default: adaptive) |
 | `--ecc <0-100>` | Enable Reed-Solomon ECC with given overhead percentage |
 | `--calibrate-kdf` | Benchmark Argon2id parameters for this hardware (slow; use once) |
 | `-c, --create` | Create mountpoint if it does not exist (mount mode) |
@@ -2023,8 +2071,8 @@ mapache snapshot [PATHS...] -r <URL>
   --fail-on-skipped       Fail if any source item is skipped
   --skip-if-unchanged     Skip saving if no changes detected
   --parent <ID|latest>    Use specific parent snapshot
-  --readers <N>           Parallel file readers (default: 4)
-  --packers <N>           Writer threads (default: 4)
+  --readers <N>           Parallel file readers (default: adaptive)
+  --packers <N>           Writer threads (default: adaptive)
   --dry-run               Simulate without making changes
   --stdin                 Read data from stdin as file /stdin
   --with-atime            Store file access times
@@ -2165,7 +2213,7 @@ Verify repository integrity.
 mapache verify -r <URL>
   --read-packs            Read, decrypt, hash all data (slow)
   --repair                Repair corrupt packs via ECC sidecars
-  -p, --parallel <N>      Parallel pack reading (default: 4)
+  -p, --parallel <N>      Parallel pack reading (default: adaptive)
   --with-cache            Use local cache (disabled by default)
   --fail-early            Stop on first error
   --sample <%>            Verify random sample of packs (e.g., 10.5%)
@@ -2234,7 +2282,7 @@ mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
   -o, --output <PATH>     Bundle file (-a, --export-snapshot) or destination (-x)
   -e, --exclude <GLOB>    Exclude patterns (bundle mode; **/ spans directories)
   --as-root               Use a single directory as the bundle root (bundle mode)
-  --readers <N>           Parallel readers (default: 4)
+  --readers <N>           Parallel readers (default: adaptive)
   --ecc <0-100>           Enable Reed-Solomon ECC with given overhead percentage
   --calibrate-kdf         Benchmark Argon2id parameters for this hardware (create mode)
   -c, --create            Create mountpoint (mount mode)

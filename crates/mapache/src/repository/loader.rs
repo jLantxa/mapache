@@ -6,7 +6,7 @@ use futures::{Stream, TryStreamExt};
 use crate::{
     backend::Handle,
     common::error::{MapacheError, Result},
-    common::{BlobType, ContentIdType, ID, defaults},
+    common::{BlobType, ContentIdType, ID, defaults, parallelism},
     repository::{
         index::BlobLocator,
         packer::{PackedBlobDescriptor, Packer},
@@ -15,11 +15,6 @@ use crate::{
     },
     utils::collections::IdMap,
 };
-
-/// Maximum number of pack segments downloaded concurrently while decoding a
-/// batch of blobs. Kept small so the encoded data held in flight stays a
-/// bounded window rather than the whole batch.
-const LOADER_SEGMENT_CONCURRENCY: usize = 2;
 
 /// A segment of a pack file to be downloaded.
 #[derive(Debug, Clone)]
@@ -146,7 +141,7 @@ pub async fn download_pack_segments<T: Send + 'static>(
                 Ok::<(_, Vec<u8>), MapacheError>((segment, data))
             }
         })
-        .buffer_unordered(defaults::DEFAULT_SNAPSHOT_READERS)
+        .buffer_unordered(parallelism::plan().loader_segment_concurrency)
         .collect::<Vec<Result<_>>>()
         .await;
 
@@ -245,7 +240,7 @@ impl BlobLoader {
         });
 
         let result = downloads
-            .buffer_unordered(LOADER_SEGMENT_CONCURRENCY)
+            .buffer_unordered(parallelism::plan().loader_segment_concurrency)
             .try_fold(
                 HashMap::with_capacity(total_blobs),
                 move |mut result, (segment, data)| {

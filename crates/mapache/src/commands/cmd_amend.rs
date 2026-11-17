@@ -19,7 +19,10 @@ use crate::{
         EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
         find_use_snapshot, parse_tags, with_repository_lock,
     },
-    common::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
+    common::{
+        ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError,
+        parallelism,
+    },
     fs::filter::{
         merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
     },
@@ -236,7 +239,7 @@ async fn amend(
     let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
 
     if parsed_excludes.is_some() {
-        repo.init_pack_saver(1)?;
+        repo.init_pack_saver(parallelism::plan().snapshot_packers)?;
         let progress = Arc::new(SnapshotProgress::new());
         let event_sender = snapshot::make_event_sender(None, None, 1);
         let rewrite_ctx = RewriteCtx {

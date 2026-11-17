@@ -29,9 +29,9 @@ use crate::{
     common::{
         BlobType, ContentIdType, ID, SaveID,
         compression_policy::CompressionHint,
-        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
+        defaults::{SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
-        time,
+        parallelism, time,
         traits::{BlobLoader, BlobSaver},
     },
     fs::{
@@ -161,6 +161,7 @@ fn make_transfer_progress_bar(
 }
 
 #[derive(Args, Debug, Clone)]
+#[cfg_attr(not(all(feature = "mount", unix)), derive(Default))]
 #[clap(
     about = "Create, extract, mount or transfer .mapache bundle files",
     group = ArgGroup::new("mode").required(true).args(&["bundle", "extract", "export_snapshot", "import"]),
@@ -203,8 +204,8 @@ pub struct CmdArgs {
     pub as_root: Option<bool>,
 
     /// Number of parallel readers. Must be greater than 0.
-    #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS, value_parser = parse_readers)]
-    pub readers: usize,
+    #[clap(long, value_parser = parse_readers)]
+    pub readers: Option<usize>,
 
     /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
     ///
@@ -254,31 +255,11 @@ impl Default for CmdArgs {
             output: None,
             exclude: vec![],
             as_root: None,
-            readers: DEFAULT_SNAPSHOT_READERS,
+            readers: None,
             create: false,
             allow_other: false,
             metadata_only: false,
             data_cache_size_mib: 256.0,
-            ecc: None,
-            internal_password: None,
-            calibrate_kdf: false,
-        }
-    }
-}
-
-#[cfg(not(all(feature = "mount", unix)))]
-impl Default for CmdArgs {
-    fn default() -> Self {
-        Self {
-            bundle: false,
-            extract: false,
-            export_snapshot: None,
-            import: false,
-            input: vec![],
-            output: None,
-            exclude: vec![],
-            as_root: None,
-            readers: DEFAULT_SNAPSHOT_READERS,
             ecc: None,
             internal_password: None,
             calibrate_kdf: false,
@@ -323,6 +304,17 @@ pub async fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError>
 
 async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Starting bundle create command");
+    let plan = parallelism::plan();
+    let readers = args.readers.unwrap_or(plan.snapshot_readers);
+    if args.readers.is_some() {
+        parallelism::warn_if_over_group_budget(
+            parallelism::Pipeline::Snapshot,
+            parallelism::BudgetGroup::Scan,
+            "bundle.readers",
+            readers,
+            parallelism::snapshot_reader_bytes(),
+        );
+    }
     let output = args
         .output
         .as_ref()
@@ -409,7 +401,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     );
 
     let event_sender =
-        cli::bundle::make_event_sender(cli::bundle::BundleMode::Create, 0, 0, args.readers);
+        cli::bundle::make_event_sender(cli::bundle::BundleMode::Create, 0, 0, readers);
 
     let snapshot_options = SnapshotOptions {
         absolute_source_paths,
@@ -442,7 +434,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     )
     .await?;
 
-    let process_readers = args.readers;
+    let process_readers = readers;
 
     // Pipeline status for coordinating tasks and error propagation.
     let status = Arc::new(PipelineStatus::new(
@@ -546,6 +538,9 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
 
 async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Starting bundle extract command (bundle={:?}, target={:?})", args.input[0], args.output);
+    let readers = args
+        .readers
+        .unwrap_or(parallelism::plan().bundle_stream_concurrency);
     if args.input.len() != 1 {
         return Err(BundleError::BundleFailed(
             "extract mode requires exactly one bundle file as input".to_string(),
@@ -576,14 +571,14 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
         cli::bundle::BundleMode::Extract,
         total_items as u64,
         total_bytes,
-        args.readers,
+        readers,
     );
 
     extract_nodes_parallel(
         loader.clone(),
         &root_tree_id,
         destination,
-        args.readers,
+        readers,
         event_sender.clone(),
     )
     .await?;
@@ -631,6 +626,9 @@ async fn export_snapshot_impl(
 ) -> Result<(), BundleError> {
     let cleanup_handler = CleanupHandler::new();
     cleanup_handler.add_lock(lock_handle);
+    let readers = args
+        .readers
+        .unwrap_or(parallelism::plan().bundle_stream_concurrency);
 
     repo.reload_master_index().await?;
 
@@ -756,7 +754,7 @@ async fn export_snapshot_impl(
                     Ok(())
                 }
             })
-            .buffer_unordered(args.readers)
+            .buffer_unordered(readers)
             .collect::<Vec<Result<(), MapacheError>>>()
             .await;
 
@@ -919,6 +917,9 @@ async fn run_import_bundle(
     args: &CmdArgs,
 ) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Importing bundle: {}", bundle_path.display());
+    let readers = args
+        .readers
+        .unwrap_or(parallelism::plan().bundle_stream_concurrency);
 
     let reader = open_bundle_with_retry(bundle_path, internal_password)?;
 
@@ -1028,7 +1029,7 @@ async fn run_import_bundle(
                 Ok(())
             }
         })
-        .buffer_unordered(args.readers)
+        .buffer_unordered(readers)
         .collect::<Vec<Result<(), BundleError>>>()
         .await;
 
@@ -1191,9 +1192,12 @@ async fn import_impl(
 ) -> Result<(), BundleError> {
     let cleanup_handler = CleanupHandler::new();
     cleanup_handler.add_lock(lock_handle);
+    let readers = args
+        .readers
+        .unwrap_or(parallelism::plan().bundle_stream_concurrency);
 
     repo.reload_master_index().await?;
-    repo.init_pack_saver(args.readers)?;
+    repo.init_pack_saver(readers)?;
 
     for bundle_path in &args.input {
         run_import_bundle(&repo, bundle_path, &args.internal_password, global, args).await?;

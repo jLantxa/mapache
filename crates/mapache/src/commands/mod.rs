@@ -54,6 +54,7 @@ use crate::{
         },
         error::{MapacheError, Result},
         global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
+        parallelism::{self, MemoryBudget, Policy},
         time::Duration,
         vars,
     },
@@ -199,6 +200,16 @@ pub struct CliGlobalArgs {
     #[serde(rename = "pack-size", alias = "pack-size-mib")]
     pub pack_size_mib: Option<f32>,
 
+    /// Memory budget for parallel work: `auto` or a size such as `4GiB`
+    #[clap(long = "memory-budget", value_parser = parse_memory_budget)]
+    #[serde(skip)]
+    pub memory_budget: Option<MemoryBudget>,
+
+    /// Scale the CPU-derived parallelism (0.25-4.0; below 1 uses fewer workers)
+    #[clap(long = "cpu-scale", value_parser = parse_cpu_scale)]
+    #[serde(skip)]
+    pub cpu_scale: Option<f32>,
+
     /// Path to a KeyFile
     #[clap(short = 'k', long = "key-file")]
     #[serde(
@@ -297,6 +308,8 @@ impl CliGlobalArgs {
             auth_file: Some(PathBuf::from("~/.mapache/auth")),
             password_command: Some("pass show mapache".to_string()),
             pack_size_mib: Some(DEFAULT_PACK_SIZE_MIB),
+            memory_budget: Some(MemoryBudget::Auto),
+            cpu_scale: Some(parallelism::DEFAULT_CPU_SCALE),
             key: Some(PathBuf::from("~/.mapache/repo.key")),
             quiet: Some(false),
             json: Some(false),
@@ -338,6 +351,8 @@ impl Merge for CliGlobalArgs {
         merge_opt(&mut self.auth_file, other.auth_file);
         merge_opt(&mut self.password_command, other.password_command);
         merge_opt(&mut self.pack_size_mib, other.pack_size_mib);
+        merge_opt(&mut self.memory_budget, other.memory_budget);
+        merge_opt(&mut self.cpu_scale, other.cpu_scale);
         merge_opt(&mut self.key, other.key);
         merge_flag(&mut self.quiet, other.quiet);
         merge_flag(&mut self.json, other.json);
@@ -437,6 +452,8 @@ pub struct GlobalArgs {
     pub auth_file: Option<PathBuf>,
     pub password_command: Option<String>,
     pub pack_size_mib: f32,
+    pub memory_budget: Option<MemoryBudget>,
+    pub cpu_scale: Option<f32>,
     pub key: Option<PathBuf>,
     pub quiet: bool,
     pub json: bool,
@@ -513,6 +530,8 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
             .clone()
             .or_else(|| env::var(vars::PASSWORD_COMMAND_ENVVAR).ok()),
         pack_size_mib,
+        memory_budget: cli.memory_budget,
+        cpu_scale: cli.cpu_scale,
         key: cli.key.clone(),
         quiet: cli.quiet.unwrap_or(false),
         json: cli.json.unwrap_or(false),
@@ -558,6 +577,25 @@ fn pack_size_parser(s: &str) -> std::result::Result<f32, String> {
         ));
     }
     Ok(val)
+}
+
+fn parse_memory_budget(s: &str) -> std::result::Result<MemoryBudget, String> {
+    s.parse()
+}
+
+fn parse_cpu_scale(s: &str) -> std::result::Result<f32, String> {
+    let value = s
+        .trim()
+        .parse::<f32>()
+        .map_err(|e| format!("Invalid CPU scale: {e}"))?;
+    if !parallelism::is_valid_cpu_scale(value) {
+        return Err(format!(
+            "CPU scale must be between {} and {}",
+            parallelism::MIN_CPU_SCALE,
+            parallelism::MAX_CPU_SCALE
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
@@ -755,9 +793,6 @@ pub async fn parse_and_run() -> i32 {
         None => MapacheConfig::default(),
     };
 
-    // Initialize runtime defaults from config
-    init_runtime_defaults(config.runtime.as_ref());
-
     // Initialize hooks for the current command only
     let command_name = match &args.command {
         Command::Snapshot(_) => Some("snapshot"),
@@ -816,7 +851,12 @@ pub async fn parse_and_run() -> i32 {
         Command::Sync(cmd) => (resolve_global(&cmd.global, &config), Command::Sync(cmd)),
         Command::Tui(cmd) => (resolve_global(&cmd.global, &config), Command::Tui(cmd)),
         Command::Unlock(cmd) => (resolve_global(&cmd.global, &config), Command::Unlock(cmd)),
-        Command::Verify(cmd) => (resolve_global(&cmd.global, &config), Command::Verify(cmd)),
+        Command::Verify(mut cmd) => {
+            if cmd.args.parallel.is_none() {
+                cmd.args.parallel = config.verify.as_ref().and_then(|verify| verify.parallel);
+            }
+            (resolve_global(&cmd.global, &config), Command::Verify(cmd))
+        }
     };
 
     let global = match global_result {
@@ -826,6 +866,20 @@ pub async fn parse_and_run() -> i32 {
             return 1;
         }
     };
+
+    // Resolve the parallelism plan before the runtime defaults, which read the
+    // plan for any concurrency value that was not overridden.
+    let policy = Policy::from_sources(
+        config.runtime.as_ref(),
+        global.memory_budget,
+        global.cpu_scale,
+    );
+    parallelism::init(
+        policy,
+        (global.pack_size_mib * size::MiB as f32) as u64,
+        config.runtime.as_ref(),
+    );
+    init_runtime_defaults(config.runtime.as_ref());
 
     let json_enabled = global.json;
 
@@ -964,6 +1018,8 @@ impl GlobalArgs {
             auth_file: None,
             password_command: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
+            memory_budget: None,
+            cpu_scale: None,
             key: None,
             quiet: false,
             json: false,

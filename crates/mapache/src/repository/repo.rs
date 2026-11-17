@@ -20,6 +20,7 @@ use crate::{
         self, BlobType, ContentIdType, ID, SaveID,
         compression_policy::{CompressionHint, CompressionPolicy},
         error::{MapacheError, Result},
+        parallelism,
         time::Duration,
         traits::{BlobLoader, BlobSaver},
     },
@@ -1517,7 +1518,7 @@ impl Repository {
                     )
                 }
             })
-            .buffer_unordered(4) // Use conservative concurrency
+            .buffer_unordered(parallelism::plan().list_all_files_concurrency)
             .collect::<Vec<_>>()
             .await;
 

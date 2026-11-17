@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -7,6 +7,7 @@ use crate::{
     common::{
         defaults::{MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB},
         error::{MapacheError, Result},
+        parallelism::{DEFAULT_CPU_SCALE, GroupShares, MemoryBudget, is_valid_cpu_scale},
     },
     fs,
 };
@@ -107,6 +108,12 @@ pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct RuntimeConfig {
+    // Parallelism
+    pub memory_budget: Option<MemoryBudget>,
+    pub cpu_scale: Option<f32>,
+    /// Overrides for per-pipeline budget-group shares, e.g.
+    /// `snapshot-scan-cpu = 0.6`.
+    pub group_shares: Option<BTreeMap<String, f32>>,
     // Restore
     pub restore_blob_concurrency: Option<usize>,
     pub restore_decoded_budget: Option<u64>,
@@ -133,6 +140,9 @@ impl RuntimeConfig {
     pub(crate) fn template() -> Self {
         use crate::common::defaults::*;
         Self {
+            memory_budget: Some(MemoryBudget::Auto),
+            cpu_scale: Some(DEFAULT_CPU_SCALE),
+            group_shares: None,
             restore_blob_concurrency: Some(DEFAULT_RESTORE_BLOB_CONCURRENCY),
             restore_decoded_budget: Some(DEFAULT_RESTORE_DECODED_BUDGET),
             restore_max_open_files: Some(DEFAULT_RESTORE_MAX_OPEN_FILES),
@@ -186,6 +196,14 @@ pub struct HooksConfig {
     pub verify: Option<CommandHooks>,
 }
 
+/// Verify command defaults (the `[verify]` section in TOML).
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct VerifyConfig {
+    /// Number of packs to process in parallel. Omit to use adaptive parallelism.
+    pub parallel: Option<usize>,
+}
+
 impl HooksConfig {
     pub(crate) fn get_command(&self, name: &str) -> Option<&CommandHooks> {
         match name {
@@ -231,6 +249,8 @@ pub struct MapacheConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forget: Option<commands::cmd_forget::CmdArgs>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<VerifyConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
@@ -244,6 +264,7 @@ impl MapacheConfig {
             snapshot: Some(commands::cmd_snapshot::CmdArgs::template()),
             restore: Some(commands::cmd_restore::CmdArgs::template()),
             forget: Some(commands::cmd_forget::CmdArgs::template()),
+            verify: Some(VerifyConfig { parallel: Some(4) }),
             hooks: Some(HooksConfig::template()),
         }
     }
@@ -267,6 +288,23 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
     })?;
 
     if let Some(runtime) = &config.runtime {
+        if let Some(scale) = runtime.cpu_scale
+            && !is_valid_cpu_scale(scale)
+        {
+            return Err(MapacheError::Config(
+                "runtime.cpu-scale must be a finite number between 0.25 and 4.0".into(),
+            ));
+        }
+        if matches!(runtime.memory_budget, Some(MemoryBudget::Fixed(0))) {
+            return Err(MapacheError::Config(
+                "runtime.memory-budget must be greater than 0".into(),
+            ));
+        }
+        if let Some(shares) = &runtime.group_shares
+            && let Err(e) = GroupShares::from_overrides(shares)
+        {
+            return Err(MapacheError::Config(format!("runtime.group-shares: {e}")));
+        }
         if runtime.restore_pack_prefetch == Some(0) {
             return Err(MapacheError::Config(
                 "runtime.restore_pack_prefetch must be greater than 0".into(),
@@ -339,15 +377,34 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
         }
     }
 
-    if let Some(global) = &config.global
-        && let Some(pack_size_mib) = global.pack_size_mib
-        && !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB)
-            .contains(&pack_size_mib)
-    {
-        // Match CLI `--pack-size` range (rejects 0 and out-of-range).
-        return Err(MapacheError::Config(format!(
-            "global.pack-size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
-        )));
+    if config.verify.as_ref().and_then(|verify| verify.parallel) == Some(0) {
+        return Err(MapacheError::Config(
+            "verify.parallel must be greater than 0".into(),
+        ));
+    }
+
+    if let Some(global) = &config.global {
+        if let Some(scale) = global.cpu_scale
+            && !is_valid_cpu_scale(scale)
+        {
+            return Err(MapacheError::Config(
+                "global.cpu-scale must be a finite number between 0.25 and 4.0".into(),
+            ));
+        }
+        if matches!(global.memory_budget, Some(MemoryBudget::Fixed(0))) {
+            return Err(MapacheError::Config(
+                "global.memory-budget must be greater than 0".into(),
+            ));
+        }
+        if let Some(pack_size_mib) = global.pack_size_mib
+            && !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB)
+                .contains(&pack_size_mib)
+        {
+            // Match CLI `--pack-size` range (rejects 0 and out-of-range).
+            return Err(MapacheError::Config(format!(
+                "global.pack-size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
+            )));
+        }
     }
 
     Ok(config)
@@ -444,6 +501,24 @@ mod tests {
         assert_eq!(config.global.is_some(), parsed.global.is_some());
         assert_eq!(config.runtime.is_some(), parsed.runtime.is_some());
         assert_eq!(config.hooks.is_some(), parsed.hooks.is_some());
+        assert_eq!(config.verify.is_some(), parsed.verify.is_some());
+    }
+
+    #[test]
+    fn verify_parallel_zero_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-verify-parallel-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[verify]\nparallel = 0\n").unwrap();
+        let err = load_config(&path).expect_err("verify parallel 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
     }
 
     #[test]
@@ -694,6 +769,28 @@ mod tests {
         assert_eq!(forget.tags_str.as_deref(), Some("work"));
         assert_eq!(forget.hosts.as_slice(), &["laptop".to_string()]);
         assert!(forget.run_gc);
+    }
+
+    #[test]
+    fn group_share_overrides_are_validated_on_load() {
+        let dir = std::env::temp_dir().join(format!("mapache-group-shares-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+
+        std::fs::write(&path, "[runtime.group-shares]\nsnapshot-scan-cpu = 0.6\n").unwrap();
+        let err = load_config(&path).expect_err("shares summing above 1 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(&err, MapacheError::Config(_)),
+            "expected Config, got: {err}"
+        );
+
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(&path, "[runtime.group-shares]\nsnapshot-scan-cpu = 0.4\n").unwrap();
+        let cfg = load_config(&path).expect("valid shares must load");
+        let _ = std::fs::remove_dir_all(&dir);
+        let shares = &cfg.runtime.unwrap().group_shares.unwrap();
+        assert_eq!(shares.get("snapshot-scan-cpu"), Some(&0.4));
     }
 
     fn assert_zero_runtime_field_rejected(field: &str) {

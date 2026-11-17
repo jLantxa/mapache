@@ -16,6 +16,29 @@
   (SIGINT / SIGTERM), exiting with code `130`. Interruption leaves the on-disk
   index and packs consistent.
 
+### Changed
+
+- **Adaptive parallelism**: command workers, async windows, verification
+  buffers, repository traversal and Rayon tasks now derive their defaults from
+  detected CPUs and available memory (cgroup-aware on Linux). The automatic
+  memory budget is 70% of available memory. Tune it with `--memory-budget`,
+  `[runtime].memory-budget` or `MAPACHE_MEMORY_BUDGET`; adjust CPU-derived
+  limits with `--cpu-scale`, `[runtime].cpu-scale` or `MAPACHE_CPU_SCALE`.
+  Explicit command concurrency remains an absolute override.
+- **Budget-balanced pipelines**: concurrently active stages now share the
+  detected CPU and memory budget through per-pipeline budget groups instead of
+  each receiving the whole machine. Restore decoded buffers and verification
+  chunks are sized from their group allocation, and byte-level limiters keep
+  those buffers inside the allocation at runtime. Process-wide CPU and write
+  limiters bound nested decode and write work as well. Group shares can be
+  tuned with `[runtime.group-shares]`, and `mapache config info` (alias
+  `show`) now reports a per-pipeline demand breakdown plus limiter capacities
+  and utilization.
+- **Bounded Tokio threads**: the main runtime now sets an explicit async worker
+  count and caps the blocking pool at twice the detected CPUs (16–128) instead
+  of Tokio's default maximum of 512. Override it with
+  `MAPACHE_MAX_BLOCKING_THREADS`.
+
 ### Removed
 
 - Repository and bundle format v1 support, including the migration command,

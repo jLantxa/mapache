@@ -179,9 +179,7 @@ jobs:
 
       - name: Install macFUSE
         if: runner.os == 'macOS'
-        run: |
-          brew tap homebrew/cask
-          brew install --cask macfuse
+        run: brew install --cask macfuse
 
       - name: Configure darwin-amd64 cross build
         if: matrix.name == 'darwin-amd64'

@@ -851,12 +851,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Sync(cmd) => (resolve_global(&cmd.global, &config), Command::Sync(cmd)),
         Command::Tui(cmd) => (resolve_global(&cmd.global, &config), Command::Tui(cmd)),
         Command::Unlock(cmd) => (resolve_global(&cmd.global, &config), Command::Unlock(cmd)),
-        Command::Verify(mut cmd) => {
-            if cmd.args.parallel.is_none() {
-                cmd.args.parallel = config.verify.as_ref().and_then(|verify| verify.parallel);
-            }
-            (resolve_global(&cmd.global, &config), Command::Verify(cmd))
-        }
+        Command::Verify(cmd) => (resolve_global(&cmd.global, &config), Command::Verify(cmd)),
     };
 
     let global = match global_result {

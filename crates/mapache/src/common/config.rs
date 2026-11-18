@@ -196,14 +196,6 @@ pub struct HooksConfig {
     pub verify: Option<CommandHooks>,
 }
 
-/// Verify command defaults (the `[verify]` section in TOML).
-#[derive(Serialize, Deserialize, Default, Debug, Clone)]
-#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub struct VerifyConfig {
-    /// Number of packs to process in parallel. Omit to use adaptive parallelism.
-    pub parallel: Option<usize>,
-}
-
 impl HooksConfig {
     pub(crate) fn get_command(&self, name: &str) -> Option<&CommandHooks> {
         match name {
@@ -249,8 +241,6 @@ pub struct MapacheConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forget: Option<commands::cmd_forget::CmdArgs>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub verify: Option<VerifyConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
@@ -264,7 +254,6 @@ impl MapacheConfig {
             snapshot: Some(commands::cmd_snapshot::CmdArgs::template()),
             restore: Some(commands::cmd_restore::CmdArgs::template()),
             forget: Some(commands::cmd_forget::CmdArgs::template()),
-            verify: Some(VerifyConfig { parallel: Some(4) }),
             hooks: Some(HooksConfig::template()),
         }
     }
@@ -375,12 +364,6 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
                 "snapshot.readers must be greater than 0".into(),
             ));
         }
-    }
-
-    if config.verify.as_ref().and_then(|verify| verify.parallel) == Some(0) {
-        return Err(MapacheError::Config(
-            "verify.parallel must be greater than 0".into(),
-        ));
     }
 
     if let Some(global) = &config.global {
@@ -501,24 +484,6 @@ mod tests {
         assert_eq!(config.global.is_some(), parsed.global.is_some());
         assert_eq!(config.runtime.is_some(), parsed.runtime.is_some());
         assert_eq!(config.hooks.is_some(), parsed.hooks.is_some());
-        assert_eq!(config.verify.is_some(), parsed.verify.is_some());
-    }
-
-    #[test]
-    fn verify_parallel_zero_is_rejected() {
-        let dir = std::env::temp_dir().join(format!(
-            "mapache-verify-parallel-zero-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("mapache.toml");
-        std::fs::write(&path, "[verify]\nparallel = 0\n").unwrap();
-        let err = load_config(&path).expect_err("verify parallel 0 must be rejected");
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            matches!(&err, MapacheError::Config(_)),
-            "expected Config, got: {err}"
-        );
     }
 
     #[test]

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -413,49 +412,43 @@ async fn verify_pack_inline(
 
             let pack_header = Packer::parse_footer(&secure_storage, &raw_data)?;
 
-            let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
-                .par_iter()
-                .fold(
-                    || (0usize, Vec::new(), 0u64),
-                    |(mut v, mut corrupt, mut bytes), desc| {
-                        // Zero blobs have no data in the pack (length=0); skip physical verification.
-                        if matches!(desc.blob_type, BlobType::Zero) {
-                            v += 1;
-                            return (v, corrupt, bytes);
-                        }
+            // One CPU permit owns this task, so verification is kept on this
+            // thread instead of fanning out to Rayon and multiplying the CPU
+            // usage of a single permit.
+            let mut verified_blobs = 0usize;
+            let mut corrupt_blobs = Vec::new();
+            let mut bytes_processed = 0u64;
 
-                        let start = desc.offset as usize;
-                        let Some(end) = start.checked_add(desc.length as usize) else {
-                            corrupt.push(desc.id);
-                            return (v, corrupt, bytes);
-                        };
+            for desc in &pack_header {
+                // Zero blobs have no data in the pack (length=0); skip physical verification.
+                if matches!(desc.blob_type, BlobType::Zero) {
+                    verified_blobs += 1;
+                    continue;
+                }
 
-                        if end > raw_data.len() {
-                            corrupt.push(desc.id);
-                            return (v, corrupt, bytes);
-                        }
+                let start = desc.offset as usize;
+                let Some(end) = start.checked_add(desc.length as usize) else {
+                    corrupt_blobs.push(desc.id);
+                    continue;
+                };
 
-                        match secure_storage.decode_blob(&raw_data[start..end], desc.compressed) {
-                            Ok(plaintext) => {
-                                if ID::from_content(&plaintext) != desc.id {
-                                    corrupt.push(desc.id);
-                                } else {
-                                    v += 1;
-                                }
-                            }
-                            Err(_) => corrupt.push(desc.id),
+                if end > raw_data.len() {
+                    corrupt_blobs.push(desc.id);
+                    continue;
+                }
+
+                match secure_storage.decode_blob(&raw_data[start..end], desc.compressed) {
+                    Ok(plaintext) => {
+                        if ID::from_content(&plaintext) != desc.id {
+                            corrupt_blobs.push(desc.id);
+                        } else {
+                            verified_blobs += 1;
                         }
-                        bytes += desc.length as u64;
-                        (v, corrupt, bytes)
-                    },
-                )
-                .reduce(
-                    || (0, Vec::new(), 0),
-                    |(v1, mut c1, b1), (v2, c2, b2)| {
-                        c1.extend(c2);
-                        (v1 + v2, c1, b1 + b2)
-                    },
-                );
+                    }
+                    Err(_) => corrupt_blobs.push(desc.id),
+                }
+                bytes_processed += desc.length as u64;
+            }
 
             Ok::<_, MapacheError>((
                 pack_header,
@@ -491,8 +484,8 @@ async fn verify_pack_inline(
     })
 }
 
-/// Streaming path for larger packs: read footer, then stream data in chunks,
-/// verify blobs in batches via spawn_blocking + rayon.
+/// Streaming path for larger packs: read footer, then stream data in chunks and
+/// verify blobs in CPU-limited `spawn_blocking` batches.
 async fn verify_pack_streaming(
     repo: Arc<Repository>,
     backend: Arc<dyn StorageBackend>,
@@ -709,32 +702,27 @@ fn batch_verify(
     batch: &[(ID, Vec<u8>, bool)],
     secure_storage: &SecureStorage,
 ) -> (usize, Vec<ID>, u64) {
-    batch
-        .par_iter()
-        .fold(
-            || (0usize, Vec::new(), 0u64),
-            |(mut v, mut corrupt, mut bytes), (id, data, compressed)| {
-                match secure_storage.decode_blob(data, *compressed) {
-                    Ok(plain) => {
-                        if ID::from_content(&plain) != *id {
-                            corrupt.push(*id);
-                        } else {
-                            v += 1;
-                        }
-                    }
-                    Err(_) => corrupt.push(*id),
+    // Each batch already runs under one CPU permit; keep the work on the
+    // permitted task's thread so nested parallelism cannot exceed the cap.
+    let mut verified = 0usize;
+    let mut corrupt = Vec::new();
+    let mut bytes = 0u64;
+
+    for (id, data, compressed) in batch {
+        match secure_storage.decode_blob(data, *compressed) {
+            Ok(plain) => {
+                if ID::from_content(&plain) != *id {
+                    corrupt.push(*id);
+                } else {
+                    verified += 1;
                 }
-                bytes += data.len() as u64;
-                (v, corrupt, bytes)
-            },
-        )
-        .reduce(
-            || (0, Vec::new(), 0),
-            |(v1, mut c1, b1), (v2, c2, b2)| {
-                c1.extend(c2);
-                (v1 + v2, c1, b1 + b2)
-            },
-        )
+            }
+            Err(_) => corrupt.push(*id),
+        }
+        bytes += data.len() as u64;
+    }
+
+    (verified, corrupt, bytes)
 }
 
 /// Verify that all blobs referenced by a snapshot are indexed.

@@ -327,7 +327,7 @@ ECC is configured per-repository at initialization time with `--ecc <PERCENT>`.
 
 Mapache can read settings from a TOML configuration file specified via
 `--with-config <PATH>`. The file supports `[global]`, `[snapshot]`, `[restore]`,
-`[forget]`, `[verify]`, `[runtime]`, and `[hooks]` sections.
+`[forget]`, `[runtime]`, and `[hooks]` sections.
 
 Generate the canonical template with:
 
@@ -407,9 +407,6 @@ s3-multipart-part-size = 134217728
 snapshot-scan-cpu = 0.4
 snapshot-pack-cpu = 0.6
 restore-decode-memory = 0.35
-
-[verify]
-parallel = 4 # Explicit override; omit to use adaptive parallelism
 
 [hooks.snapshot.pre]
 command = "echo 'Starting snapshot'"
@@ -899,8 +896,9 @@ tree with the parent's. If they match, no new snapshot file is created.
   `snapshot-scan-cpu = 0.4` or `restore-decode-memory = 0.35`. The shares of a
   pipeline must still sum to at most `1.0`.
 - Decode and file-write work pass through process-wide CPU and write limiters.
-  This keeps nested concurrency (prefetch streams decoding in parallel, batches
-  inside several verified packs) from multiplying past the detected CPU cap.
+  Each CPU permit owns one CPU-bound task and the work inside that task stays on
+  its own thread, so concurrently verified packs or restored streams cannot
+  multiply past the detected CPU cap.
 - Restore decoded buffers and verify batch buffers are also held against a
   hard, MiB-granular memory limiter sized from their group's allocation. If an
   explicit concurrency value asks for more buffer space than the group allows,
@@ -1386,7 +1384,6 @@ mapache verify -r <URL>                    # Logical consistency check
 mapache verify --read-packs -r <URL>       # Full physical verification
 mapache verify --read-packs --sample 10%   # Verify 10% of packs
 mapache verify --read-packs                # Adaptive parallel verification
-mapache verify --read-packs --parallel 8   # Explicit parallel verification
 mapache verify --repair                    # Repair corrupt packs via ECC
 mapache verify --fail-early                # Stop on first error
 mapache verify --with-cache                # Use local cache
@@ -1785,9 +1782,9 @@ Launches an interactive terminal user interface with screens for:
   an optional `--no-repack`/`--dry-run` mode, a live progress view and a
   summary of what was removed
 - **Verify screen** (`8`) — run repository verification with optional
-  `--read-packs` (and parallel worker count), percentage sampling, ECC
-  `--repair`, and `--fail-early`, showing live per-phase progress and a
-  pass/fail report with the integrity counters
+  `--read-packs`, percentage sampling, ECC `--repair`, and `--fail-early`,
+  showing live per-phase progress and a pass/fail report with the integrity
+  counters
 
 Press `?` (or `F1`) anywhere for a list of key bindings, `Ctrl+C` to quit, and
 use the mouse wheel to scroll. `q` returns to the previous screen — cancelling
@@ -2213,7 +2210,6 @@ Verify repository integrity.
 mapache verify -r <URL>
   --read-packs            Read, decrypt, hash all data (slow)
   --repair                Repair corrupt packs via ECC sidecars
-  -p, --parallel <N>      Parallel pack reading (default: adaptive)
   --with-cache            Use local cache (disabled by default)
   --fail-early            Stop on first error
   --sample <%>            Verify random sample of packs (e.g., 10.5%)

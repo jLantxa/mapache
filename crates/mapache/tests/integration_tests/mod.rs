@@ -372,7 +372,6 @@ impl VerifyBuilder {
         Self {
             args: cmd_verify::CmdArgs {
                 read_packs: false,
-                parallel: None,
                 with_cache: false,
                 fail_early: false,
                 sample: None,
@@ -390,11 +389,6 @@ impl VerifyBuilder {
 
     pub fn dump_pack_blobs(mut self, path: PathBuf) -> Self {
         self.args.dump_pack_blobs = Some(path);
-        self
-    }
-
-    pub fn parallel(mut self, parallel: usize) -> Self {
-        self.args.parallel = Some(parallel);
         self
     }
 

@@ -185,18 +185,25 @@ fn linux_meminfo() -> Option<(u64, u64)> {
     let mut available = None;
 
     for line in content.lines() {
-        let (key, value) = line.split_once(':')?;
-        let bytes = value
-            .trim()
-            .trim_end_matches(" kB")
-            .trim()
-            .parse::<u64>()
-            .ok()?
-            .saturating_mul(1024);
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key != "MemTotal" && key != "MemAvailable" {
+            continue;
+        }
+        // Ignore malformed lines instead of discarding the whole snapshot.
+        let Some(kib) = value
+            .split_whitespace()
+            .next()
+            .and_then(|v| v.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let bytes = kib.saturating_mul(1024);
         match key {
             "MemTotal" => total = Some(bytes),
             "MemAvailable" => available = Some(bytes),
-            _ => {}
+            _ => continue,
         }
     }
 

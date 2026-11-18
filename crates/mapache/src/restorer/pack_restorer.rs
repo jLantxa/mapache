@@ -6,7 +6,6 @@ use std::os::unix::fs::FileExt;
 use std::os::windows::fs::FileExt;
 
 use futures::StreamExt;
-use rayon::prelude::*;
 use tokio::task::spawn_blocking;
 
 use crate::{
@@ -299,8 +298,10 @@ pub(crate) async fn restore_packs(
                         .await
                         .ok_or(MapacheError::Interrupted)?;
                     let decoded_results: Vec<Result<DecodedBlob>> = spawn_blocking(move || {
+                        // One CPU permit owns this task; keep decoding on this
+                        // thread so nested Rayon work cannot multiply the cap.
                         batch
-                            .into_par_iter()
+                            .into_iter()
                             .map(|(blob_id, locator, targets)| {
                                 let blob_offset = locator.offset as u64;
                                 if blob_offset < min_offset {

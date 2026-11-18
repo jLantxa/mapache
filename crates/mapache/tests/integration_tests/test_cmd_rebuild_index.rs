@@ -37,11 +37,7 @@ mod tests {
         .run(&ctx.global)
         .await?;
 
-        let verify_builder = ctx
-            .verify_builder()
-            .read_packs(true)
-            .parallel(8)
-            .fail_early(true);
+        let verify_builder = ctx.verify_builder().read_packs(true).fail_early(true);
 
         assert!(
             verify_builder.clone().run(&ctx.global).await.is_ok(),

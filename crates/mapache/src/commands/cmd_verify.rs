@@ -39,7 +39,7 @@ use crate::{
             VerifyReporter,
         },
     },
-    utils::{self, collections::IdSet, size},
+    utils::{self, collections::IdSet},
 };
 
 #[derive(Serialize)]
@@ -230,15 +230,6 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub read_packs: bool,
 
-    /// Number of packs to process in parallel. N must be greater than 0.
-    #[clap(
-        short,
-        long,
-        requires = "read_packs",
-        value_parser = parse_parallel
-    )]
-    pub parallel: Option<usize>,
-
     /// Use local cache
     #[clap(long, default_value_t = false)]
     pub with_cache: bool,
@@ -281,16 +272,6 @@ fn parse_sample_percentage(s: &str) -> Result<f64, String> {
     Ok(val)
 }
 
-fn parse_parallel(s: &str) -> Result<usize, String> {
-    let n = s
-        .parse::<usize>()
-        .map_err(|_| format!("'{s}' is not a valid number"))?;
-    if n == 0 {
-        return Err("parallel must be greater than 0".to_string());
-    }
-    Ok(n)
-}
-
 struct VerifyStats {
     packs_processed: AtomicUsize,
     packs_corrupt: AtomicUsize,
@@ -328,7 +309,6 @@ struct VerifyCtx<'a> {
     reporter: &'a dyn VerifyReporter,
 
     json_out: bool,
-    parallel: usize,
     fail_early: bool,
     is_sampled: bool,
     repair: bool,
@@ -479,18 +459,6 @@ pub async fn run_with_repo(
     };
     cleanup_handler.add_lock(lock_handle);
 
-    let plan = parallelism::plan();
-    let parallel = args.parallel.unwrap_or(plan.verify_parallel);
-    if args.parallel.is_some() {
-        parallelism::warn_if_over_group_budget(
-            parallelism::Pipeline::Verify,
-            parallelism::BudgetGroup::Decode,
-            "verify.parallel",
-            parallel,
-            512 * size::MiB,
-        );
-    }
-
     if args.repair && repo.manifest().ecc().is_none() {
         return Err(VerifyError::VerifyFailed(
             "ECC is not enabled on this repository. \
@@ -562,7 +530,6 @@ pub async fn run_with_repo(
             cleanup_handler: &cleanup_handler,
             reporter: reporter.as_ref(),
             json_out,
-            parallel,
             fail_early: args.fail_early,
             is_sampled: args.sample.is_some(),
             repair: args.repair,
@@ -1231,7 +1198,7 @@ async fn verify_packs_physically(
                 }
             }
         })
-        .buffer_unordered(ctx.parallel)
+        .buffer_unordered(parallelism::plan().verify_parallel)
         .collect::<()>()
         .await;
 
@@ -1530,32 +1497,6 @@ fn sample_pack_count(pack_count: usize, sample_pct: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
-
-    #[derive(Parser, Debug)]
-    #[command(no_binary_name = true)]
-    struct VerifyArgsParse {
-        #[command(flatten)]
-        args: CmdArgs,
-    }
-
-    #[test]
-    fn parallel_rejects_zero() {
-        let err = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "0"])
-            .expect_err("--parallel 0 must be rejected");
-        assert_eq!(
-            err.kind(),
-            clap::error::ErrorKind::ValueValidation,
-            "unexpected error kind: {err}"
-        );
-    }
-
-    #[test]
-    fn parallel_defaults_to_adaptive() {
-        let parsed = VerifyArgsParse::try_parse_from(["--read-packs"])
-            .expect("verify args should parse without an explicit parallel count");
-        assert_eq!(parsed.args.parallel, None);
-    }
 
     #[test]
     fn sample_zero_percent_verifies_no_packs() {

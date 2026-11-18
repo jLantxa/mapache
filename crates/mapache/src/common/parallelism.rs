@@ -921,7 +921,7 @@ impl Plan {
                 Pipeline::Restore,
                 BudgetGroup::Io,
                 "runtime.restore-pack-prefetch",
-                0.5,
+                0.25,
                 io_stream_bytes,
                 1,
                 8,
@@ -933,7 +933,7 @@ impl Plan {
                 Pipeline::Restore,
                 BudgetGroup::Write,
                 "runtime.restore-blob-concurrency",
-                1.0,
+                0.25,
                 0,
                 1,
                 32,
@@ -995,7 +995,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Io,
             "gc.segment-window",
-            1.0,
+            0.25,
             segment_max,
             1,
             8,
@@ -1004,7 +1004,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Io,
             "gc.tree-fetch",
-            0.5,
+            0.125,
             0,
             1,
             16,
@@ -1013,7 +1013,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Io,
             "gc.snapshots",
-            1.0,
+            0.25,
             0,
             1,
             8,
@@ -1034,7 +1034,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Write,
             "gc.delete",
-            0.25,
+            0.0625,
             0,
             1,
             32,
@@ -1043,7 +1043,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Write,
             "gc.delete-small",
-            0.5,
+            0.125,
             0,
             1,
             16,
@@ -1052,7 +1052,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Io,
             "gc.dropped-scan",
-            0.5,
+            0.25,
             0,
             1,
             16,
@@ -1061,7 +1061,7 @@ impl Plan {
             Pipeline::Gc,
             BudgetGroup::Io,
             "gc.dup-scan",
-            0.5,
+            0.125,
             0,
             1,
             16,
@@ -1072,7 +1072,7 @@ impl Plan {
         let verify_parallel = resolver.resolve(SiteSpec::new(
             Pipeline::Verify,
             BudgetGroup::Decode,
-            "verify.parallel",
+            "verify.packs",
             2.0,
             0,
             1,
@@ -1097,7 +1097,7 @@ impl Plan {
             Pipeline::Verify,
             BudgetGroup::Io,
             "verify.footer-dump",
-            0.5,
+            0.25,
             0,
             1,
             16,
@@ -1106,7 +1106,7 @@ impl Plan {
             Pipeline::Verify,
             BudgetGroup::Io,
             "verify.aux",
-            1.0,
+            0.25,
             0,
             1,
             8,
@@ -1301,7 +1301,7 @@ impl Plan {
         format!(
             "snapshot(readers={}, packers={}) restore(prefetch={}, blobs={}, decoded={}, open-files={}) \
              gc(workers={}, packers={}, window={}, tree-fetch={}, snapshots={}, tree-budget={}, delete={}/{}, scans={}/{}) \
-             verify(parallel={}, chunk={}, batch={}x{}) copy(stream={}, packers={}) sync={} \
+             verify(packs={}, chunk={}, batch={}x{}) copy(stream={}, packers={}) sync={} \
              rebuild-index(scan={}, delete={}) stats(footer={}, analysis={}) bundle={} cache={} \
              shared(list-dir={}, list-files={}, loader-segments={}, rayon={})",
             self.snapshot_readers,
@@ -1346,7 +1346,7 @@ impl Plan {
             "  Snapshot   readers={}, packers={}\n\
              \x20 Restore    prefetch={}, blobs={}, decoded={}, open-files={}\n\
              \x20 GC         workers={}, packers={}, window={}, tree-fetch={}, snapshots={}, tree-budget={}, delete={}/{}, scans={}/{}\n\
-             \x20 Verify     parallel={}, chunk={}, batch-size={}, batch-concurrency={}\n\
+             \x20 Verify     packs={}, chunk={}, batch-size={}, batch-concurrency={}\n\
              \x20 Copy       stream={}, packers={}\n\
              \x20 Sync       concurrency={}\n\
              \x20 Rebuild    scan={}, delete={}\n\
@@ -1679,10 +1679,9 @@ fn write_shared() -> &'static SharedLimiter {
 
 /// Shared cap on concurrently running CPU-bound blocking work.
 ///
-/// Outer stage limits alone are not enough when stages nest: a verify batch
-/// uses Rayon while several packs are verified at once, and restore decodes
-/// while several pack streams are prefetched. The limiter keeps the total
-/// number of such tasks inside the detected CPU cap.
+/// Each permit represents one active CPU-bound task. Verify and restore keep
+/// the work inside a permitted task on that task's own thread, so stage
+/// concurrency cannot fan out into extra Rayon workers and multiply the cap.
 pub fn cpu_limiter() -> Arc<Semaphore> {
     cpu_shared().semaphore.clone()
 }
@@ -1920,7 +1919,7 @@ mod tests {
         let plan = build(8, 16, 16);
         assert_eq!(plan.snapshot_readers, 4);
         assert_eq!(plan.snapshot_packers, 4);
-        assert_eq!(plan.restore_pack_prefetch, 2);
+        assert_eq!(plan.restore_pack_prefetch, 4);
         assert_eq!(plan.restore_decoded_budget, MAX_RESTORE_DECODED_BUDGET);
         assert_eq!(plan.gc_repack_workers, 2);
         assert_eq!(plan.verify_batch_concurrency, 2);
@@ -1931,7 +1930,8 @@ mod tests {
         let plan = build(2, 2, 16);
         assert!(plan.snapshot_readers <= 2);
         assert!(plan.snapshot_packers <= 2);
-        assert!(plan.restore_pack_prefetch <= 2);
+        // Prefetch is I/O bound, so a small container still gets a few streams.
+        assert!(plan.restore_pack_prefetch <= 4);
         assert!(plan.gc_repack_workers <= 2);
         assert!(plan.verify_parallel <= 2);
     }

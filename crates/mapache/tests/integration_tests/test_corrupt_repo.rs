@@ -59,7 +59,6 @@ mod tests {
         let res = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(1)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -101,7 +100,6 @@ mod tests {
         let res = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(1)
             .fail_early(true)
             .run(&ctx.global)
             .await;

@@ -14,7 +14,6 @@ use ratatui::{
 
 use crate::{
     commands::cmd_verify::{self, CmdArgs},
-    common::parallelism,
     repository::{lock::LockHandle, repo::Repository, storage::SecureStorage},
     ui::{
         events::{Event, EventSender, TaskEvent, filtered_event_channel},
@@ -64,9 +63,6 @@ impl VerifyScreen {
             FormField::toggle("Read packs:", false)
                 .help("Also download and read every pack, not just the index and snapshots."),
             FormField::section("Advanced"),
-            FormField::number("Parallel:", parallelism::plan().verify_parallel as u32)
-                .help("Number of packs to verify concurrently.")
-                .bounds(1, u32::MAX),
             FormField::number("Sample %:", 0)
                 .help("Read only this percentage of the data blobs (0 reads everything).")
                 .bounds(0, 100),
@@ -96,11 +92,6 @@ impl VerifyScreen {
             .form
             .get_toggle_by_label("Read packs:")
             .unwrap_or(false);
-        let parallel = self
-            .form
-            .get_number_by_label("Parallel:")
-            .unwrap_or(4)
-            .max(1) as usize;
         let sample = self.form.get_number_by_label("Sample %:").unwrap_or(0);
         let repair = self
             .form
@@ -113,7 +104,6 @@ impl VerifyScreen {
 
         CmdArgs {
             read_packs,
-            parallel: Some(parallel),
             with_cache: false,
             fail_early,
             sample: if read_packs && sample > 0 {

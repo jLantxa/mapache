@@ -51,7 +51,6 @@ mod tests {
         let first_verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(8)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -66,7 +65,6 @@ mod tests {
         let second_verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(8)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -102,7 +100,6 @@ mod tests {
         let first_verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(8)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -117,7 +114,6 @@ mod tests {
         let second_verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(8)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -153,7 +149,6 @@ mod tests {
         let first_verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(8)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -190,7 +185,6 @@ mod tests {
             let bit_flip_verify_result = ctx
                 .verify_builder()
                 .read_packs(true)
-                .parallel(8)
                 .fail_early(true)
                 .run(&ctx.global)
                 .await;
@@ -207,7 +201,6 @@ mod tests {
         let second_verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(8)
             .fail_early(true)
             .run(&ctx.global)
             .await;
@@ -241,7 +234,6 @@ mod tests {
         let verify_result = ctx
             .verify_builder()
             .read_packs(true)
-            .parallel(1)
             .fail_early(true)
             .sample(Some(50.0))
             .run(&ctx.global)

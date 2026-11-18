@@ -39,8 +39,16 @@
   of Tokio's default maximum of 512. Override it with
   `MAPACHE_MAX_BLOCKING_THREADS`.
 
+### Fixed
+
+- `/proc/meminfo` parsing now ignores malformed lines instead of discarding the
+  whole memory snapshot, and size options reject per-second suffixes.
+
 ### Removed
 
+- The `verify --parallel` option and `[verify].parallel` config setting were
+  removed. Verification workers and buffers are derived from the adaptive plan;
+  tune them through `--cpu-scale`, `--memory-budget` and `[runtime]` instead.
 - Repository and bundle format v1 support, including the migration command,
   has been removed. Migrate existing v1 repositories with mapache v0.8.0 before
   upgrading.

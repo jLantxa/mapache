@@ -293,8 +293,7 @@ pub(crate) fn pretty_print_duration_signed(duration: Duration, max_parts: usize)
     format_duration_parts(d, h, m, s, ms, max_parts, false)
 }
 
-/// Parses a bandwidth string (e.g., "10MB/s", "500KB/s", "1G") into bytes per second.
-pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
+fn parse_byte_value(s: &str, allow_per_second: bool) -> Result<u64> {
     let s = s.to_uppercase();
     let (num_str, unit) = if let Some(idx) = s.find(|c: char| !c.is_ascii_digit() && c != '.') {
         s.split_at(idx)
@@ -307,33 +306,44 @@ pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
         .map_err(|e| MapacheError::Format(format!("invalid number: {num_str}: {e}")))?;
 
     let multiplier = match unit.trim() {
-        "" | "B" | "B/S" => 1u64,
-        "K" | "KIB" | "KIB/S" => size::KiB,
-        "KB" | "KB/S" => size::kB,
-        "M" | "MIB" | "MIB/S" => size::MiB,
-        "MB" | "MB/S" => size::MB,
-        "G" | "GIB" | "GIB/S" => size::GiB,
-        "GB" | "GB/S" => size::GB,
-        "T" | "TIB" | "TIB/S" => size::TiB,
-        "TB" | "TB/S" => size::TB,
+        "" | "B" => 1u64,
+        "K" | "KIB" => size::KiB,
+        "KB" => size::kB,
+        "M" | "MIB" => size::MiB,
+        "MB" => size::MB,
+        "G" | "GIB" => size::GiB,
+        "GB" => size::GB,
+        "T" | "TIB" => size::TiB,
+        "TB" => size::TB,
+        "B/S" if allow_per_second => 1,
+        "KIB/S" if allow_per_second => size::KiB,
+        "KB/S" if allow_per_second => size::kB,
+        "MIB/S" if allow_per_second => size::MiB,
+        "MB/S" if allow_per_second => size::MB,
+        "GIB/S" if allow_per_second => size::GiB,
+        "GB/S" if allow_per_second => size::GB,
+        "TIB/S" if allow_per_second => size::TiB,
+        "TB/S" if allow_per_second => size::TB,
         _ => return Err(MapacheError::Format(format!("invalid unit: {unit}"))),
     };
 
     let product = num * multiplier as f64;
     if !product.is_finite() || product >= u64::MAX as f64 {
-        return Err(MapacheError::Format(format!(
-            "bandwidth out of range: \"{s}\""
-        )));
+        return Err(MapacheError::Format(format!("value out of range: \"{s}\"")));
     }
 
     Ok(product as u64)
 }
 
+/// Parses a bandwidth string (e.g., "10MB/s", "500KB/s", "1G") into bytes per second.
+pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
+    parse_byte_value(s, true)
+}
+
 /// Parses a human-readable size (e.g. `10MB`, `1GiB`, or a raw byte count) into
-/// bytes. This is the same grammar as [`parse_bandwidth`] but without the
-/// per-second suffix.
+/// bytes. Unlike [`parse_bandwidth`], a per-second suffix is not accepted.
 pub(crate) fn parse_size(s: &str) -> Result<u64> {
-    parse_bandwidth(s)
+    parse_byte_value(s, false)
 }
 
 // --- Permissions Utilities ---
@@ -922,6 +932,12 @@ mod tests {
         assert!(parse_bandwidth("abc").is_err());
         assert!(parse_bandwidth("10XX").is_err());
         assert!(parse_bandwidth("1000000000000000TB").is_err());
+    }
+
+    #[test]
+    fn test_parse_size_rejects_per_second_suffix() {
+        assert_eq!(parse_size("4GiB").unwrap(), 4 * size::GiB);
+        assert!(parse_size("4GiB/s").is_err());
     }
 
     #[test]

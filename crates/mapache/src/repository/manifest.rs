@@ -1,7 +1,10 @@
-use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::{common::ID, common::error::Result};
+use crate::common::{
+    ID,
+    error::{MapacheError, Result},
+    time::{self, DateTime},
+};
 
 pub const HASH_ALGORITHM: &str = "blake3-256";
 pub const COMPRESSION_ALGORITHM: &str = "zstd";
@@ -47,7 +50,8 @@ impl EccConfig {
 pub struct Manifest {
     version: u32,
     id: ID,
-    created_time: DateTime<Local>,
+    #[serde(with = "time::serde")]
+    created_time: DateTime,
     #[serde(default = "default_hash_algorithm")]
     hash_algorithm: String,
     #[serde(default = "default_compression_algorithm")]
@@ -75,7 +79,7 @@ impl Manifest {
         Self {
             version,
             id: ID::new_random(),
-            created_time: Local::now(),
+            created_time: time::now(),
             hash_algorithm: default_hash_algorithm(),
             compression_algorithm: default_compression_algorithm(),
             encryption_algorithm: default_encryption_algorithm(),
@@ -87,7 +91,7 @@ impl Manifest {
         Self {
             version,
             id: ID::new_random(),
-            created_time: Local::now(),
+            created_time: time::now(),
             hash_algorithm: default_hash_algorithm(),
             compression_algorithm: default_compression_algorithm(),
             encryption_algorithm: default_encryption_algorithm(),
@@ -107,8 +111,8 @@ impl Manifest {
         &self.id
     }
 
-    pub fn created_time(&self) -> DateTime<Local> {
-        self.created_time
+    pub fn created_time(&self) -> DateTime {
+        self.created_time.clone()
     }
 
     pub fn hash_algorithm(&self) -> &str {
@@ -125,19 +129,19 @@ impl Manifest {
 
     pub fn validate_algorithms(&self) -> Result<()> {
         if self.hash_algorithm != HASH_ALGORITHM {
-            return Err(crate::common::error::MapacheError::Format(format!(
+            return Err(MapacheError::Format(format!(
                 "unsupported repository hash algorithm '{}'",
                 self.hash_algorithm
             )));
         }
         if self.compression_algorithm != COMPRESSION_ALGORITHM {
-            return Err(crate::common::error::MapacheError::Format(format!(
+            return Err(MapacheError::Format(format!(
                 "unsupported repository compression algorithm '{}'",
                 self.compression_algorithm
             )));
         }
         if self.encryption_algorithm != ENCRYPTION_ALGORITHM {
-            return Err(crate::common::error::MapacheError::Format(format!(
+            return Err(MapacheError::Format(format!(
                 "unsupported repository encryption algorithm '{}'",
                 self.encryption_algorithm
             )));

@@ -37,7 +37,6 @@ pub(crate) use error::ToExitCode;
 
 use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 
-use chrono::Duration;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize, Serializer};
 use zeroize::Zeroizing;
@@ -48,13 +47,15 @@ use crate::{
     common::{
         ContentIdType, ID,
         compression_policy::CompressionPolicy,
-        config::{MapacheConfig, load_config},
+        config::{self, MapacheConfig, load_config},
         defaults::{
             DEFAULT_COMPRESSION, DEFAULT_INDEX_MODE, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
             MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
         },
         error::{MapacheError, Result},
         global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
+        time::Duration,
+        vars,
     },
     repository::{
         index::IndexMode,
@@ -174,17 +175,17 @@ pub struct CliGlobalArgs {
 
     /// SSH private key
     #[clap(long)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub ssh_privatekey: Option<PathBuf>,
 
     /// SSH known_hosts file
     #[clap(long)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub ssh_known_hosts: Option<PathBuf>,
 
     /// Path to a file to read repository authentication credentials
     #[clap(long)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub auth_file: Option<PathBuf>,
 
     /// Command whose standard output is a JSON object with the repository
@@ -202,7 +203,7 @@ pub struct CliGlobalArgs {
     #[clap(short = 'k', long = "key-file")]
     #[serde(
         rename = "key-file",
-        deserialize_with = "crate::common::config::deserialize_config_path_opt"
+        deserialize_with = "config::deserialize_config_path_opt"
     )]
     pub key: Option<PathBuf>,
 
@@ -305,7 +306,7 @@ impl CliGlobalArgs {
             force_compression: Some(vec!["*.json".to_string()]),
             skip_incompressible: Some(true),
             no_skip_incompressible: false,
-            retry_lock_duration: Some(Duration::minutes(5)),
+            retry_lock_duration: Some(Duration::from_mins(5)),
             limit_upload: Some(10 * 1024 * 1024),
             limit_download: Some(50 * 1024 * 1024),
             index_mode: Some(DEFAULT_INDEX_MODE),
@@ -393,7 +394,9 @@ where
 {
     match val {
         Some(d) => {
-            let std_dur = std::time::Duration::from_millis(d.num_milliseconds().unsigned_abs());
+            let millis =
+                u64::try_from(d.as_millis().unsigned_abs()).map_err(serde::ser::Error::custom)?;
+            let std_dur = std::time::Duration::from_millis(millis);
             serializer.serialize_some(&utils::pretty_print_duration(std_dur).replace(' ', ""))
         }
         None => serializer.serialize_none(),
@@ -508,7 +511,7 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
         password_command: cli
             .password_command
             .clone()
-            .or_else(|| env::var(crate::common::vars::PASSWORD_COMMAND_ENVVAR).ok()),
+            .or_else(|| env::var(vars::PASSWORD_COMMAND_ENVVAR).ok()),
         pack_size_mib,
         key: cli.key.clone(),
         quiet: cli.quiet.unwrap_or(false),
@@ -1384,7 +1387,7 @@ mod tests {
         assert_eq!(merged.password_command.as_deref(), Some("from-cli"));
 
         // Environment fallback, and CLI precedence over the environment.
-        const ENVVAR: &str = crate::common::vars::PASSWORD_COMMAND_ENVVAR;
+        const ENVVAR: &str = vars::PASSWORD_COMMAND_ENVVAR;
         // SAFETY: Modifying environment variables in tests.
         unsafe { std::env::set_var(ENVVAR, "from-env") };
 

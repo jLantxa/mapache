@@ -2,7 +2,7 @@ use std::io;
 
 use clap::Args;
 
-use crate::commands::ToExitCode;
+use crate::{commands::ToExitCode, common::config::MapacheConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -38,7 +38,7 @@ pub enum ConfigCommand {
 pub async fn run(args: &CmdArgs) -> Result<(), ConfigError> {
     match &args.command {
         ConfigCommand::Template { output } => {
-            let config = crate::common::config::MapacheConfig::template();
+            let config = MapacheConfig::template();
             let toml_str = toml::to_string_pretty(&config)
                 .map_err(|e| ConfigError::Io(io::Error::other(e)))?;
 

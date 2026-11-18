@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -11,7 +10,7 @@ use ratatui::{
 };
 
 use crate::{
-    common::error::Result,
+    common::{error::Result, time},
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotEntry, SnapshotEntryList},
@@ -95,8 +94,8 @@ impl SnapshotDetailScreen {
         ));
 
         let ts = utils::pretty_print_timestamp(&s.timestamp, None);
-        let elapsed = Local::now() - s.timestamp;
-        let ago = utils::pretty_print_duration_chrono(elapsed, 1);
+        let elapsed = time::now().duration_since(&s.timestamp);
+        let ago = utils::pretty_print_duration_signed(elapsed, 1);
         lines.push(theme::field_spans(
             "Date",
             lw,

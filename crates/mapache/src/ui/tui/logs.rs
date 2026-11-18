@@ -1,6 +1,6 @@
 //! The in-TUI log overlay, toggled globally with `Ctrl+L`.
 //!
-//! It renders the in-memory ring buffer filled by [`crate::ui::debug`], newest
+//! It renders the in-memory ring buffer filled by the debug log, newest
 //! record first. The overlay scrolls, so older records stay reachable on small
 //! terminals.
 
@@ -121,6 +121,7 @@ pub(crate) fn render(frame: &mut Frame, records: &[LogRecord], scroll: &mut u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tui::test_support;
 
     fn record(level: Level, message: &str) -> LogRecord {
         LogRecord {
@@ -138,7 +139,7 @@ mod tests {
             record(Level::ERROR, "newer message"),
         ];
         let mut scroll = 0;
-        let text = crate::ui::tui::test_support::render_text(80, 24, |frame| {
+        let text = test_support::render_text(80, 24, |frame| {
             render(frame, &records, &mut scroll);
         });
 
@@ -151,7 +152,7 @@ mod tests {
     #[test]
     fn overlay_handles_an_empty_buffer() {
         let mut scroll = 0;
-        let text = crate::ui::tui::test_support::render_text(80, 24, |frame| {
+        let text = test_support::render_text(80, 24, |frame| {
             render(frame, &[], &mut scroll);
         });
         assert!(text.contains("No log records captured"));

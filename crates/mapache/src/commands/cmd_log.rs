@@ -148,7 +148,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), LogErro
                 let tags = parse_tags(Some(tags_str));
                 snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
             }
-            snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
+            snapshots_sorted
+                .sort_unstable_by(|a, b| a.snapshot.timestamp.cmp(&b.snapshot.timestamp));
 
             if snapshots_sorted.is_empty() {
                 ui::cli::log!("No snapshots found");

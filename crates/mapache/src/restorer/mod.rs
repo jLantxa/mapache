@@ -39,7 +39,7 @@ use crate::{
         ID,
         error::{MapacheError, Result},
     },
-    fs::{node::Node, tree::SerializedNodeStream},
+    fs::{filesystem, node::Node, path_exists, tree::SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
     utils,
@@ -255,7 +255,7 @@ impl FileHandleCache {
     }
 
     fn open_file_for_restore(path: &Path, create: bool) -> io::Result<std::fs::File> {
-        crate::fs::filesystem::open_for_write_no_follow(path, create, false)
+        filesystem::open_for_write_no_follow(path, create, false)
     }
 }
 
@@ -574,9 +574,8 @@ impl Restorer {
 
             // Directory: create, then continue
             if node.is_dir() {
-                let is_new_dir = metadata_paths.is_some()
-                    && !dry_run
-                    && !crate::fs::path_exists(&restore_path).await;
+                let is_new_dir =
+                    metadata_paths.is_some() && !dry_run && !path_exists(&restore_path).await;
                 let mut dir_created = true;
                 if !dry_run && let Err(e) = fs::create_dir_all(&restore_path) {
                     let msg = format!(
@@ -1112,7 +1111,7 @@ async fn record_restored_path(paths: &mut Option<HashSet<PathBuf>>, restore_path
     let mut ancestor = restore_path.parent();
     while let Some(parent) = ancestor
         && !parent.as_os_str().is_empty()
-        && !crate::fs::path_exists(parent).await
+        && !path_exists(parent).await
     {
         set.insert(parent.to_path_buf());
         ancestor = parent.parent();

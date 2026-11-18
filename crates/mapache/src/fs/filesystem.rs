@@ -2,7 +2,10 @@ use std::{io, path::Path};
 
 use crate::{
     common::error::Result,
-    fs::node::{Node, NodeType},
+    fs::{
+        node::{Node, NodeType},
+        vss,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +96,7 @@ fn volume_serial_number(path: &Path) -> Option<u64> {
     // Read the volume serial from the shadow copy when a VSS session is
     // active: shadow copies preserve the volume serial, so
     // `--one-file-system` behaves identically over the shadowed volume.
-    let translated = crate::fs::vss::translate(path);
+    let translated = vss::translate(path);
     let path = &*translated;
 
     use windows_sys::Win32::{
@@ -145,7 +148,7 @@ pub fn open_for_sequential_read(path: &Path) -> io::Result<std::fs::File> {
     // When a VSS session is active, read file contents from the shadow copy
     // (the translation borrows the path unchanged when no session is
     // registered).
-    let translated = crate::fs::vss::translate(path);
+    let translated = vss::translate(path);
     let path = &*translated;
     #[cfg(windows)]
     {
@@ -191,6 +194,8 @@ pub fn open_for_sequential_read(path: &Path) -> io::Result<std::fs::File> {
 mod tests {
     use std::io::Read;
 
+    use crate::common::error::Result;
+
     use super::{ScanMetadata, open_for_sequential_read, scan_metadata};
 
     #[cfg(unix)]
@@ -200,7 +205,7 @@ mod tests {
     use super::fill_device_id;
 
     #[test]
-    fn basic_metadata_matches_full_metadata() -> crate::common::error::Result<()> {
+    fn basic_metadata_matches_full_metadata() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("input");
         std::fs::write(&path, b"filesystem test")?;
@@ -221,7 +226,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn basic_metadata_does_not_follow_symlinks() -> crate::common::error::Result<()> {
+    fn basic_metadata_does_not_follow_symlinks() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(dir.path().join("missing"), &link)?;
@@ -268,7 +273,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn fills_device_id_for_directories_and_files() -> crate::common::error::Result<()> {
+    fn fills_device_id_for_directories_and_files() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("input");
         std::fs::write(&path, b"device id test")?;

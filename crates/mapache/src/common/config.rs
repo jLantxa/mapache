@@ -615,7 +615,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert!(matches!(
             cfg.global.unwrap().compression_level,
-            Some(crate::commands::Compression::Best)
+            Some(commands::Compression::Best)
         ));
     }
 
@@ -626,7 +626,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         assert!(matches!(
             cfg.global.unwrap().compression_level,
-            Some(crate::commands::Compression::Fast)
+            Some(commands::Compression::Fast)
         ));
     }
 

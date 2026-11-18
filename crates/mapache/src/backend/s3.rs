@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use jiff::{Timestamp, fmt::rfc2822::DateTimeParser};
 use s3::{Bucket, Region, creds::Credentials, serde_types::ObjectIdentifier};
 use zeroize::Zeroizing;
 
@@ -706,11 +707,17 @@ impl StorageBackend for S3Backend {
 /// [`SystemTime`](std::time::SystemTime). Returns `None` when the value is
 /// missing or unrecognized, rather than claiming an inaccurate epoch time.
 fn parse_http_date(value: &str) -> Option<std::time::SystemTime> {
-    use chrono::DateTime;
-    DateTime::parse_from_rfc2822(value)
-        .or_else(|_| DateTime::parse_from_rfc3339(value))
-        .ok()
-        .map(Into::into)
+    static PARSER: DateTimeParser = DateTimeParser::new();
+
+    // The dedicated parser handles RFC 1123/822 HTTP dates, including
+    // "GMT"/"UTC", obsolete zones and numeric offsets. Some S3-compatible
+    // servers emit RFC 3339 instead, so keep that fallback.
+    let timestamp = PARSER
+        .parse_timestamp(value)
+        .or_else(|_| value.parse::<Timestamp>())
+        .ok()?;
+
+    std::time::SystemTime::try_from(timestamp).ok()
 }
 
 impl From<s3::error::S3Error> for MapacheError {
@@ -742,5 +749,22 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn parse_http_date_supports_rfc_and_legacy_formats() {
+        let expected = std::time::UNIX_EPOCH + std::time::Duration::from_secs(784_111_777);
+
+        for value in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 08:49:37 UTC",
+            "Sun, 06 Nov 1994 08:49:37 +0000",
+            "Sun, 06 Nov 1994 03:49:37 -0500",
+            "1994-11-06T08:49:37Z",
+        ] {
+            assert_eq!(parse_http_date(value), Some(expected), "input: {value}");
+        }
+
+        assert_eq!(parse_http_date("not a date"), None);
     }
 }

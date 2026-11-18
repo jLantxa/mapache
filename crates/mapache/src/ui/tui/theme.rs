@@ -700,6 +700,7 @@ pub const SPINNER_CHARS: &[char] = &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tui::test_support;
 
     fn srgb_to_linear(component: u8) -> f64 {
         let c = component as f64 / 255.0;
@@ -754,7 +755,7 @@ mod tests {
 
     #[test]
     fn empty_state_wraps_long_messages_on_narrow_terminals() {
-        let content = crate::ui::tui::test_support::render_text(20, 8, |frame| {
+        let content = test_support::render_text(20, 8, |frame| {
             empty_state(
                 frame,
                 frame.area(),

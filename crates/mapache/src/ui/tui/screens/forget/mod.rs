@@ -3,7 +3,6 @@ pub(crate) mod retention;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent};
 use ratatui::{
     Frame,
@@ -16,7 +15,7 @@ pub use retention::{RetentionAction, RetentionConfig};
 
 use crate::{
     commands::cmd_forget,
-    common::ContentIdType,
+    common::{ContentIdType, time},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
         retention::build_forget_plan,
@@ -136,7 +135,7 @@ impl ForgetScreen {
             self.retention.group_by(),
             &rules,
             self.retention.keep_min(),
-            Local::now(),
+            time::now(),
         );
 
         for (i, entry) in self.entries.iter().enumerate() {
@@ -543,7 +542,12 @@ mod tests {
     use super::*;
     use crate::{
         backend::{Handle, StorageBackend, WriteContents, mock::MockBackend},
-        common::{ID, defaults::TEST_REPO_CONFIG, error::Result},
+        common::{
+            ID,
+            defaults::TEST_REPO_CONFIG,
+            error::Result,
+            time::{self, Duration},
+        },
         repository::{
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::{Snapshot, SnapshotEntry},
@@ -582,7 +586,7 @@ mod tests {
             entries.push(SnapshotEntry {
                 id,
                 snapshot: Snapshot {
-                    timestamp: Local::now() - chrono::Duration::minutes(i64::from(snapshot_index)),
+                    timestamp: time::now() - Duration::from_mins(i64::from(snapshot_index)),
                     ..Default::default()
                 },
                 active: true,

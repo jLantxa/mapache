@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::{
-    common::{ID, error::Result},
+    common::{ID, error::Result, time},
     fs::{node::Node, tree::Tree},
     repository::{repo::Repository, snapshot::SnapshotEntry},
     ui::tui::{
@@ -99,7 +99,7 @@ impl FileExplorerScreen {
     /// shown with the target highlighted, instead of starting at the root.
     ///
     /// `target` is a path relative to the snapshot root, as produced by
-    /// [`crate::repository::repo::find_in_snapshot`].
+    /// the `find_in_snapshot` helper.
     pub async fn new_at(
         repo: Arc<Repository>,
         snapshot: SnapshotEntry,
@@ -345,23 +345,27 @@ impl FileExplorerScreen {
             )],
         ));
 
-        if let Some(mtime) = node.metadata.modified_time {
+        if let Some(mtime) = node.metadata.modified_time
+            && let Ok(datetime) = time::from_system_time(mtime)
+        {
             lines.push(theme::field_spans(
                 "Modified",
                 lw,
                 vec![Span::styled(
-                    utils::pretty_print_timestamp(&mtime.into(), None),
+                    utils::pretty_print_timestamp(&datetime, None),
                     theme::THEME.snap_date,
                 )],
             ));
         }
 
-        if let Some(ctime) = node.metadata.created_time {
+        if let Some(ctime) = node.metadata.created_time
+            && let Ok(datetime) = time::from_system_time(ctime)
+        {
             lines.push(theme::field_spans(
                 "Created",
                 lw,
                 vec![Span::styled(
-                    utils::pretty_print_timestamp(&ctime.into(), None),
+                    utils::pretty_print_timestamp(&datetime, None),
                     theme::THEME.subtext,
                 )],
             ));
@@ -693,11 +697,12 @@ mod tests {
     use crate::{
         backend::{StorageBackend, mock::MockBackend},
         common::{defaults::TEST_REPO_CONFIG, traits::BlobSaver},
+        fs::node::NodeType,
         repository::{
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::Snapshot,
         },
-        ui::tui::widgets::FilterAction,
+        ui::tui::{test_support, widgets::FilterAction},
     };
     use zeroize::Zeroizing;
 
@@ -746,7 +751,7 @@ mod tests {
         let mut screen = make_screen().await?;
         screen.current_path = PathBuf::from("/very/deeply/nested/directory/path");
 
-        let rendered = crate::ui::tui::test_support::render_text(40, 20, |frame| {
+        let rendered = test_support::render_text(40, 20, |frame| {
             screen.render(frame);
         });
 
@@ -914,7 +919,7 @@ mod tests {
         let mut root = Tree::new(Vec::new());
         root.nodes.push(Node {
             name: "subdir".into(),
-            node_type: crate::fs::node::NodeType::Directory,
+            node_type: NodeType::Directory,
             tree: Some(sub_id),
             ..Default::default()
         });
@@ -977,7 +982,7 @@ mod tests {
         ];
 
         // Render once so `last_list_area` is populated before simulating clicks.
-        crate::ui::tui::test_support::render_text(60, 30, |frame| {
+        test_support::render_text(60, 30, |frame| {
             screen.render(frame);
         });
 

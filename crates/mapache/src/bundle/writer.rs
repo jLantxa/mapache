@@ -25,6 +25,7 @@ use crate::{
     },
     ecc,
     repository::{
+        self,
         manifest::{EccConfig, Manifest},
         storage::SecureStorage,
     },
@@ -138,7 +139,7 @@ impl BundleWriter {
 
         let header = BundleHeader {
             magic: *BUNDLE_MAGIC_START,
-            version: crate::repository::repo::THIS_REPOSITORY_VERSION as u16,
+            version: repository::repo::THIS_REPOSITORY_VERSION as u16,
             salt,
             argon2_t: params.t_cost(),
             argon2_m: params.m_cost(),
@@ -389,7 +390,7 @@ impl BundleWriter {
         file.write_all(&encrypted_index)?;
 
         let manifest_offset = file.stream_position()?;
-        let mut manifest = Manifest::new(crate::repository::repo::THIS_REPOSITORY_VERSION);
+        let mut manifest = Manifest::new(repository::repo::THIS_REPOSITORY_VERSION);
         if let Some(ecc_cfg) = &self.ecc_config {
             manifest.set_ecc(Some(ecc_cfg.clone()));
         }

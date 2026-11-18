@@ -20,7 +20,6 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use chrono::Utc;
 use tracing_subscriber::{
     filter::LevelFilter,
     fmt::{
@@ -32,7 +31,10 @@ use tracing_subscriber::{
 };
 
 use crate::{
-    common::vars::{DEBUG_LEVEL_ENVVAR, DEBUG_PATH_ENVVAR, get_envvar},
+    common::{
+        time,
+        vars::{DEBUG_LEVEL_ENVVAR, DEBUG_PATH_ENVVAR, get_envvar},
+    },
     ui,
 };
 
@@ -143,7 +145,7 @@ where
             level: *meta.level(),
             target: meta.target().to_string(),
             message: visitor.message,
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            timestamp: time::now().strftime("%H:%M:%S").to_string(),
         });
     }
 }
@@ -164,10 +166,10 @@ where
         mut writer: Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
-        let now = Utc::now();
+        let now = time::now_utc();
         let meta = event.metadata();
 
-        write!(writer, "[{}] ", now.format("%Y-%m-%d %H:%M:%S"))?;
+        write!(writer, "[{}] ", now.strftime("%Y-%m-%d %H:%M:%S"))?;
         write!(writer, "[{}] ", meta.level())?;
         write!(writer, "[{}] ", meta.target())?;
 
@@ -228,8 +230,8 @@ pub(crate) fn init_debugger() {
         _ => PathBuf::from("."),
     };
 
-    let now = chrono::Local::now();
-    let ts = now.format("%Y%m%d_%H%M%S");
+    let now = time::now();
+    let ts = now.strftime("%Y%m%d_%H%M%S");
     let log_name = format!("mapache_{ts}.log");
     let mut log_path = debug_path.clone();
     log_path.push(&log_name);

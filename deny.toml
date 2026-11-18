@@ -6,7 +6,15 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = []
+# Temporary: mapache itself no longer depends on chrono. The remaining edges
+# are unreleased upstream fixes:
+# - russh-sftp PR #116 (chrono -> jiff), merged but not published
+# - s3s / s3s-fs PR #867 (removes unused chrono), merged but not published
+# - russh-util 0.52.0 has a wasm32-only chrono edge with no released fix
+# Remove this ignore once released versions of all three are chrono-free.
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "Only transitive through upstream crates with unreleased fixes; remove after russh-sftp, s3s/s3s-fs, and russh-util releases land." },
+]
 
 [licenses]
 allow = [

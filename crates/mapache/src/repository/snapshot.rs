@@ -13,13 +13,16 @@ use std::{
 };
 
 use async_stream::stream;
-use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     commands::EMPTY_TAG_MARK,
-    common::{ID, error::Result},
+    common::{
+        ID,
+        error::Result,
+        time::{self, DateTime},
+    },
     fs::tree::NodeDiff,
     repository::repo::{REPO_DROPPED_EXTENSION, Repository},
 };
@@ -39,7 +42,8 @@ pub struct SnapshotPair {
 #[serde(default)]
 pub struct Snapshot {
     /// The snapshot timestamp is the Local time at which the snapshot was created
-    pub timestamp: DateTime<Local>,
+    #[serde(with = "time::serde")]
+    pub timestamp: DateTime,
 
     /// The ID of the parent snapshot, if any
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -507,7 +511,7 @@ mod tests {
     #[test]
     fn test_snapshot_serialization_roundtrip() {
         let snapshot = Snapshot {
-            timestamp: Local::now(),
+            timestamp: time::now(),
             parent: Some(ID::from_content(b"parent")),
             tree: ID::from_content(b"tree"),
             root: PathBuf::from("/home/user/data"),

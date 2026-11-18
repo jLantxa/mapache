@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use rand::{RngExt, rng};
 
 use crate::{
-    backend::{Handle, StorageBackend, StorageHint},
+    backend::{Handle, StorageBackend, StorageHint, WriteContents},
     common::{
         BlobType, ContentIdType, ID, SaveID,
         defaults::FOOTER_BLOB_MULTIPLE,
@@ -439,8 +439,8 @@ impl Packer {
         let footer_slice =
             &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4];
         let decrypted = match secure_storage.decrypt_inner(footer_slice)? {
-            crate::backend::WriteContents::Owned(v) => v,
-            crate::backend::WriteContents::Borrowed(b) => b.to_vec(),
+            WriteContents::Owned(v) => v,
+            WriteContents::Borrowed(b) => b.to_vec(),
         };
         let footer_blob_info = secure_storage.decompress(&decrypted)?;
         let mut cur = footer_blob_info.as_slice();

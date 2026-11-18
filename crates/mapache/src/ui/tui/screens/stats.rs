@@ -719,7 +719,7 @@ mod tests {
             "a quick scan must still collect the pack IDs"
         );
 
-        let footers = crate::commands::cmd_stats::collect_footers(
+        let footers = collect_footers(
             repo.clone(),
             repo.secure_storage(),
             repo.backend(),

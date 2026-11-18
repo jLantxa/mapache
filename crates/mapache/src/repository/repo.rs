@@ -7,7 +7,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use chrono::Duration;
 use futures::{StreamExt, stream};
 use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
@@ -21,9 +20,11 @@ use crate::{
         self, BlobType, ContentIdType, ID, SaveID,
         compression_policy::{CompressionHint, CompressionPolicy},
         error::{MapacheError, Result},
+        time::Duration,
         traits::{BlobLoader, BlobSaver},
     },
     ecc,
+    fs::node::Node,
     repository::{
         index::{self, ColdIndexLoader, Index, IndexFile, IndexMode, MasterIndex},
         keys::{self, KeyManager},
@@ -1708,7 +1709,7 @@ pub async fn find_in_snapshot(
     repo: Arc<Repository>,
     snapshot: &Snapshot,
     pattern: &str,
-) -> Result<Vec<(PathBuf, crate::fs::node::Node)>> {
+) -> Result<Vec<(PathBuf, Node)>> {
     use crate::fs::{filter::GlobRule, tree::SerializedNodeStream};
 
     let root_tree_id = snapshot.tree;
@@ -1741,15 +1742,25 @@ pub async fn find_in_snapshot(
 mod tests {
     use std::sync::Arc;
 
-    use chrono::Local;
     use parking_lot::Mutex;
     use rstest::rstest;
     use tempfile::tempdir;
 
     use super::*;
     use crate::{
-        backend::mock::MockBackend, commands::Compression, common::defaults::TEST_REPO_CONFIG,
-        common::error::MapacheError, repository::lock::LOCK_EXPIRE_TIMEOUT, utils,
+        backend::mock::MockBackend,
+        commands::{
+            Compression,
+            cmd_snapshot::{self, CmdArgs, SnapshotOutcome, SnapshotRunOptions},
+        },
+        common::defaults::TEST_REPO_CONFIG,
+        common::error::MapacheError,
+        common::time,
+        repository::{
+            lock::LOCK_EXPIRE_TIMEOUT,
+            packer::{PackedBlobDescriptor, Packer},
+        },
+        utils,
     };
 
     fn make_auth() -> Auth {
@@ -1879,7 +1890,7 @@ mod tests {
         let source = tempdir()?;
         std::fs::write(source.path().join("file.txt"), "snapshot dry-run data")?;
 
-        let args = crate::commands::cmd_snapshot::CmdArgs {
+        let args = CmdArgs {
             paths: vec![source.path().to_path_buf()],
             as_root: Some(true),
             no_scan: Some(true),
@@ -1887,10 +1898,10 @@ mod tests {
             num_packers: Some(1),
             ..Default::default()
         };
-        let outcome = crate::commands::cmd_snapshot::run_with_repo(
+        let outcome = cmd_snapshot::run_with_repo(
             repo.for_dry_run().await?,
             None,
-            crate::commands::cmd_snapshot::SnapshotRunOptions::from(&args),
+            SnapshotRunOptions::from(&args),
             Arc::new(|_| {}),
             None,
             None,
@@ -1898,10 +1909,7 @@ mod tests {
         .await
         .map_err(|error| MapacheError::Internal(error.to_string()))?;
 
-        assert!(matches!(
-            outcome,
-            crate::commands::cmd_snapshot::SnapshotOutcome::Saved(_)
-        ));
+        assert!(matches!(outcome, SnapshotOutcome::Saved(_)));
         assert!(repo.list_snapshot_ids().await?.is_empty());
         assert!(repo.list_packs().await?.is_empty());
         assert!(repo.list_index_ids().await?.is_empty());
@@ -1932,7 +1940,7 @@ mod tests {
         let id = ID::from_bytes([0xab; 32]);
         let pack_id = ID::from_bytes([0xcd; 32]);
         let oversized = common::defaults::MAX_ZERO_BLOB_RAW_LENGTH + 1;
-        let descriptor = crate::repository::packer::PackedBlobDescriptor {
+        let descriptor = PackedBlobDescriptor {
             id,
             blob_type: BlobType::Zero,
             offset: 0,
@@ -2403,8 +2411,6 @@ mod tests {
     /// exactly one exists.
     #[tokio::test]
     async fn test_concurrent_same_blob_no_duplicate_footer_entries() -> Result<()> {
-        use crate::repository::packer::Packer;
-
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
         Repository::init(
@@ -2643,7 +2649,7 @@ mod tests {
 
         let other_lock = Arc::new(Mutex::new(Lock::new_for_test(
             true,
-            Local::now() - LOCK_EXPIRE_TIMEOUT,
+            time::now() - time::duration_from_std(LOCK_EXPIRE_TIMEOUT).unwrap(),
         )));
         // Simulate a crashed owner on this host (impossible PID) so the lock is
         // stale regardless of the age-based expiry semantics.

@@ -325,6 +325,7 @@ impl<'a> TaskProgressWidget<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tui::test_support;
 
     #[test]
     fn phase_progress_preserves_order_counts_and_severity() {
@@ -341,7 +342,7 @@ mod tests {
         progress.handle_event(TaskEvent::Log("".into()));
         progress.handle_event(TaskEvent::Error("newer error".into()));
         progress.cancelling = true;
-        let text = crate::ui::tui::test_support::render_text(80, 10, |frame| {
+        let text = test_support::render_text(80, 10, |frame| {
             progress.render_bar(frame, Rect::new(0, 0, 80, 4));
             progress.render_details(frame, Rect::new(0, 4, 80, 6));
         });
@@ -358,7 +359,7 @@ mod tests {
     }
 
     fn render_bar_text(progress: &mut PhaseProgress) -> String {
-        crate::ui::tui::test_support::render_text(80, 4, |frame| {
+        test_support::render_text(80, 4, |frame| {
             progress.render_bar(frame, Rect::new(0, 0, 80, 4));
         })
     }

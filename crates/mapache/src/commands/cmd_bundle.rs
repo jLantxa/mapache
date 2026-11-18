@@ -28,15 +28,17 @@ use crate::{
     },
     common::{
         BlobType, ContentIdType, ID, SaveID,
-        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        compression_policy::CompressionHint,
+        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
+        time,
         traits::{BlobLoader, BlobSaver},
     },
     fs::{
         calculate_lcp, get_absolute_normalized_path,
         tree::{FSNodeStream, NodeDiff, Tree},
     },
-    repository::{lock::LockHandle, manifest::EccConfig, repo::Repository},
+    repository::{lock::LockHandle, manifest::EccConfig, repo::Repository, snapshot::DiffCounts},
     ui::{
         cli::{self, color::Colorize},
         default_bar_draw_target, default_progress_style,
@@ -116,9 +118,7 @@ fn make_transfer_progress_bar(
     total_bytes: u64,
     json: bool,
 ) -> (Option<ProgressBar>, Arc<Mutex<RateEstimator>>) {
-    let rate = Arc::new(Mutex::new(RateEstimator::new(
-        crate::common::defaults::UI_RATE_ESTIMATOR_WINDOW,
-    )));
+    let rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
     let bar = if !json {
         Some(
             ProgressBar::with_draw_target(Some(total_bytes), default_bar_draw_target()).with_style(
@@ -286,7 +286,7 @@ impl Default for CmdArgs {
     }
 }
 
-pub async fn run(global: &crate::commands::GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+pub async fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
     if args.as_root == Some(true) && !args.bundle {
         return Err(BundleError::Config(
             "--as-root can only be used with bundle mode".to_string(),
@@ -592,7 +592,7 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
         SnapshotProcessSummary {
             processed_items_count: total_items as u64,
             processed_bytes: total_bytes,
-            diff_counts: crate::repository::snapshot::DiffCounts::default(),
+            diff_counts: DiffCounts::default(),
             skipped_items: 0,
         },
     )));
@@ -648,7 +648,7 @@ async fn export_snapshot_impl(
             snap_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold(),
             snapshot
                 .timestamp
-                .format("%Y-%m-%d %H:%M:%S %:z")
+                .strftime("%Y-%m-%d %H:%M:%S %:z")
                 .to_string()
                 .bold()
         );
@@ -1013,7 +1013,7 @@ async fn run_import_bundle(
                         entry.blob_type,
                         WriteContents::Owned(data),
                         SaveID::WithID(entry.id),
-                        crate::common::compression_policy::CompressionHint::Auto,
+                        CompressionHint::Auto,
                     )
                 })
                 .await
@@ -1103,10 +1103,9 @@ async fn create_import_snapshot(
     global: &GlobalArgs,
 ) -> Result<ID, BundleError> {
     use crate::repository::snapshot::{Snapshot, SnapshotSummary};
-    use chrono::Local;
 
-    let abs_bundle_path = crate::fs::get_absolute_normalized_path(bundle_path)
-        .unwrap_or_else(|_| bundle_path.to_path_buf());
+    let abs_bundle_path =
+        get_absolute_normalized_path(bundle_path).unwrap_or_else(|_| bundle_path.to_path_buf());
 
     let total_blobs = bundle_index.entries.len();
     let data_blobs: u64 = bundle_index
@@ -1127,7 +1126,7 @@ async fn create_import_snapshot(
         .map(|e| e.raw_length as u64)
         .sum();
     let snapshot = Snapshot {
-        timestamp: Local::now(),
+        timestamp: time::now(),
         tree: root_tree_id,
         root: PathBuf::from("/"),
         paths: vec![abs_bundle_path],
@@ -1321,7 +1320,7 @@ async fn run_mount(args: &CmdArgs) -> Result<(), BundleError> {
                 allow_other,
                 metadata_only,
                 data_cache_size,
-                created_time: chrono::Local::now(),
+                created_time: time::now(),
             },
         )
         .map_err(|e| BundleError::BundleFailed(e.to_string()))

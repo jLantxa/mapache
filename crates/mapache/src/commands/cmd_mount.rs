@@ -9,7 +9,7 @@ use crate::{
     bundle::reader::BundleReader,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{
-        defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, error::MapacheError, traits::BlobLoader,
+        defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, error::MapacheError, time, traits::BlobLoader,
     },
     fs,
     mount::fuse::fs::MountOptions,
@@ -209,7 +209,7 @@ async fn mount_bundle(
                 allow_other,
                 metadata_only,
                 data_cache_size,
-                created_time: chrono::Local::now(),
+                created_time: time::now(),
             },
         )
     })

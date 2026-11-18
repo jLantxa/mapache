@@ -28,7 +28,9 @@ use crate::{
     },
     fs::tree::Tree,
     repository::{
-        repo::Repository, retention::filter_snapshots_by_hosts, snapshot::SnapshotStream,
+        repo::Repository,
+        retention::filter_snapshots_by_hosts,
+        snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
@@ -234,7 +236,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
     let dst_snapshot_ids: std::collections::BTreeSet<ID> =
         dst_repo.list_snapshot_ids().await?.into_iter().collect();
 
-    let snapshots: Vec<(ID, crate::repository::snapshot::Snapshot)> = snapshots
+    let snapshots: Vec<(ID, Snapshot)> = snapshots
         .into_iter()
         .filter(|(id, _)| !dst_snapshot_ids.contains(id))
         .collect();
@@ -276,7 +278,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
                 ui::cli::log!(
                     "  {}  {}",
                     id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow(),
-                    snap.timestamp.format("%Y-%m-%d %H:%M:%S %:z")
+                    snap.timestamp.strftime("%Y-%m-%d %H:%M:%S %:z")
                 );
             }
             ui::cli::log!(
@@ -294,7 +296,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
             ui::cli::log!(
                 "  {}  {}",
                 id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow(),
-                snap.timestamp.format("%Y-%m-%d %H:%M:%S %:z")
+                snap.timestamp.strftime("%Y-%m-%d %H:%M:%S %:z")
             );
         }
     }
@@ -362,7 +364,7 @@ async fn select_snapshots(
     snapshot_filters: Option<Vec<String>>,
     host_filters: Vec<String>,
     tag_filters: Vec<String>,
-) -> Result<Vec<(ID, crate::repository::snapshot::Snapshot)>, CopyError> {
+) -> Result<Vec<(ID, Snapshot)>, CopyError> {
     use crate::repository::snapshot::SnapshotEntry;
 
     let stream = SnapshotStream::new(repo.clone()).await?;
@@ -397,7 +399,7 @@ async fn select_snapshots(
 /// Collect all blob IDs and their total raw size from the selected snapshots.
 async fn collect_blobs(
     src_repo: Arc<Repository>,
-    snapshots: &[(ID, crate::repository::snapshot::Snapshot)],
+    snapshots: &[(ID, Snapshot)],
     json_out: bool,
 ) -> Result<(Vec<(ID, BlobType)>, u64), CopyError> {
     let mut blob_list: Vec<(ID, BlobType)> = Vec::new();
@@ -470,7 +472,7 @@ async fn collect_blobs(
 async fn copy_snapshots(
     src_repo: Arc<Repository>,
     dst_repo: Arc<Repository>,
-    snapshots: Vec<(ID, crate::repository::snapshot::Snapshot)>,
+    snapshots: Vec<(ID, Snapshot)>,
     blob_list: Vec<(ID, BlobType)>,
     shutdown_signal: Arc<AtomicBool>,
     json_out: bool,
@@ -661,7 +663,7 @@ async fn copy_snapshots(
 async fn write_snapshots_to_dest(
     src_repo: &Repository,
     dst_repo: &Repository,
-    snapshots: &[(ID, crate::repository::snapshot::Snapshot)],
+    snapshots: &[(ID, Snapshot)],
     json_out: bool,
 ) -> Result<(), CopyError> {
     let total = snapshots.len();
@@ -669,7 +671,7 @@ async fn write_snapshots_to_dest(
         ui::cli::log!("{}", "Writing snapshots...".bold());
     }
 
-    let hint = crate::backend::StorageHint {
+    let hint = backend::StorageHint {
         file_type: ContentIdType::Snapshot,
         is_metadata: true,
     };

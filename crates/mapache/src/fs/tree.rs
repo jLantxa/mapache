@@ -26,6 +26,7 @@ use crate::{
         filter::{PathFilter, WalkOptions},
         get_absolute_normalized_path, get_intermediate_paths,
         node::Node,
+        vss,
     },
     repository::repo::Repository,
     ui::events::{BackupEvent, Event, EventSender, emit_event},
@@ -472,7 +473,7 @@ impl FSNodeStream {
                         // Enumerate the shadow copy when a VSS session is
                         // active; child paths are joined in the original path
                         // space and translate again at their own syscalls.
-                        let read_dir_path = crate::fs::vss::translate(&path_clone);
+                        let read_dir_path = vss::translate(&path_clone);
                         let entries = std::fs::read_dir(&*read_dir_path)?
                             .map(|entry| entry.map(|entry| entry.file_name()))
                             .collect::<std::io::Result<Vec<_>>>()?;
@@ -1120,7 +1121,7 @@ mod tests {
 
     use futures::StreamExt; // for collect(), boxed_local()
 
-    use crate::common::error::Result;
+    use crate::{common::error::Result, fs::scanner, ui::events::noop_sender};
     use tempfile::tempdir;
 
     use super::*;
@@ -1163,12 +1164,12 @@ mod tests {
                 } else {
                     Vec::new()
                 };
-                let stats = crate::fs::scanner::scan_directories(
+                let stats = scanner::scan_directories(
                     &[root.to_path_buf()],
                     Arc::new(PathFilter::new(None, Some(excluded_paths))),
                     &WalkOptions::default(),
                     one_file_system,
-                    &crate::ui::events::noop_sender(),
+                    &noop_sender(),
                     || false,
                 );
 

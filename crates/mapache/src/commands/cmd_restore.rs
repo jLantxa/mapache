@@ -18,7 +18,12 @@ use crate::{
         GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
         find_use_snapshot, merge_flag, merge_opt, with_repository_lock,
     },
-    common::{config::CommandHooks, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, hooks},
+    common::{
+        config::{self, CommandHooks},
+        defaults::SHORT_SNAPSHOT_ID_LEN,
+        error::MapacheError,
+        hooks,
+    },
     fs::{
         calculate_lcp,
         filter::{
@@ -110,7 +115,7 @@ pub struct CmdArgs {
 
     /// A path where the files will be restored.
     #[clap(long)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub target: Option<PathBuf>,
 
     /// A path to restore. Can be used multiple times.
@@ -119,7 +124,7 @@ pub struct CmdArgs {
 
     /// A file containing a list of paths to include, one per line.
     #[clap(long, value_parser)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub include_file: Option<PathBuf>,
 
     /// A path to exclude. Can be used multiple times.
@@ -128,7 +133,7 @@ pub struct CmdArgs {
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Strip the longest common prefix from all restored routes.

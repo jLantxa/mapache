@@ -10,6 +10,7 @@ use crate::{
     backend::{Handle, WriteContents, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode},
     common::{ContentIdType, ID, defaults::DEFAULT_COMPRESSION, error::MapacheError},
+    fs::{self},
     repository::{
         keys::{KeyFileStream, KeyManager},
         repo::{Auth, KEYS_DIR},
@@ -321,7 +322,7 @@ async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<(), K
 fn write_local_keyfile(path: &Path, contents: &[u8]) -> io::Result<()> {
     use std::io::Write;
 
-    let mut file = crate::fs::filesystem::open_for_write_no_follow(path, true, true)?;
+    let mut file = fs::filesystem::open_for_write_no_follow(path, true, true)?;
     file.write_all(contents)
 }
 

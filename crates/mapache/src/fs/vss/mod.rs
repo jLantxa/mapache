@@ -43,6 +43,8 @@ use std::{borrow::Cow, path::Path};
 #[cfg(windows)]
 use std::path::PathBuf;
 
+use crate::warning;
+
 /// Translates `path` to its shadow-copy path when a VSS session is active and
 /// the path lives on one of the snapshotted volumes.
 ///
@@ -107,7 +109,7 @@ impl VssSession {
                 Ok(Some(inner)) => VssSession { inner: Some(inner) },
                 Ok(None) => VssSession::inert(),
                 Err(error) => {
-                    crate::ui::cli::warning!(
+                    warning!(
                         "the VSS setup task failed: {error}; continuing with \
                          ordinary live reads"
                     );
@@ -117,7 +119,7 @@ impl VssSession {
         }
         #[cfg(not(windows))]
         {
-            crate::ui::cli::warning!(
+            warning!(
                 "--use-fs-snapshot is only supported on Windows; continuing \
                  with ordinary live reads"
             );

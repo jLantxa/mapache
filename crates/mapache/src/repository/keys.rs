@@ -6,7 +6,6 @@ use std::{
 };
 
 use argon2;
-use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -18,6 +17,7 @@ use crate::{
         defaults::DEFAULT_COMPRESSION,
         error::{MapacheError, Result},
         kdf,
+        time::{self, DateTime},
     },
     repository::{
         repo::{Auth, KEYS_DIR},
@@ -57,7 +57,8 @@ pub const MAX_KEYFILE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
 /// Key file struct.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KeyFile {
-    pub created: DateTime<Local>,
+    #[serde(with = "time::serde")]
+    pub created: DateTime,
     pub username: String,
     pub kdf: KdfConfig,
     pub salt: String,
@@ -251,7 +252,7 @@ impl KeyManager {
         calibrate_kdf: bool,
     ) -> Result<serde_json::Value> {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
-        let create_time = Local::now();
+        let create_time = time::now();
         let argon2_params = if calibrate_kdf {
             kdf::calibrate_params(kdf::CALIBRATE_TARGET, None)
         } else {
@@ -526,7 +527,7 @@ mod tests {
     #[test]
     fn test_argon2_params() {
         let kf = KeyFile {
-            created: Local::now(),
+            created: time::now(),
             username: "test".to_string(),
             kdf: KdfConfig::Argon2id(Argon2Params {
                 m: 1024,
@@ -546,7 +547,7 @@ mod tests {
     #[test]
     fn test_argon2_params_reject_out_of_bounds() {
         let kf_with = |m: u32, t: u32, p: u32| KeyFile {
-            created: Local::now(),
+            created: time::now(),
             username: "test".to_string(),
             kdf: KdfConfig::Argon2id(Argon2Params { m, t, p }),
             salt: "".to_string(),

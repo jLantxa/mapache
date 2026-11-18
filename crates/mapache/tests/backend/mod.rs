@@ -86,22 +86,24 @@ macro_rules! backend_conformance {
     ($($name:ident),* $(,)?) => {
         $(
             mod $name {
+                use crate::backend::{Fixture, conformance};
+
                 #[tokio::test]
                 async fn local() -> anyhow::Result<()> {
-                    let fixture = crate::backend::Fixture::local().await?;
-                    crate::backend::conformance::$name(fixture.backend()).await
+                    let fixture = Fixture::local().await?;
+                    conformance::$name(fixture.backend()).await
                 }
 
                 #[tokio::test]
                 async fn sftp() -> anyhow::Result<()> {
-                    let fixture = crate::backend::Fixture::sftp().await?;
-                    crate::backend::conformance::$name(fixture.backend()).await
+                    let fixture = Fixture::sftp().await?;
+                    conformance::$name(fixture.backend()).await
                 }
 
                 #[tokio::test]
                 async fn s3() -> anyhow::Result<()> {
-                    let fixture = crate::backend::Fixture::s3().await?;
-                    crate::backend::conformance::$name(fixture.backend()).await
+                    let fixture = Fixture::s3().await?;
+                    conformance::$name(fixture.backend()).await
                 }
             }
         )*

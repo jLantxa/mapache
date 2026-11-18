@@ -393,10 +393,12 @@ fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_send
 mod tests {
     use std::time::SystemTime;
 
-    use chrono::{Duration, Local};
     use tempfile::tempdir;
 
-    use crate::ui::events::noop_sender;
+    use crate::{
+        common::time::{self, Duration},
+        ui::events::noop_sender,
+    };
 
     use super::*;
 
@@ -409,7 +411,9 @@ mod tests {
         let mut node = Node::from_path(&file_path, false).await?;
 
         // Change mtime to 1 day before now
-        let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();
+        let prev_mtime: SystemTime =
+            SystemTime::try_from(&(time::now() - Duration::from_secs(86_400)))
+                .expect("valid system time");
 
         // Manually set the file's current mtime to the past
         let ft_mtime = FileTime::from(prev_mtime);
@@ -453,8 +457,12 @@ mod tests {
         std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
 
         // Set specific atime and mtime (1 day and 2 days ago respectively)
-        let original_atime: SystemTime = (Local::now() - Duration::days(1)).into();
-        let original_mtime: SystemTime = (Local::now() - Duration::days(2)).into();
+        let original_atime: SystemTime =
+            SystemTime::try_from(&(time::now() - Duration::from_secs(86_400)))
+                .expect("valid system time");
+        let original_mtime: SystemTime =
+            SystemTime::try_from(&(time::now() - Duration::from_secs(2 * 86_400)))
+                .expect("valid system time");
 
         let ft_atime = FileTime::from(original_atime);
         let ft_mtime = FileTime::from(original_mtime);
@@ -477,7 +485,7 @@ mod tests {
             .expect("file node must have modified_time");
 
         // Now change the file times to something else (now)
-        let now: SystemTime = Local::now().into();
+        let now: SystemTime = SystemTime::try_from(&time::now()).expect("valid system time");
         let ft_now = FileTime::from(now);
         fs::filetime::set_file_times(&file_path, ft_now, ft_now)?;
 

@@ -5,13 +5,18 @@ use std::{
     str::FromStr,
 };
 
-use chrono::{
-    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
+use jiff::{
+    Span, Timestamp,
+    civil::DateTime as CivilDateTime,
+    tz::{AmbiguousOffset, TimeZone},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::ID,
+    common::{
+        ID,
+        time::{DateTime, Duration},
+    },
     repository::snapshot::{Snapshot, SnapshotEntry},
     utils::{
         self,
@@ -77,7 +82,7 @@ impl RetentionRule {
             | RetentionRule::KeepWeekly(n)
             | RetentionRule::KeepDaily(n)
             | RetentionRule::KeepHourly(n) => count(*n),
-            RetentionRule::KeepWithin(d) => utils::pretty_print_duration_chrono(*d, 2),
+            RetentionRule::KeepWithin(d) => utils::pretty_print_duration_signed(*d, 2),
             RetentionRule::KeepTags(tags) => tags
                 .iter()
                 .map(String::as_str)
@@ -162,7 +167,7 @@ pub fn apply_retention_rules(
     snapshots_sorted: &[&SnapshotEntry],
     rules: &[RetentionRule],
     keep_min: Option<usize>,
-    now: DateTime<Local>,
+    now: DateTime,
 ) -> IdSet<ID> {
     apply_retention_rules_with_reasons(snapshots_sorted, rules, keep_min, now)
         .into_keys()
@@ -174,30 +179,30 @@ pub fn apply_retention_rules_with_reasons(
     snapshots_sorted: &[&SnapshotEntry],
     rules: &[RetentionRule],
     keep_min: Option<usize>,
-    now: DateTime<Local>,
+    now: DateTime,
 ) -> IdMap<ID, Vec<KeepReason>> {
     let mut snapshots_to_keep: IdMap<ID, Vec<KeepReason>> = IdMap::default();
 
-    // The date part of 'now' for reference
-    let now_date = now.date_naive();
-    let timezone = now.timezone();
+    // The local civil date and time zone of `now` are the reference for all
+    // period cutoffs.
+    let now_date = now.date();
+    let timezone = now.time_zone().clone();
 
     // The "all" retention value (`--keep-yearly all` etc.) is parsed as `usize::MAX`.
     // For a period rule it means "keep the latest snapshot of every period present",
     // which `keep_latest_per_period` produces when the cutoff is far enough in the
-    // past to include every snapshot. Computing the cutoff arithmetically for
-    // `usize::MAX` instead overflows (`(n - 1) as i32` wraps to a small negative
-    // number, pushing the cutoff into the future) and would keep nothing.
-    let all_cutoff: DateTime<Local> = DateTime::<Utc>::MIN_UTC.with_timezone(&timezone);
+    // past to include every snapshot. Jiff's earliest timestamp is used as that
+    // extreme minimum cutoff.
+    let all_cutoff: DateTime = Timestamp::MIN.to_zoned_datetime(timezone.clone());
 
-    // Returns `all_cutoff` for the "all" sentinel, otherwise calls `compute_cutoff()`
-    // and falls back to `now` on `None`.
+    // Returns `all_cutoff` for the "all" sentinel, otherwise calls
+    // `compute_cutoff()` and falls back to `now` on `None`, as before.
     fn period_cutoff(
         n: usize,
-        all_cutoff: DateTime<Local>,
-        now: DateTime<Local>,
-        compute_cutoff: impl FnOnce() -> Option<DateTime<Local>>,
-    ) -> DateTime<Local> {
+        all_cutoff: DateTime,
+        now: DateTime,
+        compute_cutoff: impl FnOnce() -> Option<DateTime>,
+    ) -> DateTime {
         if n == usize::MAX {
             all_cutoff
         } else {
@@ -205,18 +210,34 @@ pub fn apply_retention_rules_with_reasons(
         }
     }
 
-    // Converts a NaiveDateTime to DateTime<Local>, handling DST gaps by
-    // retrying with a 1-hour offset and falling back to UTC as a last resort.
-    fn resolve_local(timezone: Local, dt: NaiveDateTime) -> DateTime<Local> {
-        timezone
-            .from_local_datetime(&dt)
-            .earliest()
-            .unwrap_or_else(|| {
-                timezone
-                    .from_local_datetime(&(dt + Duration::hours(1)))
-                    .earliest()
-                    .unwrap_or(dt.and_utc().with_timezone(&timezone))
-            })
+    // Converts a local civil datetime to a zoned datetime, reproducing the
+    // previous local-time behavior: an unambiguous or repeated (folded) local
+    // time resolves to the earliest matching instant, while a nonexistent time
+    // in a DST gap is retried one hour later and, as a last resort, interpreted
+    // as UTC. Jiff's `Disambiguation::Compatible` shifts a gap by the actual
+    // gap width, which differs from the "+1 hour" retry for sub-hour gaps.
+    fn resolve_local(timezone: &TimeZone, dt: CivilDateTime) -> Option<DateTime> {
+        let ambiguous = timezone.to_ambiguous_zoned_datetime(dt);
+        if !matches!(ambiguous.offset(), AmbiguousOffset::Gap { .. }) {
+            return ambiguous.earlier().ok();
+        }
+
+        let shifted = dt.checked_add(Duration::from_hours(1)).ok()?;
+        let shifted = timezone.to_ambiguous_zoned_datetime(shifted);
+        if matches!(shifted.offset(), AmbiguousOffset::Gap { .. }) {
+            return dt
+                .to_zoned_datetime(TimeZone::UTC)
+                .ok()
+                .map(|utc| utc.with_time_zone(timezone.clone()));
+        }
+        shifted.earlier().ok()
+    }
+
+    // Number of whole periods to go back from the current period. `None`
+    // means the count cannot be represented and the cutoff falls back to
+    // `now`.
+    fn periods_back(n: usize) -> Option<i64> {
+        i64::try_from(n.checked_sub(1)?).ok()
     }
 
     // Rules are applied sequentially, and the results are unioned.
@@ -233,41 +254,41 @@ pub fn apply_retention_rules_with_reasons(
             }
             RetentionRule::KeepWithin(duration) => {
                 // Keep all snapshots newer than the cutoff time (using the exact `now`).
-                // A duration large enough to overflow the datetime range means
+                // A duration large enough to overflow the timestamp range means
                 // "keep everything", matching the `usize::MAX` period sentinel.
-                let cutoff_time = now.checked_sub_signed(*duration);
+                let cutoff_time = now.checked_sub(*duration).ok();
                 snapshots_sorted
                     .iter()
-                    .filter(|e| cutoff_time.is_none_or(|cutoff| e.snapshot.timestamp >= cutoff))
+                    .filter(|e| {
+                        cutoff_time
+                            .as_ref()
+                            .is_none_or(|cutoff| &e.snapshot.timestamp >= cutoff)
+                    })
                     .map(|e| e.id)
                     .collect()
             }
             RetentionRule::KeepYearly(n) => {
-                // Cutoff is Jan 1st of the year (N-1) years ago.
-                let cutoff = period_cutoff(*n, all_cutoff, now, || {
-                    let target_year = now.year() - ((*n - 1) as i32);
-                    NaiveDate::from_ymd_opt(target_year, 1, 1)
-                        .and_then(|d| d.and_hms_opt(0, 0, 0))
-                        .map(|dt| resolve_local(timezone, dt))
+                // Cutoff is Jan 1st of the year (N-1) years ago at local midnight.
+                let cutoff = period_cutoff(*n, all_cutoff.clone(), now.clone(), || {
+                    let years_back = i64::try_from(n.checked_sub(1)?).ok()?;
+                    let target_date = now_date
+                        .first_of_year()
+                        .checked_sub(Span::new().years(years_back))
+                        .ok()?;
+                    resolve_local(&timezone, target_date.at(0, 0, 0, 0))
                 });
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.year(), cutoff)
             }
             RetentionRule::KeepMonthly(n) => {
-                // Cutoff is the 1st of the month N months ago.
-                let cutoff = period_cutoff(*n, all_cutoff, now, || {
-                    let mut target_date: NaiveDate = now_date.with_day(1)?;
-                    for _ in 1..*n {
-                        let month = target_date.month();
-                        let year = target_date.year();
-                        if month == 1 {
-                            target_date = target_date.with_year(year - 1)?.with_month(12)?;
-                        } else {
-                            target_date = target_date.with_month(month - 1)?;
-                        }
-                    }
-                    let dt = target_date.and_hms_opt(0, 0, 0)?;
-                    Some(resolve_local(timezone, dt))
+                // Cutoff is the 1st of the month N months ago at local midnight.
+                let cutoff = period_cutoff(*n, all_cutoff.clone(), now.clone(), || {
+                    let months_back = periods_back(*n)?;
+                    let target_date = now_date
+                        .first_of_month()
+                        .checked_sub(Span::new().months(months_back))
+                        .ok()?;
+                    resolve_local(&timezone, target_date.at(0, 0, 0, 0))
                 });
 
                 keep_latest_per_period(
@@ -278,46 +299,61 @@ pub fn apply_retention_rules_with_reasons(
             }
             RetentionRule::KeepWeekly(n) => {
                 // Cutoff is the Monday 00:00 of the week N weeks ago (ISO 8601 start of week).
-                let cutoff = period_cutoff(*n, all_cutoff, now, || {
-                    let current_monday_date =
-                        now_date - Duration::days(now_date.weekday().num_days_from_monday() as i64);
-                    let target_monday_date = current_monday_date - Duration::weeks((*n - 1) as i64);
-                    target_monday_date
-                        .and_hms_opt(0, 0, 0)
-                        .map(|dt| resolve_local(timezone, dt))
+                let cutoff = period_cutoff(*n, all_cutoff.clone(), now.clone(), || {
+                    let weeks_back = periods_back(*n)?;
+                    let target_monday_date = now_date
+                        .iso_week_date()
+                        .first_of_week()
+                        .ok()?
+                        .date()
+                        .checked_sub(Span::new().weeks(weeks_back))
+                        .ok()?;
+                    resolve_local(&timezone, target_monday_date.at(0, 0, 0, 0))
                 });
 
                 keep_latest_per_period(
                     snapshots_sorted,
-                    |s| (s.timestamp.year(), s.timestamp.iso_week().week()),
+                    |s| {
+                        (
+                            s.timestamp.year(),
+                            s.timestamp.date().iso_week_date().week(),
+                        )
+                    },
                     cutoff,
                 )
             }
             RetentionRule::KeepDaily(n) => {
                 // Calculate midnight of the current day for the anchor.
-                let cutoff = period_cutoff(*n, all_cutoff, now, || {
-                    let naive_midnight = now_date.and_hms_opt(0, 0, 0)?;
-                    let now_midnight = resolve_local(timezone, naive_midnight);
+                let cutoff = period_cutoff(*n, all_cutoff.clone(), now.clone(), || {
+                    let days_back = periods_back(*n)?;
+                    let now_midnight = resolve_local(&timezone, now_date.at(0, 0, 0, 0))?;
                     // Cutoff is midnight of the day N days ago.
-                    Some(now_midnight - Duration::days((*n - 1) as i64))
+                    let seconds = days_back.checked_mul(86_400)?;
+                    now_midnight.checked_sub(Duration::from_secs(seconds)).ok()
                 });
 
-                keep_latest_per_period(snapshots_sorted, |s| s.timestamp.date_naive(), cutoff)
+                keep_latest_per_period(snapshots_sorted, |s| s.timestamp.date(), cutoff)
             }
             RetentionRule::KeepHourly(n) => {
-                let cutoff = period_cutoff(*n, all_cutoff, now, || {
-                    // Truncate 'now' to the start of the current hour.
+                let cutoff = period_cutoff(*n, all_cutoff.clone(), now.clone(), || {
+                    let hours_back = periods_back(*n)?;
+                    // Truncate 'now' to the start of the current hour. The
+                    // subsecond component is intentionally left unchanged, and
+                    // a failed field update falls back to `now` as before.
                     let now_truncated = now
-                        .with_minute(0)
-                        .and_then(|d| d.with_second(0))
-                        .unwrap_or(now);
+                        .with()
+                        .minute(0)
+                        .second(0)
+                        .build()
+                        .unwrap_or_else(|_| now.clone());
                     // Cutoff is the start of the hour N hours ago.
-                    Some(now_truncated - Duration::hours((*n - 1) as i64))
+                    let seconds = hours_back.checked_mul(3_600)?;
+                    now_truncated.checked_sub(Duration::from_secs(seconds)).ok()
                 });
 
                 keep_latest_per_period(
                     snapshots_sorted,
-                    |s| (s.timestamp.date_naive(), s.timestamp.hour()),
+                    |s| (s.timestamp.date(), s.timestamp.hour()),
                     cutoff,
                 )
             }
@@ -558,7 +594,7 @@ pub fn build_forget_plan(
     group_by: &[GroupBy],
     rules: &[RetentionRule],
     keep_min: Option<usize>,
-    now: DateTime<Local>,
+    now: DateTime,
 ) -> ForgetPlan {
     let mut in_scope = filter_snapshots_by_hosts(snapshots.iter().copied(), &filter.hosts);
     if !filter.tags.is_empty() {
@@ -576,7 +612,7 @@ pub fn build_forget_plan(
         };
     }
 
-    in_scope.sort_unstable_by_key(|e| e.snapshot.timestamp);
+    in_scope.sort_unstable_by(|a, b| a.snapshot.timestamp.cmp(&b.snapshot.timestamp));
 
     let mut groups = Vec::new();
     let keep = if group_by.is_empty() {
@@ -592,7 +628,8 @@ pub fn build_forget_plan(
 
         let mut keep = IdMap::default();
         for (key, entries) in grouped {
-            let group_keep = apply_retention_rules_with_reasons(&entries, rules, keep_min, now);
+            let group_keep =
+                apply_retention_rules_with_reasons(&entries, rules, keep_min, now.clone());
             let group_ids: IdSet<ID> = entries.iter().map(|entry| entry.id).collect();
             let removed = group_ids
                 .iter()
@@ -631,7 +668,7 @@ pub fn build_forget_plan(
 fn keep_latest_per_period<K, F>(
     snapshots_sorted: &[&SnapshotEntry],
     key_extractor: F,
-    cut_off: DateTime<Local>,
+    cut_off: DateTime,
 ) -> IdSet<ID>
 where
     K: Eq + Hash,
@@ -654,10 +691,8 @@ where
 mod tests {
     use std::{collections::HashSet, path::PathBuf};
 
-    use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
-
     use super::*;
-    use crate::repository::snapshot::SnapshotEntryList;
+    use crate::{common::time, repository::snapshot::SnapshotEntryList};
 
     /// Creates a mock snapshot ID from a u32 value in the hex string.
     fn create_id(val: u32) -> ID {
@@ -667,24 +702,41 @@ mod tests {
         ID::from_hex(&hex_str).unwrap()
     }
 
-    /// Creates a Local DateTime from a ymd_hms tuple, adding an optional duration.
-    fn create_datetime(
-        ymd: (i32, u32, u32),
-        hms: (u32, u32, u32),
-        days_offset: i64,
-    ) -> DateTime<Local> {
-        let naive_dt: NaiveDateTime = NaiveDate::from_ymd_opt(ymd.0, ymd.1, ymd.2)
-            .unwrap()
-            .and_hms_opt(hms.0, hms.1, hms.2)
-            .unwrap();
+    /// Whole-day duration as an exact 24-hour offset.
+    fn days(n: i64) -> Duration {
+        Duration::from_secs(n.checked_mul(86_400).unwrap())
+    }
 
-        Local.from_local_datetime(&naive_dt).unwrap() + Duration::days(days_offset)
+    /// Whole-hour duration as an exact 60-minute offset.
+    fn hours(n: i64) -> Duration {
+        Duration::from_secs(n.checked_mul(3_600).unwrap())
+    }
+
+    /// Creates a local zoned datetime from a ymd_hms tuple, adding an optional
+    /// number of exact 24-hour days.
+    fn create_datetime(ymd: (i32, u32, u32), hms: (u32, u32, u32), days_offset: i64) -> DateTime {
+        let civil_dt = CivilDateTime::new(
+            i16::try_from(ymd.0).unwrap(),
+            i8::try_from(ymd.1).unwrap(),
+            i8::try_from(ymd.2).unwrap(),
+            i8::try_from(hms.0).unwrap(),
+            i8::try_from(hms.1).unwrap(),
+            i8::try_from(hms.2).unwrap(),
+            0,
+        )
+        .unwrap();
+
+        civil_dt
+            .to_zoned_datetime(time::system_tz())
+            .unwrap()
+            .checked_add(days(days_offset))
+            .unwrap()
     }
 
     /// Creates a standard mock snapshot (ID and Snapshot struct).
     fn create_snapshot(
         id_val: u32,
-        timestamp: DateTime<Local>,
+        timestamp: DateTime,
         tags: &[&str],
         hostname: Option<&str>,
     ) -> SnapshotEntry {
@@ -708,7 +760,7 @@ mod tests {
         }
     }
 
-    fn test_now() -> DateTime<Local> {
+    fn test_now() -> DateTime {
         // Base reference time for cutoffs: 2025-05-25 21:58:00 (Sunday)
         create_datetime((2025, 5, 25), (21, 58, 0), 0)
     }
@@ -806,7 +858,7 @@ mod tests {
 
         assert_no_duplicate_ids(&snapshots);
 
-        snapshots.sort_by_key(|s| s.snapshot.timestamp);
+        snapshots.sort_by(|a, b| a.snapshot.timestamp.cmp(&b.snapshot.timestamp));
 
         snapshots
     }
@@ -834,7 +886,7 @@ mod tests {
     fn test_retention_options_build_rules_in_stable_order() {
         let options = RetentionOptions {
             keep_last: Some(2),
-            keep_within: Some(Duration::days(7)),
+            keep_within: Some(days(7)),
             keep_yearly: Some(1),
             keep_monthly: Some(2),
             keep_weekly: Some(3),
@@ -846,7 +898,7 @@ mod tests {
             options.to_rules(),
             vec![
                 RetentionRule::KeepLast(2),
-                RetentionRule::KeepWithin(Duration::days(7)),
+                RetentionRule::KeepWithin(days(7)),
                 RetentionRule::KeepYearly(1),
                 RetentionRule::KeepMonthly(2),
                 RetentionRule::KeepWeekly(3),
@@ -1027,7 +1079,7 @@ mod tests {
         let snapshots = create_mock_snapshots();
 
         // Keep within 1 day: cutoff = test_now() - 1 day = 2025-05-24 21:58:00
-        let rules = vec![RetentionRule::KeepWithin(Duration::days(1))];
+        let rules = vec![RetentionRule::KeepWithin(days(1))];
         let kept_ids = apply_retention_rules(
             &snapshots.iter().collect::<Vec<_>>(),
             &rules,
@@ -1038,7 +1090,7 @@ mod tests {
         assert_eq!(kept_ids, expected_ids);
 
         // Keep within 30 days: cutoff = test_now() - 30 days = 2025-04-25 21:58:00
-        let rules = vec![RetentionRule::KeepWithin(Duration::days(30))];
+        let rules = vec![RetentionRule::KeepWithin(days(30))];
         let kept_ids = apply_retention_rules(
             &snapshots.iter().collect::<Vec<_>>(),
             &rules,
@@ -1105,17 +1157,21 @@ mod tests {
     fn test_keep_hourly() {
         let now = test_now();
         let snapshots = [
-            create_snapshot(0, now - Duration::hours(5), &[], None),
-            create_snapshot(1, now - Duration::hours(4), &[], None),
-            create_snapshot(2, now - Duration::hours(3), &[], None),
-            create_snapshot(3, now - Duration::hours(2), &[], None),
-            create_snapshot(4, now - Duration::hours(1), &[], None),
-            create_snapshot(5, now, &[], None),
+            create_snapshot(0, now.clone() - hours(5), &[], None),
+            create_snapshot(1, now.clone() - hours(4), &[], None),
+            create_snapshot(2, now.clone() - hours(3), &[], None),
+            create_snapshot(3, now.clone() - hours(2), &[], None),
+            create_snapshot(4, now.clone() - hours(1), &[], None),
+            create_snapshot(5, now.clone(), &[], None),
         ];
 
         let rules = vec![RetentionRule::KeepHourly(3)];
-        let kept_ids =
-            apply_retention_rules(&snapshots.iter().collect::<Vec<_>>(), &rules, None, now);
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            now.clone(),
+        );
 
         // Keeps the latest snapshot per hour for the last 3 hours
         let expected_ids = create_expected_ids(&[3, 4, 5]);
@@ -1125,10 +1181,10 @@ mod tests {
     #[test]
     fn test_filter_by_hosts() {
         let snapshots = [
-            create_snapshot(0, test_now() - Duration::days(2), &[], Some("server-a")),
-            create_snapshot(1, test_now() - Duration::days(1), &[], Some("server-b")),
+            create_snapshot(0, test_now() - days(2), &[], Some("server-a")),
+            create_snapshot(1, test_now() - days(1), &[], Some("server-b")),
             create_snapshot(2, test_now(), &[], Some("server-a")),
-            create_snapshot(3, test_now() - Duration::hours(1), &[], None),
+            create_snapshot(3, test_now() - hours(1), &[], None),
         ];
 
         let filtered = filter_snapshots_by_hosts(snapshots.iter(), &["server-a".to_string()]);
@@ -1160,24 +1216,9 @@ mod tests {
     #[test]
     fn test_build_forget_plan_applies_host_and_tag_filters() {
         let snapshots = [
-            create_snapshot(
-                0,
-                test_now() - Duration::days(3),
-                &["backup"],
-                Some("server"),
-            ),
-            create_snapshot(
-                1,
-                test_now() - Duration::days(2),
-                &["release"],
-                Some("server"),
-            ),
-            create_snapshot(
-                2,
-                test_now() - Duration::days(1),
-                &["backup"],
-                Some("laptop"),
-            ),
+            create_snapshot(0, test_now() - days(3), &["backup"], Some("server")),
+            create_snapshot(1, test_now() - days(2), &["release"], Some("server")),
+            create_snapshot(2, test_now() - days(1), &["backup"], Some("laptop")),
             create_snapshot(3, test_now(), &["backup"], None),
         ];
         let refs: Vec<_> = snapshots.iter().collect();
@@ -1206,8 +1247,8 @@ mod tests {
     #[test]
     fn test_build_forget_plan_removes_out_of_scope_from_decision() {
         let snapshots = [
-            create_snapshot(0, test_now() - Duration::days(2), &[], Some("server")),
-            create_snapshot(1, test_now() - Duration::days(1), &[], Some("laptop")),
+            create_snapshot(0, test_now() - days(2), &[], Some("server")),
+            create_snapshot(1, test_now() - days(1), &[], Some("laptop")),
             create_snapshot(2, test_now(), &[], Some("server")),
         ];
         let refs: Vec<_> = snapshots.iter().collect();
@@ -1237,10 +1278,10 @@ mod tests {
     #[test]
     fn test_group_by_host_applies_rules_per_host() {
         let snapshots = [
-            create_snapshot(0, test_now() - Duration::days(2), &[], Some("server")),
-            create_snapshot(1, test_now() - Duration::days(1), &[], Some("server")),
-            create_snapshot(2, test_now() - Duration::days(2), &[], Some("laptop")),
-            create_snapshot(3, test_now() - Duration::days(1), &[], Some("laptop")),
+            create_snapshot(0, test_now() - days(2), &[], Some("server")),
+            create_snapshot(1, test_now() - days(1), &[], Some("server")),
+            create_snapshot(2, test_now() - days(2), &[], Some("laptop")),
+            create_snapshot(3, test_now() - days(1), &[], Some("laptop")),
         ];
         let refs: Vec<_> = snapshots.iter().collect();
 
@@ -1282,12 +1323,12 @@ mod tests {
     #[test]
     fn test_group_by_multiple_dimensions() {
         let mut snapshots = [
-            create_snapshot(0, test_now() - Duration::days(2), &["db"], Some("server")),
-            create_snapshot(1, test_now() - Duration::days(1), &["db"], Some("server")),
-            create_snapshot(2, test_now() - Duration::days(2), &["web"], Some("server")),
-            create_snapshot(3, test_now() - Duration::days(1), &["web"], Some("server")),
-            create_snapshot(4, test_now() - Duration::days(2), &["db"], Some("laptop")),
-            create_snapshot(5, test_now() - Duration::days(1), &["db"], Some("laptop")),
+            create_snapshot(0, test_now() - days(2), &["db"], Some("server")),
+            create_snapshot(1, test_now() - days(1), &["db"], Some("server")),
+            create_snapshot(2, test_now() - days(2), &["web"], Some("server")),
+            create_snapshot(3, test_now() - days(1), &["web"], Some("server")),
+            create_snapshot(4, test_now() - days(2), &["db"], Some("laptop")),
+            create_snapshot(5, test_now() - days(1), &["db"], Some("laptop")),
         ];
         for entry in &mut snapshots {
             entry.snapshot.paths = vec![match entry.snapshot.hostname.as_deref() {
@@ -1327,7 +1368,7 @@ mod tests {
     #[test]
     fn test_group_by_paths_ignores_order_and_duplicates() {
         let mut snapshots = [
-            create_snapshot(0, test_now() - Duration::days(1), &[], Some("server")),
+            create_snapshot(0, test_now() - days(1), &[], Some("server")),
             create_snapshot(1, test_now(), &[], Some("server")),
         ];
         snapshots[0].snapshot.paths = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
@@ -1358,9 +1399,9 @@ mod tests {
     #[test]
     fn test_group_by_keep_min_is_per_group() {
         let snapshots = [
-            create_snapshot(0, test_now() - Duration::days(3), &[], Some("server")),
-            create_snapshot(1, test_now() - Duration::days(2), &[], Some("server")),
-            create_snapshot(2, test_now() - Duration::days(1), &[], Some("laptop")),
+            create_snapshot(0, test_now() - days(3), &[], Some("server")),
+            create_snapshot(1, test_now() - days(2), &[], Some("server")),
+            create_snapshot(2, test_now() - days(1), &[], Some("laptop")),
             create_snapshot(3, test_now(), &[], Some("laptop")),
         ];
         let refs: Vec<_> = snapshots.iter().collect();
@@ -1454,11 +1495,11 @@ mod tests {
         // (usize::MAX) every period rule must therefore keep all of them.
         let now = test_now();
         let snapshots = [
-            create_snapshot(0, now - Duration::days(365 * 4), &[], None),
-            create_snapshot(1, now - Duration::days(365 * 3), &[], None),
-            create_snapshot(2, now - Duration::days(365 * 2), &[], None),
-            create_snapshot(3, now - Duration::days(365), &[], None),
-            create_snapshot(4, now, &[], None),
+            create_snapshot(0, now.clone() - days(365 * 4), &[], None),
+            create_snapshot(1, now.clone() - days(365 * 3), &[], None),
+            create_snapshot(2, now.clone() - days(365 * 2), &[], None),
+            create_snapshot(3, now.clone() - days(365), &[], None),
+            create_snapshot(4, now.clone(), &[], None),
         ];
         let all_ids = create_expected_ids(&[0, 1, 2, 3, 4]);
 
@@ -1473,7 +1514,7 @@ mod tests {
                 &snapshots.iter().collect::<Vec<_>>(),
                 std::slice::from_ref(&rule),
                 None,
-                now,
+                now.clone(),
             );
             assert_eq!(
                 kept_ids, all_ids,
@@ -1605,10 +1646,10 @@ mod tests {
     #[test]
     fn test_keep_within_zero() {
         let snapshots = create_mock_snapshots();
-        // KeepWithin(Duration::zero()) keeps only snapshots >= now.
+        // KeepWithin(Duration::ZERO) keeps only snapshots >= now.
         // test_now() = 2025-05-25 21:58:00, and the latest snapshot is at 21:00.
         // No snapshot is >= now, so nothing is kept.
-        let rules = vec![RetentionRule::KeepWithin(Duration::zero())];
+        let rules = vec![RetentionRule::KeepWithin(Duration::ZERO)];
         let kept_ids = apply_retention_rules(
             &snapshots.iter().collect::<Vec<_>>(),
             &rules,
@@ -1622,7 +1663,7 @@ mod tests {
     fn test_keep_within_all() {
         let snapshots = create_mock_snapshots();
         // KeepWithin(very large) keeps all snapshots.
-        let rules = vec![RetentionRule::KeepWithin(Duration::days(99999))];
+        let rules = vec![RetentionRule::KeepWithin(days(99999))];
         let kept_ids = apply_retention_rules(
             &snapshots.iter().collect::<Vec<_>>(),
             &rules,

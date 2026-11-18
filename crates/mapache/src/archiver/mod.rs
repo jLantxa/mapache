@@ -19,7 +19,6 @@ use std::{
     time::SystemTime,
 };
 
-use chrono::Local;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -32,6 +31,7 @@ use crate::{
         self,
         error::{self, Result},
         global::MAPACHE_VERSION_INFO,
+        time,
         traits::BlobSaver,
     },
     fs::{
@@ -660,7 +660,7 @@ pub(crate) async fn snapshot(
     let hostname = snapshot_options.hostname.clone().or(system_hostname);
 
     Ok(Snapshot {
-        timestamp: Local::now(),
+        timestamp: time::now(),
         parent: snapshot_options.parent_snapshot.map(|pair| pair.id),
         tree: result.root_tree_id,
         root: snapshot_options.snapshot_root_path,

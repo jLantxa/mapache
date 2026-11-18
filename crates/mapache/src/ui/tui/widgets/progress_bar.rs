@@ -318,6 +318,7 @@ fn format_duration(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tui::test_support;
 
     fn bar_text(spans: &[Span<'static>]) -> String {
         spans.iter().map(|span| span.content.as_ref()).collect()
@@ -326,7 +327,7 @@ mod tests {
     #[test]
     fn rendered_percentage_clamps_above_100() {
         let bar = ProgressBar::new().bytes(200, 100);
-        let rendered = crate::ui::tui::test_support::render_text(60, 5, |frame| {
+        let rendered = test_support::render_text(60, 5, |frame| {
             frame.render_widget(bar.render(), frame.area());
         });
         assert!(
@@ -338,7 +339,7 @@ mod tests {
     #[test]
     fn rendered_without_expected_bytes_shows_only_processed_size() {
         let bar = ProgressBar::new().bytes(50, 0);
-        let rendered = crate::ui::tui::test_support::render_text(60, 5, |frame| {
+        let rendered = test_support::render_text(60, 5, |frame| {
             frame.render_widget(bar.render(), frame.area());
         });
         assert!(
@@ -360,7 +361,7 @@ mod tests {
             .eta(Some(Duration::from_secs(5)))
             .items(5, 10)
             .bytes(500, 1000);
-        let ahead = crate::ui::tui::test_support::render_text(100, 5, |frame| {
+        let ahead = test_support::render_text(100, 5, |frame| {
             frame.render_widget(ahead.render(), frame.area());
         });
         assert!(ahead.contains(TRACK_GLYPH) && !ahead.contains(FILLED_GLYPH));
@@ -371,7 +372,7 @@ mod tests {
             .scanning(true)
             .items(10, 5)
             .bytes(1000, 500);
-        let behind = crate::ui::tui::test_support::render_text(100, 5, |frame| {
+        let behind = test_support::render_text(100, 5, |frame| {
             frame.render_widget(behind.render(), frame.area());
         });
         assert!(behind.contains("1000 B") && behind.contains("Items: 10"));
@@ -381,7 +382,7 @@ mod tests {
     #[test]
     fn rendered_title_names_the_operation() {
         let bar = ProgressBar::new().title("Snapshot Progress").bytes(1, 2);
-        let rendered = crate::ui::tui::test_support::render_text(80, 5, |frame| {
+        let rendered = test_support::render_text(80, 5, |frame| {
             frame.render_widget(bar.render(), frame.area());
         });
         assert!(

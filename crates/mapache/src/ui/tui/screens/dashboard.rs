@@ -1,7 +1,6 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
 use async_trait::async_trait;
-use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent};
 use ratatui::{
     Frame,
@@ -18,6 +17,7 @@ use crate::{
         defaults::{APP_NAME, SHORT_SNAPSHOT_ID_LEN},
         error::Result,
         global::THIS_MAPACHE_VERSION,
+        time,
     },
     repository::{
         lock::{LockHandle, LockStatus},
@@ -314,7 +314,7 @@ impl DashboardScreen {
 
         let mut entries = active_entries;
         entries.append(&mut dropped_entries);
-        entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.snapshot.timestamp));
+        entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.snapshot.timestamp.clone()));
         Ok(entries)
     }
 
@@ -378,8 +378,8 @@ impl DashboardScreen {
 
     fn compute_stats(entries: &[SnapshotEntry]) -> DashboardStats {
         let newest = entries.first().map(|e| {
-            let elapsed = Local::now() - e.snapshot.timestamp;
-            format!("{} ago", utils::pretty_print_duration_chrono(elapsed, 1))
+            let elapsed = time::now().duration_since(&e.snapshot.timestamp);
+            format!("{} ago", utils::pretty_print_duration_signed(elapsed, 1))
         });
         DashboardStats {
             total: entries.len(),
@@ -1167,13 +1167,14 @@ mod tests {
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::Snapshot,
         },
+        ui::tui::test_support,
     };
     use crossterm::event::KeyModifiers;
     use std::path::PathBuf;
     use zeroize::Zeroizing;
 
     fn render_header(screen: &DashboardScreen, width: u16) -> String {
-        crate::ui::tui::test_support::render_text(width, HEADER_HEIGHT, |frame| {
+        test_support::render_text(width, HEADER_HEIGHT, |frame| {
             screen.render_top_bar(frame, frame.area());
         })
     }
@@ -1340,7 +1341,7 @@ mod tests {
     #[tokio::test]
     async fn dashboard_render_shows_all_commands_at_80x24() -> Result<()> {
         let mut screen = test_screen().await?;
-        let content = crate::ui::tui::test_support::render_text(80, 24, |frame| {
+        let content = test_support::render_text(80, 24, |frame| {
             screen.render(frame);
         });
         for label in ["Stats", "Clean", "Verify", "Refresh", "Quit"] {

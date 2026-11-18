@@ -7,6 +7,7 @@ use crate::{
         filter::{PathFilter, WalkOptions},
         node::NodeType,
         tree::crosses_filesystem_boundary,
+        vss,
     },
     ui::events::{BackupEvent, Event, EventSender, emit_event},
 };
@@ -113,7 +114,7 @@ where
         // Enumerate the shadow copy when a VSS session is active;
         // child names are identical, and the walk itself stays in
         // the original path space.
-        let read_dir_path = crate::fs::vss::translate(&current);
+        let read_dir_path = vss::translate(&current);
         let entries = match std::fs::read_dir(&*read_dir_path).and_then(|entries| {
             entries
                 .map(|entry| entry.map(|entry| entry.file_name()))

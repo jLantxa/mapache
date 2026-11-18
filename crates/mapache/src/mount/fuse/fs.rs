@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, path::Path, sync::Arc};
+use std::{ffi::OsStr, path::Path, sync::Arc, time::SystemTime};
 
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
@@ -12,6 +12,7 @@ use crate::{
     common::{
         ID,
         error::{MapacheError, Result},
+        time::DateTime,
         traits::BlobLoader,
     },
     fs::node::NodeType,
@@ -42,7 +43,7 @@ pub struct MountOptions {
     pub allow_other: bool,
     pub metadata_only: bool,
     pub data_cache_size: u64,
-    pub created_time: chrono::DateTime<chrono::Local>,
+    pub created_time: DateTime,
 }
 
 impl MapacheFS<dyn BlobLoader> {
@@ -59,7 +60,7 @@ impl MapacheFS<dyn BlobLoader> {
     {
         tracing::info!(target: "fuse", "Mounting loader at {:?}", mountpoint);
 
-        let stash = Stash::new(options.created_time.into());
+        let stash = Stash::new(SystemTime::try_from(&options.created_time)?);
         let rt_handle = tokio::runtime::Handle::current();
 
         let tree_cache = TreeCache::new(loader.clone(), 512);
@@ -223,7 +224,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
                         ui::cli::error!("Failed to read snapshots: {}", e.to_string());
                     }
                 };
-                snapshots.sort_unstable_by_key(|(_, snapshot)| snapshot.timestamp);
+                snapshots.sort_unstable_by(|(_, a), (_, b)| a.timestamp.cmp(&b.timestamp));
 
                 let mut stash = self.stash.write();
 

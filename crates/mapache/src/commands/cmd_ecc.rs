@@ -5,7 +5,7 @@ use indicatif::ProgressBar;
 use parking_lot::Mutex;
 
 use crate::{
-    backend::{Handle, StorageBackend, WriteContents, new_backend_with_prompt},
+    backend::{self, Handle, StorageBackend, WriteContents, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError},
     ecc,
@@ -303,11 +303,11 @@ async fn list_all_sidecar_paths(
     backend: &Arc<dyn StorageBackend>,
     file_type: ContentIdType,
 ) -> Result<Vec<PathBuf>, EccError> {
-    use crate::repository::repo::SNAPSHOTS_DIR;
+    use crate::repository::repo::{INDEX_DIR, OBJECTS_DIR, SNAPSHOTS_DIR};
 
     let dir = match file_type {
-        ContentIdType::Pack => crate::repository::repo::OBJECTS_DIR,
-        ContentIdType::Index => crate::repository::repo::INDEX_DIR,
+        ContentIdType::Pack => OBJECTS_DIR,
+        ContentIdType::Index => INDEX_DIR,
         ContentIdType::Snapshot => SNAPSHOTS_DIR,
         _ => return Ok(Vec::new()),
     };
@@ -316,7 +316,7 @@ async fn list_all_sidecar_paths(
     let mut ecc_paths = Vec::new();
 
     while let Some(current_dir) = stack.pop() {
-        let entries = crate::backend::read_backend_dir(backend.as_ref(), &current_dir)
+        let entries = backend::read_backend_dir(backend.as_ref(), &current_dir)
             .await
             .map_err(|e| {
                 MapacheError::Backend(format!(
@@ -328,7 +328,7 @@ async fn list_all_sidecar_paths(
 
         for entry in entries {
             match entry {
-                crate::backend::BackendNode::File(path, _) => {
+                backend::BackendNode::File(path, _) => {
                     if path
                         .extension()
                         .is_some_and(|ext| ext == REPO_ECC_EXTENSION)
@@ -336,7 +336,7 @@ async fn list_all_sidecar_paths(
                         ecc_paths.push(path);
                     }
                 }
-                crate::backend::BackendNode::Dir(subdir) => {
+                backend::BackendNode::Dir(subdir) => {
                     stack.push(subdir);
                 }
             }

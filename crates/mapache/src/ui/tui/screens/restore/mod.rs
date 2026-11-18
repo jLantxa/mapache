@@ -228,7 +228,10 @@ mod tests {
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::Snapshot,
         },
-        ui::tui::widgets::{FormFieldType, TextInput},
+        ui::tui::{
+            test_support,
+            widgets::{FormFieldType, TextInput},
+        },
     };
     use crossterm::event::KeyModifiers;
     use zeroize::Zeroizing;
@@ -278,7 +281,7 @@ mod tests {
         assert_eq!(screen.phase, RestorePhase::Confirm);
         assert!(!screen.session.is_running());
 
-        let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
+        let text = test_support::render_text(100, 30, |frame| {
             screen.render(frame);
         });
         assert!(text.contains("Confirm Restore + Delete"));

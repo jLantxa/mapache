@@ -1,11 +1,10 @@
-use chrono::TimeZone;
 use proptest::prelude::*;
 
 use crate::{
     bundle::format::{
         BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BundleHeader, BundleIndexEntry, BundleTrailer,
     },
-    common::{BlobType, ID},
+    common::{BlobType, ID, time},
     ecc::ecc_decode,
     repository::{
         index::{
@@ -49,7 +48,7 @@ proptest! {
     ) {
 
         let snapshot = Snapshot {
-            timestamp: chrono::Local.timestamp_opt(timestamp_secs, 0).unwrap(),
+            timestamp: time::from_unix_timestamp(timestamp_secs).unwrap(),
             parent: None,
             tree: ID::from_content(b"test-tree"),
             root: "/".into(),

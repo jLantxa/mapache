@@ -17,17 +17,18 @@ use crate::{
         BUNDLE_TRAILER_SIZE_LEN, BundleHeader, BundleIndex, BundleTrailer,
     },
     common::{
-        ID,
+        self, ID,
         error::{MapacheError, Result},
         kdf,
         traits::BlobLoader,
     },
     ecc,
     fs::{
+        self,
         node::Metadata,
         tree::{NodeDiff, Tree},
     },
-    repository::{manifest::Manifest, storage::SecureStorage},
+    repository::{self, manifest::Manifest, storage::SecureStorage},
     restorer::node_restorer,
     ui::{
         self,
@@ -44,7 +45,7 @@ pub struct BundleReader {
     index_map: HashMap<ID, usize>,
     pub trailer: BundleTrailer,
     pub version: u16,
-    ecc_config: Option<crate::repository::manifest::EccConfig>,
+    ecc_config: Option<repository::manifest::EccConfig>,
     data_start: u64,
     data_end: u64,
 }
@@ -76,7 +77,7 @@ impl BlobLoader for BundleReader {
                         data.len()
                     )));
                 }
-                if entry.blob_type != crate::common::BlobType::Zero {
+                if entry.blob_type != common::BlobType::Zero {
                     id.verify_content(&data)?;
                 }
                 Ok(data)
@@ -107,7 +108,7 @@ impl BlobLoader for BundleReader {
                         data.len()
                     )));
                 }
-                if entry.blob_type != crate::common::BlobType::Zero {
+                if entry.blob_type != common::BlobType::Zero {
                     id.verify_content(&data)?;
                 }
                 Ok(data)
@@ -145,7 +146,7 @@ impl BundleReader {
             ));
         }
 
-        if header.version != crate::repository::repo::THIS_REPOSITORY_VERSION as u16 {
+        if header.version != repository::repo::THIS_REPOSITORY_VERSION as u16 {
             return Err(MapacheError::Format(format!(
                 "unsupported bundle format version {}",
                 header.version
@@ -354,7 +355,7 @@ impl BundleReader {
         // Write repaired data to a `.repaired` file (never overwrite the original).
         let repaired_path = self.path.with_extension("repaired");
         let mut repaired_file =
-            crate::fs::filesystem::open_for_write_no_follow(&repaired_path, true, false)?;
+            fs::filesystem::open_for_write_no_follow(&repaired_path, true, false)?;
 
         // Copy header from original.
         let mut file = self.file.lock();
@@ -448,7 +449,7 @@ pub async fn extract_nodes_parallel<L>(
 where
     L: BlobLoader + ?Sized + 'static,
 {
-    let (tx, rx) = tokio::sync::mpsc::channel::<(PathBuf, crate::fs::node::Node)>(4096);
+    let (tx, rx) = tokio::sync::mpsc::channel::<(PathBuf, fs::node::Node)>(4096);
     let (dir_tx, dir_rx) = tokio::sync::mpsc::channel::<(PathBuf, Metadata)>(4096);
 
     let loader_clone = loader.clone();
@@ -577,7 +578,7 @@ where
                     };
 
                     let mut file =
-                        match crate::fs::filesystem::open_for_write_no_follow(&path, true, false) {
+                        match fs::filesystem::open_for_write_no_follow(&path, true, false) {
                             Ok(f) => f,
                             Err(e) => {
                                 sender(Event::Backup(BackupEvent::Error(format!(
@@ -673,7 +674,7 @@ fn make_meta_sender() -> EventSender {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::ID;
+    use crate::{bundle::format::BUNDLE_SALT_LEN, common::ID};
 
     use super::*;
 
@@ -687,7 +688,7 @@ mod tests {
         let header = BundleHeader {
             magic: *BUNDLE_MAGIC_START,
             version: 2,
-            salt: [7u8; crate::bundle::format::BUNDLE_SALT_LEN],
+            salt: [7u8; BUNDLE_SALT_LEN],
             argon2_t: 3,
             argon2_m: 65536,
             argon2_p: 1,
@@ -745,7 +746,7 @@ mod tests {
                 magic_end: *BUNDLE_MAGIC_END,
             },
             version: 2,
-            ecc_config: Some(crate::repository::manifest::EccConfig {
+            ecc_config: Some(repository::manifest::EccConfig {
                 data_shards: 1,
                 parity_shards: 1,
             }),

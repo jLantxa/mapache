@@ -63,6 +63,9 @@ pub enum MapacheError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    #[error("time error: {0}")]
+    Time(#[from] jiff::Error),
+
     #[error("operation interrupted")]
     Interrupted,
 
@@ -98,6 +101,7 @@ impl MapacheError {
             | MapacheError::Internal(s) => s.clone(),
             MapacheError::Io(e) => e.to_string(),
             MapacheError::Serialization(e) => e.to_string(),
+            MapacheError::Time(e) => e.to_string(),
             _ => self.to_string(),
         }
     }

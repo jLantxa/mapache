@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common::ID,
     common::error::{MapacheError, Result},
+    fs::vss,
     ui::cli::color::Colorize,
     utils,
 };
@@ -440,7 +441,7 @@ impl Node {
         // Query metadata on the shadow copy when a VSS session is active (the
         // translation borrows the path unchanged otherwise and on non-Windows
         // platforms).
-        let translated = crate::fs::vss::translate(path);
+        let translated = vss::translate(path);
         let path = &*translated;
 
         #[cfg(target_os = "linux")]
@@ -586,7 +587,7 @@ impl Node {
         // Read the link target from the shadow copy when a VSS session is
         // active. The target string that is recorded stays in original path
         // space; the probe below goes through the translation on its own.
-        let translated = crate::fs::vss::translate(path);
+        let translated = vss::translate(path);
         let path = &*translated;
         let target = std::fs::read_link(path)?;
 

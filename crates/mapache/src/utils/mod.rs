@@ -4,19 +4,21 @@ pub mod collections;
 pub mod rate_estimator;
 pub(crate) mod stream;
 
+pub(crate) use crate::common::time::parse_duration_string;
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{DateTime, Duration, Local};
 use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
 use crate::{
     common::{
         error::{MapacheError, Result},
+        time::{self, DateTime, Duration},
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
     fs,
@@ -215,16 +217,13 @@ pub(crate) fn pretty_print_system_time(
 
     let format = format_str.unwrap_or("%Y-%m-%d %H:%M:%S");
 
-    let datetime_local: DateTime<Local> = time.into();
-    Ok(datetime_local.format(format).to_string())
+    let datetime_local = time::from_system_time(time)?;
+    Ok(datetime_local.strftime(format).to_string())
 }
 
-pub(crate) fn pretty_print_timestamp(
-    timestamp: &DateTime<Local>,
-    format_str: Option<&str>,
-) -> String {
+pub(crate) fn pretty_print_timestamp(timestamp: &DateTime, format_str: Option<&str>) -> String {
     let format = format_str.unwrap_or("%a %Y-%m-%d %H:%M %:z");
-    timestamp.format(format).to_string()
+    timestamp.strftime(format).to_string()
 }
 
 // --- Duration Utilities ---
@@ -285,93 +284,13 @@ pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
     format_duration_parts(d, h, m, s, ms, 2, total_seconds == 0)
 }
 
-/// Pretty prints a `chrono::Duration` in a human-readable format.
+/// Pretty prints a signed duration in a human-readable format.
 /// Shows up to `max_parts` most significant units.
-pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts: usize) -> String {
-    let total_seconds = duration.num_seconds().unsigned_abs();
-    let millis = duration.num_milliseconds().unsigned_abs() % 1000;
+pub(crate) fn pretty_print_duration_signed(duration: Duration, max_parts: usize) -> String {
+    let total_seconds = duration.as_secs().unsigned_abs();
+    let millis = u64::from(duration.subsec_millis().unsigned_abs()) % 1000;
     let (d, h, m, s, ms) = decompose_duration(total_seconds, millis);
     format_duration_parts(d, h, m, s, ms, max_parts, false)
-}
-
-/// Parses a duration string (e.g., "1d", "2w", "3m", "4y", "5h", "6s") into a `chrono::Duration`.
-/// Supports combinations like "1d12h".
-///
-/// # Supported Units:
-/// - `s`: seconds
-/// - `m`: minutes
-/// - `h`: hours
-/// - `d`: days
-/// - `w`: weeks
-/// - `y`: years (approximated as 365 days)
-pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
-    if s.is_empty() {
-        return Err(MapacheError::Format(
-            "invalid duration format: empty string".to_string(),
-        ));
-    }
-
-    let mut total_duration = Duration::zero();
-    let mut current_num_str = String::new();
-
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            current_num_str.push(c);
-        } else {
-            if current_num_str.is_empty() {
-                return Err(MapacheError::Format(format!(
-                    "invalid duration format: unit '{c}' without preceding number in \"{s}\""
-                )));
-            }
-
-            let num = current_num_str.parse::<i64>().map_err(|e| {
-                MapacheError::Format(format!(
-                    "failed to parse number before unit '{c}' in \"{s}\": {e}"
-                ))
-            })?;
-
-            let part = match c {
-                's' => Duration::try_seconds(num),
-                'm' => Duration::try_minutes(num),
-                'h' => Duration::try_hours(num),
-                'd' => Duration::try_days(num),
-                'w' => Duration::try_weeks(num),
-                'y' => {
-                    let days = num.checked_mul(365).ok_or_else(|| {
-                        MapacheError::Format(format!(
-                            "duration value out of range for years in \"{s}\""
-                        ))
-                    })?;
-                    Duration::try_days(days)
-                }
-                _ => {
-                    return Err(MapacheError::Format(format!(
-                        "invalid duration unit: '{c}' in \"{s}\""
-                    )));
-                }
-            }
-            .ok_or_else(|| {
-                MapacheError::Format(format!(
-                    "duration value out of range for '{num}{c}' in \"{s}\""
-                ))
-            })?;
-
-            total_duration = total_duration.checked_add(&part).ok_or_else(|| {
-                MapacheError::Format(format!(
-                    "duration value out of range when combining units in \"{s}\""
-                ))
-            })?;
-            current_num_str.clear();
-        }
-    }
-
-    if !current_num_str.is_empty() {
-        return Err(MapacheError::Format(format!(
-            "invalid duration format: trailing number '{current_num_str}' without unit in \"{s}\""
-        )));
-    }
-
-    Ok(total_duration)
 }
 
 /// Parses a bandwidth string (e.g., "10MB/s", "500KB/s", "1G") into bytes per second.
@@ -755,7 +674,7 @@ impl SecurePathResolver {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{NaiveDateTime, TimeZone};
+    use jiff::civil::date;
 
     use super::*;
 
@@ -925,32 +844,27 @@ mod tests {
 
     #[test]
     fn test_parse_duration_string() {
-        assert_eq!(parse_duration_string("1s").unwrap(), Duration::seconds(1));
-        assert_eq!(parse_duration_string("1m").unwrap(), Duration::minutes(1));
-        assert_eq!(parse_duration_string("1h").unwrap(), Duration::hours(1));
-        assert_eq!(parse_duration_string("1d").unwrap(), Duration::days(1));
-        assert_eq!(parse_duration_string("1w").unwrap(), Duration::weeks(1));
-        assert_eq!(parse_duration_string("1y").unwrap(), Duration::days(365));
-        assert_eq!(
-            parse_duration_string("100s").unwrap(),
-            Duration::seconds(100)
-        );
-        assert_eq!(
-            parse_duration_string("2m30s").unwrap(),
-            Duration::minutes(2) + Duration::seconds(30)
-        );
+        let secs = |n: i64| Duration::from_secs(n);
+        let mins = |n: i64| Duration::from_mins(n);
+        let hours = |n: i64| Duration::from_hours(n);
+        let days = |n: i64| Duration::from_secs(n * 86_400);
+        let weeks = |n: i64| Duration::from_secs(n * 7 * 86_400);
+
+        assert_eq!(parse_duration_string("1s").unwrap(), secs(1));
+        assert_eq!(parse_duration_string("1m").unwrap(), mins(1));
+        assert_eq!(parse_duration_string("1h").unwrap(), hours(1));
+        assert_eq!(parse_duration_string("1d").unwrap(), days(1));
+        assert_eq!(parse_duration_string("1w").unwrap(), weeks(1));
+        assert_eq!(parse_duration_string("1y").unwrap(), days(365));
+        assert_eq!(parse_duration_string("100s").unwrap(), secs(100));
+        assert_eq!(parse_duration_string("2m30s").unwrap(), mins(2) + secs(30));
         assert_eq!(
             parse_duration_string("1d12h30m").unwrap(),
-            Duration::days(1) + Duration::hours(12) + Duration::minutes(30)
+            days(1) + hours(12) + mins(30)
         );
         assert_eq!(
             parse_duration_string("1y2w3d4h5m6s").unwrap(),
-            Duration::days(365)
-                + Duration::weeks(2)
-                + Duration::days(3)
-                + Duration::hours(4)
-                + Duration::minutes(5)
-                + Duration::seconds(6)
+            days(365) + weeks(2) + days(3) + hours(4) + mins(5) + secs(6)
         );
 
         // Test invalid formats
@@ -960,7 +874,7 @@ mod tests {
         assert!(parse_duration_string("1d1").is_err());
         assert!(parse_duration_string("1d 2h").is_err()); // spaces are not supported
 
-        // Oversized year counts must Err, not panic on i64/chrono overflow.
+        // Oversized year counts must Err, not panic on duration overflow.
         let overflow_years = format!("{}y", i64::MAX / 365 + 1);
         let err = parse_duration_string(&overflow_years).unwrap_err();
         assert!(
@@ -973,7 +887,7 @@ mod tests {
             matches!(&err, MapacheError::Format(_)),
             "expected Format, got: {err}"
         );
-        // Non-year units must also Err (not panic) past chrono Duration limits.
+        // Non-year units must also Err (not panic) past duration limits.
         let overflow_days = format!("{}d", i64::MAX);
         let err = parse_duration_string(&overflow_days).unwrap_err();
         assert!(
@@ -981,7 +895,7 @@ mod tests {
             "expected Format, got: {err}"
         );
         assert!(parse_duration_string("").is_err());
-        assert_eq!(parse_duration_string("1y").unwrap(), Duration::days(365));
+        assert_eq!(parse_duration_string("1y").unwrap(), days(365));
     }
 
     #[test]
@@ -1005,12 +919,10 @@ mod tests {
 
     #[test]
     fn test_pretty_print_system_time() -> Result<()> {
-        let naive_str = "2025-12-01 18:00";
-        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")
-            .map_err(|e| MapacheError::Format(e.to_string()))?;
-        let datetime_with_local_offset: DateTime<Local> =
-            Local.from_local_datetime(&naive_datetime).unwrap();
-        let time: SystemTime = datetime_with_local_offset.into();
+        let datetime_with_local_offset = date(2025, 12, 1)
+            .at(18, 0, 0, 0)
+            .to_zoned_datetime(time::system_tz())?;
+        let time: SystemTime = SystemTime::try_from(&datetime_with_local_offset)?;
 
         assert_eq!(pretty_print_system_time(time, None)?, "2025-12-01 18:00:00");
         assert_eq!(
@@ -1035,10 +947,9 @@ mod tests {
 
     #[test]
     fn test_pretty_print_timestamp() -> Result<()> {
-        let naive_str = "2025-12-01 18:00";
-        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")
-            .map_err(|e| MapacheError::Format(e.to_string()))?;
-        let datetime: DateTime<Local> = Local.from_local_datetime(&naive_datetime).unwrap();
+        let datetime = date(2025, 12, 1)
+            .at(18, 0, 0, 0)
+            .to_zoned_datetime(time::system_tz())?;
 
         let formatted = pretty_print_timestamp(&datetime, None);
         // format is "%a %Y-%m-%d %H:%M %:z"

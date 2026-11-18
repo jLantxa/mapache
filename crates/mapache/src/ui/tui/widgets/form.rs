@@ -834,6 +834,7 @@ impl Form {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tui::test_support;
     use crossterm::event::KeyCode;
 
     fn key(c: char) -> KeyCode {
@@ -1260,7 +1261,7 @@ mod tests {
             10,
         );
         let render = |form: &Form, height| {
-            crate::ui::tui::test_support::render_text(80, height, |frame| {
+            test_support::render_text(80, height, |frame| {
                 form.render(frame, frame.area(), "Options");
             })
         };

@@ -1135,7 +1135,7 @@ async fn analyze_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use chrono::Local;
+    use crate::common::time;
 
     use super::*;
     use crate::{
@@ -1179,7 +1179,7 @@ mod tests {
 
     async fn save_snapshot(repo: &Arc<Repository>, tree_id: ID) -> Result<(), MapacheError> {
         let snapshot = Snapshot {
-            timestamp: Local::now(),
+            timestamp: time::now(),
             tree: tree_id,
             root: PathBuf::from("/"),
             paths: vec![PathBuf::from("/root")],

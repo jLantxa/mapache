@@ -5,6 +5,7 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::Result;
+    use jiff::SignedDuration;
     use mapache::{
         backend::{StorageBackend, localfs::LocalFS},
         common::defaults::TEST_REPO_CONFIG,
@@ -56,7 +57,7 @@ mod tests {
             backend.clone(),
             TEST_REPO_CONFIG,
             true,
-            Some(chrono::Duration::milliseconds(200)),
+            Some(SignedDuration::from_millis(200)),
         )
         .await;
 
@@ -169,7 +170,7 @@ mod tests {
             backend.clone(),
             TEST_REPO_CONFIG,
             true,
-            Some(chrono::Duration::seconds(5)),
+            Some(SignedDuration::from_secs(5)),
         )
         .await;
         assert!(result.is_ok(), "Should re-acquire lock after release");
@@ -232,7 +233,7 @@ mod tests {
             backend_clone,
             TEST_REPO_CONFIG,
             true,
-            Some(chrono::Duration::seconds(5)),
+            Some(SignedDuration::from_secs(5)),
         )
         .await;
 

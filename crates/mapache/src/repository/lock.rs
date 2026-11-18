@@ -4,10 +4,9 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use chrono::{DateTime, Local};
 use parking_lot::Mutex;
 use rand::{RngExt, rng};
 use serde::{Deserialize, Serialize};
@@ -15,17 +14,20 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::{Handle, StorageHint},
     common::error::{MapacheError, Result},
-    common::{ContentIdType, ID, SaveID},
+    common::{
+        ContentIdType, ID, SaveID,
+        time::{self, DateTime, Duration},
+    },
     repository::repo::{LOCKS_DIR, Repository},
     ui, utils,
 };
 
 // Lock self refresh period
-const LOCK_REFRESH_PERIOD: std::time::Duration = Duration::from_secs(3 * 60);
+const LOCK_REFRESH_PERIOD: std::time::Duration = std::time::Duration::from_secs(3 * 60);
 
 // Lock timeout. This is the time a Lock must go without being refreshed to be considered
 // expired. Expired locks can be cleaned up by other processes.
-pub(crate) const LOCK_EXPIRE_TIMEOUT: std::time::Duration = Duration::from_secs(10 * 60);
+pub(crate) const LOCK_EXPIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 const _: () = {
     assert!(
@@ -44,7 +46,8 @@ pub struct Lock {
     id: ID,
 
     /// The last time this lock was refreshed.
-    timestamp: DateTime<Local>,
+    #[serde(with = "time::serde")]
+    timestamp: DateTime,
 
     /// Exclusive flag.
     ///
@@ -66,18 +69,18 @@ pub struct Lock {
     context: Vec<String>,
 
     /// When the lock was originally acquired.
-    #[serde(default)]
-    creation_time: Option<DateTime<Local>>,
+    #[serde(default, with = "time::serde_option")]
+    creation_time: Option<DateTime>,
 }
 
 impl Lock {
     pub fn new(exclusive: bool) -> Self {
         let (hostname, username) = utils::get_system_info();
-        let now = Local::now();
+        let now = time::now();
 
         Self {
             id: ID::new_random(),
-            timestamp: now,
+            timestamp: now.clone(),
             exclusive,
             hostname: hostname.unwrap_or_default(),
             username: username.unwrap_or_default(),
@@ -89,12 +92,12 @@ impl Lock {
 
     /// A constructor only visible for tests. Allows setting a custom timestamp.
     #[cfg(test)]
-    pub fn new_for_test(exclusive: bool, timestamp: DateTime<Local>) -> Self {
+    pub fn new_for_test(exclusive: bool, timestamp: DateTime) -> Self {
         let (hostname, username) = utils::get_system_info();
 
         Self {
             id: ID::new_random(),
-            timestamp,
+            timestamp: timestamp.clone(),
             exclusive,
             hostname: hostname.unwrap_or_default(),
             username: username.unwrap_or_default(),
@@ -110,14 +113,14 @@ impl Lock {
     }
 
     pub fn refresh(&mut self) {
-        self.timestamp = Local::now();
+        self.timestamp = time::now();
     }
 
     pub fn id(&self) -> &ID {
         &self.id
     }
 
-    pub fn timestamp(&self) -> &DateTime<Local> {
+    pub fn timestamp(&self) -> &DateTime {
         &self.timestamp
     }
 
@@ -129,8 +132,8 @@ impl Lock {
         &self.context
     }
 
-    pub fn creation_time(&self) -> Option<DateTime<Local>> {
-        self.creation_time
+    pub fn creation_time(&self) -> Option<DateTime> {
+        self.creation_time.clone()
     }
 
     pub fn hostname(&self) -> &str {
@@ -148,12 +151,12 @@ impl Lock {
     /// Checks if the lock is expired based on the refresh timestamp.
     #[must_use]
     pub fn is_expired(&self) -> bool {
-        let now = Local::now();
-        // LOCK_EXPIRE_TIMEOUT is a compile-time constant, so from_std cannot fail.
-        let expire_timeout_chrono = chrono::Duration::from_std(LOCK_EXPIRE_TIMEOUT)
+        let now = time::now();
+        // LOCK_EXPIRE_TIMEOUT is a compile-time constant, so conversion cannot fail.
+        let expire_timeout = time::duration_from_std(LOCK_EXPIRE_TIMEOUT)
             .expect("LOCK_EXPIRE_TIMEOUT is a valid Duration");
 
-        now.signed_duration_since(self.timestamp) > expire_timeout_chrono
+        now.duration_since(&self.timestamp) > expire_timeout
     }
 
     /// Checks if the process that acquired the lock is still alive.
@@ -447,7 +450,7 @@ impl Repository {
     pub(crate) async fn try_acquire_lock_with_retry(
         &self,
         exclusive: bool,
-        retry_duration: Option<chrono::Duration>,
+        retry_duration: Option<Duration>,
     ) -> Result<Arc<Mutex<Lock>>> {
         let start_time = Instant::now();
 
@@ -467,7 +470,7 @@ impl Repository {
                         None => return Err(e),
                     };
 
-                    if start_time.elapsed() >= timeout.to_std().unwrap_or_default() {
+                    if start_time.elapsed() >= time::duration_to_std(timeout).unwrap_or_default() {
                         return Err(MapacheError::LockExpired(
                             "timeout acquiring repository lock".to_string(),
                         ));
@@ -476,19 +479,18 @@ impl Repository {
                     let mut rng = rng();
                     let jitter_millis = rng.random_range(0..MAX_JITTER_MS);
                     let mean_wait_interval =
-                        chrono::Duration::milliseconds(base_wait_interval_ms - (MAX_JITTER_MS / 2));
-                    let wait_time =
-                        mean_wait_interval + chrono::Duration::milliseconds(jitter_millis);
+                        Duration::from_millis(base_wait_interval_ms - (MAX_JITTER_MS / 2));
+                    let wait_time = mean_wait_interval + Duration::from_millis(jitter_millis);
                     base_wait_interval_ms =
                         std::cmp::min(MAX_BASE_WAIT_INTERVAL_MS, 2 * base_wait_interval_ms);
 
                     ui::cli::warning!(
                         "The repository is locked by another process. Waiting {:.0?} seconds before retrying...",
-                        wait_time.as_seconds_f32()
+                        wait_time.as_secs_f32()
                     );
 
                     tokio::time::sleep(
-                        wait_time.to_std().map_err(|e| {
+                        time::duration_to_std(wait_time).map_err(|e| {
                             MapacheError::Repo(format!("duration out of range: {e}"))
                         })?,
                     )
@@ -632,26 +634,24 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration as ChronoDuration, Local};
-
     use super::*;
 
     #[test]
     fn test_lock_expiration() {
-        let now = Local::now();
+        let now = time::now();
         let mut lock = Lock::new(false);
 
         // New lock should not be expired
         assert!(!lock.is_expired());
 
-        let expire_threshold = ChronoDuration::from_std(LOCK_EXPIRE_TIMEOUT).unwrap();
+        let expire_threshold = time::duration_from_std(LOCK_EXPIRE_TIMEOUT).unwrap();
 
         // Lock within expiration threshold (e.g., half the timeout)
-        lock.timestamp = now - (expire_threshold / 2);
+        lock.timestamp = now.clone() - (expire_threshold / 2);
         assert!(!lock.is_expired());
 
         // Lock past expiration threshold
-        lock.timestamp = now - expire_threshold - ChronoDuration::seconds(10);
+        lock.timestamp = now - expire_threshold - Duration::from_secs(10);
         assert!(lock.is_expired());
 
         // Refresh should make it not expired
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_lock_refresh_resets_expiry() {
-        let past = Local::now() - ChronoDuration::hours(2);
+        let past = time::now() - Duration::from_hours(2);
         let mut lock = Lock::new_for_test(true, past);
         assert!(lock.is_expired());
         lock.refresh();
@@ -679,7 +679,7 @@ mod tests {
     fn test_lock_not_stale_when_expired_but_same_host_process_alive() {
         // Regression for M4: an expired lock whose owner is a *live* process on
         // the same host must not be reclaimed (the owner may be stalled on I/O).
-        let past = Local::now() - ChronoDuration::hours(2);
+        let past = time::now() - Duration::from_hours(2);
         let lock = Lock::new_for_test(true, past);
         assert!(lock.is_expired());
         assert!(!lock.is_stale());
@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_lock_stale_when_expired_on_different_host() {
-        let past = Local::now() - ChronoDuration::hours(2);
+        let past = time::now() - Duration::from_hours(2);
         let mut lock = Lock::new_for_test(true, past);
         lock.hostname = "some-other-host".to_string();
         assert!(lock.is_expired());

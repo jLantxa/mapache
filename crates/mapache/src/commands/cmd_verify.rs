@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, ID, config::CommandHooks, error::MapacheError, hooks},
+    common::{ContentIdType, ID, config::CommandHooks, error::MapacheError, hooks, time::DateTime},
     fs::tree::SerializedNodeStream,
     repository::{
         lock::LockHandle,
@@ -1272,7 +1272,7 @@ async fn verify_snapshots_logically(
 
     let snapshots_corrupt = AtomicUsize::new(0);
     let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-    let mut snapshots: Vec<(ID, chrono::DateTime<chrono::Local>)> = Vec::new();
+    let mut snapshots: Vec<(ID, DateTime)> = Vec::new();
     let mut stream = snapshot_stream;
     while let Some(res) = stream.next().await {
         match res {
@@ -1297,7 +1297,7 @@ async fn verify_snapshots_logically(
         }
     }
 
-    snapshots.sort_by_key(|(_, timestamp)| *timestamp);
+    snapshots.sort_by(|(_, a), (_, b)| a.cmp(b));
     let num_snapshots_total = snapshots.len();
 
     let stop_flag = AtomicBool::new(false);

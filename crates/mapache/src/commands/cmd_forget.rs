@@ -1,6 +1,5 @@
 use std::{io, sync::Arc};
 
-use chrono::Local;
 use clap::{ArgGroup, Parser};
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +10,13 @@ use crate::{
         parse_tags, with_repository_lock,
     },
     common::{
-        ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, defaults::SHORT_SNAPSHOT_ID_LEN,
-        error::MapacheError, hooks,
+        ContentIdType, ID,
+        config::CommandHooks,
+        defaults::DEFAULT_GC_TOLERANCE,
+        defaults::SHORT_SNAPSHOT_ID_LEN,
+        error::MapacheError,
+        hooks,
+        time::{self, Duration},
     },
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
@@ -108,7 +112,7 @@ pub struct CmdArgs {
     /// Keep snapshots within a specified duration (e.g., '1d', '2w', '3m', '4y', '5h', '6s').
     #[arg(long, value_parser = utils::parse_duration_string, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_duration_opt")]
-    pub keep_within: Option<chrono::Duration>,
+    pub keep_within: Option<Duration>,
 
     /// Keep N yearly snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
@@ -231,7 +235,7 @@ where
 
 fn deserialize_duration_opt<'de, D>(
     deserializer: D,
-) -> std::result::Result<Option<chrono::Duration>, D::Error>
+) -> std::result::Result<Option<Duration>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -292,7 +296,7 @@ const FORGET_MSG: &str = "forget";
 pub async fn run(
     global_args: &GlobalArgs,
     args: &CmdArgs,
-    cmd_hooks: Option<&crate::common::config::CommandHooks>,
+    cmd_hooks: Option<&CommandHooks>,
 ) -> Result<(), ForgetError> {
     tracing::info!(target: "forget", "Starting forget command");
 
@@ -403,7 +407,7 @@ async fn forget_phase(
         ));
     }
 
-    snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
+    snapshots_sorted.sort_unstable_by(|a, b| a.snapshot.timestamp.cmp(&b.snapshot.timestamp));
 
     // Host/tag pre-filters. These are not retention rules: they remove
     // snapshots from consideration entirely.
@@ -424,7 +428,7 @@ async fn forget_phase(
         &args.group_by,
         &retention_rules,
         args.keep_min,
-        Local::now(),
+        time::now(),
     );
 
     // Human readable explanation of the keep/remove decision, per snapshot.
@@ -696,6 +700,7 @@ fn with_reasons<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::config::load_config;
     use clap::Parser;
 
     const COUNT_FIELDS: [&str; 7] = [
@@ -719,7 +724,7 @@ mod tests {
                 .collect::<String>();
             let file = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(file.path(), format!("[forget]\n{config}")).unwrap();
-            let args = crate::common::config::load_config(&file.path().to_path_buf())
+            let args = load_config(&file.path().to_path_buf())
                 .expect("None values must load")
                 .forget
                 .expect("forget section must be present");
@@ -761,7 +766,7 @@ mod tests {
             "keep-within = \"2d\"\nkeep-tags = \"important,archive\"\nkeep-daily = \"None\"",
         )
         .unwrap();
-        assert_eq!(args.keep_within, Some(chrono::Duration::days(2)));
+        assert_eq!(args.keep_within, Some(Duration::from_secs(2 * 86_400)));
         assert_eq!(args.keep_tags.as_deref(), Some("important,archive"));
         assert_eq!(args.keep_daily, None);
         assert!(toml::from_str::<CmdArgs>("keep-within = \"invalid\"").is_err());

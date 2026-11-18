@@ -35,7 +35,7 @@ impl RetentionConfig {
                     config
                         .and_then(|c| {
                             c.keep_within
-                                .map(|duration| format!("{}s", duration.num_seconds()))
+                                .map(|duration| format!("{}s", duration.as_secs()))
                         })
                         .unwrap_or_default()).help("Keep snapshots newer than a duration, e.g. '7d', '12h', '1w'."),
             FormField::text("Keep hourly:",
@@ -223,7 +223,10 @@ pub enum RetentionAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::tui::widgets::{FormFieldType, TextInput};
+    use crate::{
+        common::time::Duration,
+        ui::tui::widgets::{FormFieldType, TextInput},
+    };
 
     fn make_config(keep_last: &str) -> RetentionConfig {
         let mut rc = RetentionConfig::new(None);
@@ -398,7 +401,7 @@ mod tests {
 
     #[test]
     fn configured_duration_is_valid_and_preserved() {
-        let duration = chrono::Duration::days(7);
+        let duration = Duration::from_secs(7 * 86_400);
         let defaults = cmd_forget::CmdArgs {
             keep_within: Some(duration),
             ..Default::default()

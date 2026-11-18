@@ -14,7 +14,7 @@ use ratatui::{
 
 use crate::{
     commands::cmd_verify::{self, CmdArgs},
-    repository::{lock::LockHandle, repo::Repository},
+    repository::{lock::LockHandle, repo::Repository, storage::SecureStorage},
     ui::{
         events::{Event, EventSender, TaskEvent, filtered_event_channel},
         reporter::{EventVerifyReporter, VerifyReporter},
@@ -358,7 +358,7 @@ impl VerifyScreen {
 
 async fn run_verify(
     repo: Arc<Repository>,
-    secure_storage: Arc<crate::repository::storage::SecureStorage>,
+    secure_storage: Arc<SecureStorage>,
     lock_handle: Option<LockHandle>,
     args: CmdArgs,
     event_sender: EventSender,

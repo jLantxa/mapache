@@ -234,8 +234,8 @@ impl RestoreConfig {
         }
     }
 
-    /// Read a [`crate::ui::tui::widgets::FormFieldType::MultiSelect`]
-    /// field as a path list. Returns `None` when the field is missing or empty.
+    /// Read a multi-select field as a path list. Returns `None` when the field
+    /// is missing or empty.
     fn multi_paths(&self, label: &str) -> Option<Vec<PathBuf>> {
         let items = self.form.get_multi_by_label(label)?;
         if items.is_empty() {
@@ -262,9 +262,12 @@ impl RestoreConfig {
 #[cfg(test)]
 mod tests {
     use crate::{
-        common::ID,
+        common::{ID, time},
         repository::snapshot::Snapshot,
-        ui::tui::widgets::{FormFieldType, TextInput},
+        ui::tui::{
+            test_support,
+            widgets::{FormFieldType, TextInput},
+        },
     };
 
     use super::*;
@@ -273,7 +276,7 @@ mod tests {
         SnapshotEntry {
             id: ID::default(),
             snapshot: Snapshot {
-                timestamp: chrono::Local::now(),
+                timestamp: time::now(),
                 root: PathBuf::from("/"),
                 hostname: Some("test-host".to_string()),
                 ..Default::default()
@@ -369,7 +372,7 @@ mod tests {
             make_snapshot_entry(),
             Some(vec![PathBuf::from("data, archives")]),
         );
-        let text = crate::ui::tui::test_support::render_text(80, 20, |frame| {
+        let text = test_support::render_text(80, 20, |frame| {
             config.render(frame, frame.area());
         });
         assert!(text.contains("[data, archives]"));

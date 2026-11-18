@@ -252,6 +252,7 @@ fn render_footer(frame: &mut Frame, area: Rect, summary: &Option<SummaryResult>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::tui::test_support;
 
     #[test]
     fn dry_run_summary_does_not_claim_a_saved_snapshot() {
@@ -260,7 +261,7 @@ mod tests {
             snapshot_id: ID::default(),
             duration: std::time::Duration::ZERO,
         });
-        let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
+        let text = test_support::render_text(100, 30, |frame| {
             render_summary(frame, &result, true);
         });
         assert!(text.contains("Dry run: no snapshot saved"));
@@ -277,7 +278,7 @@ mod tests {
             snapshot_id: ID::default(),
             duration: std::time::Duration::ZERO,
         });
-        let text = crate::ui::tui::test_support::render_text(100, 30, |frame| {
+        let text = test_support::render_text(100, 30, |frame| {
             render_summary(frame, &result, false);
         });
 

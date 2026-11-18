@@ -1166,20 +1166,20 @@ async fn delete_dropped_files(
 mod tests {
     use std::sync::Arc;
 
-    use chrono::Local;
-
     use super::*;
     use crate::{
         backend::{
             StorageBackend, StorageHint,
             mock::{BackendOp, MockBackend},
         },
-        common::{BlobType, defaults::TEST_REPO_CONFIG, traits::BlobSaver},
+        common::{BlobType, defaults::TEST_REPO_CONFIG, time, traits::BlobSaver},
         fs::{
             node::{Node, NodeType},
             tree::Tree,
         },
         repository::{
+            index::IndexMode,
+            packer::PackedBlobDescriptor,
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::Snapshot,
         },
@@ -1222,7 +1222,7 @@ mod tests {
 
     async fn save_snapshot(repo: &Arc<Repository>, tree_id: ID) -> Result<()> {
         let snapshot = Snapshot {
-            timestamp: Local::now(),
+            timestamp: time::now(),
             tree: tree_id,
             root: std::path::PathBuf::from("/"),
             paths: vec![std::path::PathBuf::from("/root")],
@@ -1246,7 +1246,7 @@ mod tests {
     async fn write_raw_pack(
         repo: &Arc<Repository>,
         blobs: Vec<(ID, &[u8])>,
-    ) -> Result<(ID, Vec<crate::repository::packer::PackedBlobDescriptor>)> {
+    ) -> Result<(ID, Vec<PackedBlobDescriptor>)> {
         let secure_storage = repo.secure_storage();
         let compressed = true;
         let mut packer = Packer::new(1024, secure_storage)?;
@@ -1438,8 +1438,7 @@ mod tests {
         let (pack_q, desc_q) = write_raw_pack(&repo, vec![(blob_a, b"aaa")]).await?;
         repo.index().add_pack(&repo, &pack_p, desc_p).await?;
         repo.index().add_pack(&repo, &pack_q, desc_q).await?;
-        repo.index()
-            .set_index_mode(crate::repository::index::IndexMode::Lazy(1));
+        repo.index().set_index_mode(IndexMode::Lazy(1));
 
         let plan = super::scan(
             repo.clone(),
@@ -1909,8 +1908,7 @@ mod tests {
         save_snapshot(&repo, tree_id).await?;
 
         // Exercise the path that persists the rewritten index before repacking.
-        repo.index()
-            .set_index_mode(crate::repository::index::IndexMode::Lazy(1));
+        repo.index().set_index_mode(IndexMode::Lazy(1));
 
         let signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let signal_for_sender = signal.clone();

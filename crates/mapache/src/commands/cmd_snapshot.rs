@@ -21,7 +21,7 @@ use crate::{
     common::{
         self, ContentIdType, ID,
         config::{self, CommandHooks},
-        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        defaults::{DEFAULT_SNAPSHOT_PACKERS, DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
         error::MapacheError,
         hooks,
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
@@ -98,7 +98,7 @@ impl ToExitCode for SnapshotError {
 pub struct CmdArgs {
     /// List of paths to backup
     #[clap(value_parser)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_paths_vec")]
+    #[serde(deserialize_with = "config::deserialize_config_paths_vec")]
     pub paths: Vec<PathBuf>,
 
     /// Use a single directory path as the snapshot root
@@ -107,12 +107,12 @@ pub struct CmdArgs {
 
     /// A path to exclude. Can be used multiple times.
     #[clap(long, value_parser)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_string_vec_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_string_vec_opt")]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Exclude the contents of directories that contain one of these marker
@@ -133,7 +133,7 @@ pub struct CmdArgs {
 
     /// Read the list of source paths to back up from this file, one per line.
     #[clap(long, value_parser)]
-    #[serde(deserialize_with = "crate::common::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "config::deserialize_config_path_opt")]
     pub files_from: Option<PathBuf>,
 
     /// Hostname to record in the snapshot (defaults to the system hostname).
@@ -231,9 +231,9 @@ impl CmdArgs {
             use_fs_snapshot: Some(false),
             fail_on_skipped: Some(false),
             skip_if_unchanged: Some(false),
-            parent: Some(crate::commands::UseSnapshot::Latest),
-            num_readers: Some(crate::common::defaults::DEFAULT_SNAPSHOT_READERS),
-            num_packers: Some(crate::common::defaults::DEFAULT_SNAPSHOT_PACKERS),
+            parent: Some(UseSnapshot::Latest),
+            num_readers: Some(DEFAULT_SNAPSHOT_READERS),
+            num_packers: Some(DEFAULT_SNAPSHOT_PACKERS),
             dry_run: false,
             with_atime: Some(false),
             stdin: false,

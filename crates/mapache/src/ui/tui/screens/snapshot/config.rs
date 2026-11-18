@@ -367,7 +367,7 @@ fn render_footer(frame: &mut Frame, area: Rect, form: &SnapshotForm) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::tui::widgets::FormFieldType;
+    use crate::ui::tui::{test_support, widgets::FormFieldType};
 
     fn make_form_with_paths(paths: &[&str]) -> SnapshotForm {
         let mut form = SnapshotForm::new(None);
@@ -464,7 +464,7 @@ mod tests {
         ));
         assert!(!form.validate());
 
-        let text = crate::ui::tui::test_support::render_text(80, 16, |frame| {
+        let text = test_support::render_text(80, 16, |frame| {
             render_config(frame, &form);
         });
         assert!(text.contains("Paths required"));
@@ -482,7 +482,7 @@ mod tests {
         let form = SnapshotForm::new(Some(&defaults));
         assert_eq!(form.to_snapshot_options().paths, defaults.paths);
 
-        let text = crate::ui::tui::test_support::render_text(100, 18, |frame| {
+        let text = test_support::render_text(100, 18, |frame| {
             render_config(frame, &form);
         });
         assert!(text.contains("[data, archives] [other data]"));
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn new_filter_fields_render() {
         let form = SnapshotForm::new(None);
-        let text = crate::ui::tui::test_support::render_text(120, 30, |frame| {
+        let text = test_support::render_text(120, 30, |frame| {
             render_config(frame, &form);
         });
         assert!(text.contains("Exclude if present:"));

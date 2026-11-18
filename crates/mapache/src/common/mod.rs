@@ -7,6 +7,7 @@ pub mod hash;
 pub(crate) mod hooks;
 pub mod id;
 pub mod kdf;
+pub(crate) mod time;
 pub mod traits;
 pub mod vars;
 

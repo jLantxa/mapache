@@ -136,7 +136,15 @@ fn detect_memory() -> DetectedMemory {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn detect_memory() -> DetectedMemory {
-    let mut system = ::sysinfo::System::new();
+    let fallback = DetectedMemory {
+        total: size::GiB,
+        available: size::GiB,
+        cgroup_limited: false,
+    };
+
+    let Ok(mut system) = ::sysinfo::System::new() else {
+        return fallback;
+    };
     system.refresh_memory();
     let total = system.total_memory().max(size::GiB);
     let available = system.available_memory().max(1).min(total);

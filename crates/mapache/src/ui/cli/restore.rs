@@ -13,7 +13,7 @@ use crate::{
     common::{defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts},
     ui::{
         SPINNER_TICK_CHARS,
-        cli::color::Colorize,
+        cli::{color::Colorize, with_scan_bar},
         default_bar_draw_target, default_progress_style,
         events::{Event, EventSender, RestoreEvent},
     },
@@ -181,9 +181,11 @@ pub(crate) fn make_event_sender(
         .clone()
         .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
         .expect("Invalid progress bar template for restore progress");
-    let scanning_style = base_style
-        .template("[{custom_elapsed}] [{processed_bytes_fmt}]")
-        .expect("Invalid progress bar template for restore scan");
+    let scanning_style = with_scan_bar(
+        base_style
+            .template("[{scan_bar}] [{custom_elapsed}] [{processed_bytes_fmt}]")
+            .expect("Invalid progress bar template for restore scan"),
+    );
     progress_bar.set_style(
         if num_expected_items.is_some() && num_expected_bytes.is_some() {
             determined_style.clone()

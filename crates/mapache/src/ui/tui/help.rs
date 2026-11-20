@@ -47,7 +47,7 @@ pub fn render(frame: &mut Frame, screen_hints: &[(&str, &str)], scroll: &mut u16
         // following labels out of alignment.
         let pad = key_width.saturating_sub(text_width(key));
         Line::from(vec![
-            Span::styled(format!(" {key}{} ", " ".repeat(pad)), theme::THEME.menu_key),
+            Span::styled(format!(" {key}{} ", " ".repeat(pad)), theme::THEME.key_cap),
             Span::styled(
                 format!("  {}", label),
                 Style::default().fg(theme::THEME.subtext),
@@ -94,6 +94,8 @@ pub fn render(frame: &mut Frame, screen_hints: &[(&str, &str)], scroll: &mut u16
     let popup = centered_rect(area, width, height);
 
     let block = Block::default()
+        // Keep the page background here: the keycaps inside are raised with the
+        // surface colour, so they need a darker canvas to stand out.
         .style(Style::new().bg(theme::THEME.bg))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

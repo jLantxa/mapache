@@ -18,7 +18,7 @@ use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     ui::{
         SPINNER_TICK_CHARS,
-        cli::color::Colorize,
+        cli::{color::Colorize, with_scan_bar},
         default_bar_draw_target, default_progress_style,
         events::{BackupEvent, Event, EventSender},
     },
@@ -223,9 +223,11 @@ pub fn make_event_sender(
         .template("[{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s]")
         .expect("Invalid progress bar template for snapshot progress (undetermined)");
 
-    let scanning_style = base_style
-        .template("[{custom_elapsed}] [{processed_bytes_fmt}]")
-        .expect("Invalid progress bar template for snapshot scan");
+    let scanning_style = with_scan_bar(
+        base_style
+            .template("[{scan_bar}] [{custom_elapsed}] [{processed_bytes_fmt}]")
+            .expect("Invalid progress bar template for snapshot scan"),
+    );
 
     progress_bar.set_style(undetermined_style.clone());
 

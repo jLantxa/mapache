@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, Write};
 
+use indicatif::{ProgressState, ProgressStyle};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
@@ -8,9 +9,12 @@ use crate::{
         error::{MapacheError, Result},
     },
     repository::{repo::Auth, snapshot::SnapshotEntryList},
-    ui::cli::{
-        color::Colorize,
-        table::{Alignment, Table},
+    ui::{
+        self,
+        cli::{
+            color::Colorize,
+            table::{Alignment, Table},
+        },
     },
     utils::{self, collections::IdMap},
 };
@@ -21,6 +25,29 @@ pub mod gc;
 pub mod restore;
 pub mod snapshot;
 pub mod table;
+
+/// Width of the indeterminate bar in CLI progress templates.
+const SCAN_BAR_WIDTH: usize = 20;
+
+/// Adds a `scan_bar` template key: a short block highlight in the text colour
+/// sliding over blank space while the total size is still unknown.
+pub(crate) fn with_scan_bar(style: ProgressStyle) -> ProgressStyle {
+    style.with_key(
+        "scan_bar",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let head = ui::indeterminate_head(state.elapsed(), SCAN_BAR_WIDTH);
+            for index in 0..SCAN_BAR_WIDTH {
+                let distance = head.saturating_sub(index);
+                let cell = if index <= head && distance < ui::INDETERMINATE_BAND {
+                    "=".cyan().to_string()
+                } else {
+                    " ".to_string()
+                };
+                let _ = w.write_str(&cell);
+            }
+        },
+    )
+}
 
 /// Logs a list of snapshots in the form of a compact table.
 pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {

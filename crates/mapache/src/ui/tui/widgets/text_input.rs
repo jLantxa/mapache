@@ -150,7 +150,10 @@ impl TextInput {
         let cursor = self.cursor();
         let before: String = text.chars().take(cursor).collect();
         let after: String = text.chars().skip(cursor).collect();
-        let mut spans = vec![Span::raw(prefix.to_string())];
+        let mut spans = vec![Span::styled(
+            prefix.to_string(),
+            Style::new().fg(crate::ui::tui::theme::THEME.accent),
+        )];
         spans.push(Span::raw(before));
         if after.is_empty() {
             spans.push(Span::styled(" ", Style::default().underlined()));

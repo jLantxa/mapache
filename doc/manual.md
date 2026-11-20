@@ -1802,7 +1802,8 @@ unset (`c` clears it, `Esc` or `Ctrl+L` closes it).
 ### TUI Colours and Themes
 
 The TUI adapts its colours to the terminal and ships a dark and a light
-palette:
+variant of the Aurora palette: a deep navy canvas (or warm paper in light
+mode) with keycap-style shortcuts and clearer contrast.
 
 | Flag | Values | Description |
 |---|---|---|

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use indicatif::ProgressState;
 use parking_lot::Mutex;
@@ -16,6 +16,18 @@ pub mod reporter;
 pub mod tui;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+/// Length of the highlight that slides over an indeterminate progress bar.
+pub(crate) const INDETERMINATE_BAND: usize = 5;
+
+/// Milliseconds between steps of the indeterminate highlight.
+const INDETERMINATE_STEP_MS: u128 = 90;
+
+/// Leading cell of the sliding highlight for `elapsed` across `width` cells.
+/// Shared by the TUI and CLI so both animate at the same pace.
+pub(crate) fn indeterminate_head(elapsed: Duration, width: usize) -> usize {
+    (elapsed.as_millis() / INDETERMINATE_STEP_MS) as usize % (width + INDETERMINATE_BAND - 1)
+}
 
 /// Returns a `ProgressStyle` pre-configured with the project's standard progress chars.
 /// Callers only need to set `.template(...)` and any custom `.with_key(...)`.

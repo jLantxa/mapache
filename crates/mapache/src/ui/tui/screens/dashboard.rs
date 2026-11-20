@@ -489,7 +489,7 @@ impl DashboardScreen {
         frame.render_widget(header, row1[0]);
 
         let info = Paragraph::new(Line::from(vec![
-            Span::styled(&self.repo_path, theme::THEME.snap_host),
+            Span::styled(&self.repo_path, theme::THEME.file_fg),
             Span::styled(" [", theme::THEME.footer),
             Span::styled(
                 self.repo_id.chars().take(REPO_ID_LEN).collect::<String>(),
@@ -511,7 +511,7 @@ impl DashboardScreen {
             .split(chunks[1]);
 
         let stats_left = Paragraph::new(Line::from(vec![
-            Span::styled(self.stats.total.to_string(), theme::THEME.snap_id),
+            Span::styled(self.stats.total.to_string(), theme::THEME.success),
             Span::styled(SNAPSHOTS_SUFFIX, theme::THEME.footer),
         ]))
         .style(theme::THEME.footer);

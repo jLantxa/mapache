@@ -6,19 +6,21 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{ui::tui::theme, utils};
+use crate::{
+    ui::{self, tui::theme},
+    utils,
+};
 
 const BAR_WIDTH: usize = 35;
 const FILLED_GLYPH: char = '\u{2588}';
-const TRACK_GLYPH: char = '\u{2591}';
 /// Eighth-block glyphs for the sub-cell leading edge, indexed by eighths.
 const PARTIAL_GLYPHS: [char; 8] = [
     ' ', '\u{258F}', '\u{258E}', '\u{258D}', '\u{258C}', '\u{258B}', '\u{258A}', '\u{2589}',
 ];
 
 /// Builds a smooth progress bar of `width` cells: full blocks, an eighth-block
-/// leading edge, and a shaded track. The fill fades from the theme's progress
-/// colour towards green, giving the bar a bit of depth without animation.
+/// leading edge, and a plain shaded track with no dotted texture. The fill fades
+/// from the theme's progress colour towards violet, without animation.
 pub(super) fn bar_spans(ratio: f64, width: usize) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
@@ -26,18 +28,16 @@ pub(super) fn bar_spans(ratio: f64, width: usize) -> Vec<Span<'static>> {
 
     let ratio = ratio.clamp(0.0, 1.0);
     let exact = ratio * width as f64;
-    let mut filled = exact.floor() as usize;
-    let mut eighths = ((exact - filled as f64) * 8.0).round() as usize;
-    if eighths >= 8 {
-        filled += 1;
-        eighths = 0;
-    }
-    let filled = filled.min(width);
+    let filled = (exact.floor() as usize).min(width);
+    // Truncate instead of rounding: a rounded-up edge used to fill the last
+    // cell before the bar was actually complete.
+    let eighths = ((exact - filled as f64) * 8.0).floor() as usize;
     let partial = usize::from(eighths > 0 && filled < width);
     let empty = width.saturating_sub(filled + partial);
 
     let start = theme::THEME.progress_filled;
-    let end = theme::THEME.green;
+    let end = theme::THEME.mauve;
+    let shade = track_shade();
     let mut spans = Vec::with_capacity(width);
 
     for index in 0..filled {
@@ -49,14 +49,11 @@ pub(super) fn bar_spans(ratio: f64, width: usize) -> Vec<Span<'static>> {
     if partial == 1 {
         spans.push(Span::styled(
             PARTIAL_GLYPHS[eighths].to_string(),
-            fill_style(gradient(start, end, filled, width)),
+            fill_style(gradient(start, end, filled, width)).bg(shade),
         ));
     }
     if empty > 0 {
-        spans.push(Span::styled(
-            TRACK_GLYPH.to_string().repeat(empty),
-            Style::default().fg(theme::THEME.progress_empty),
-        ));
+        spans.push(Span::styled(" ".repeat(empty), Style::default().bg(shade)));
     }
 
     spans
@@ -64,6 +61,20 @@ pub(super) fn bar_spans(ratio: f64, width: usize) -> Vec<Span<'static>> {
 
 fn fill_style(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+/// Subtle solid track colour derived from `progress_empty` over the panel
+/// background. Shared by the empty cells and the partial leading glyph so the
+/// advancing edge has no visible seam.
+fn track_shade() -> Color {
+    match (theme::THEME.progress_empty, theme::THEME.bg) {
+        (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) => {
+            let mix =
+                |front: u8, back: u8| (front as f64 * 0.25 + back as f64 * 0.75).round() as u8;
+            Color::Rgb(mix(fr, br), mix(fg, bg), mix(fb, bb))
+        }
+        _ => theme::THEME.bg,
+    }
 }
 
 /// Interpolates between two RGB colours. Non-RGB themes (256/16/no colour)
@@ -210,10 +221,31 @@ impl ProgressBar {
             .block(theme::block(&self.title))
     }
 
-    /// While the filesystem is still being scanned, keep the post-scan layout
-    /// but omit the percentage and any total that has fallen behind processing.
+    /// While the total is unknown, slide a short gradient band over the track
+    /// instead of showing an empty bar or a fake percentage. The elapsed time
+    /// drives the animation, so it advances with every redraw of a busy screen.
     fn scanning_spans(&self) -> Vec<Span<'static>> {
-        let mut spans = bar_spans(0.0, BAR_WIDTH);
+        let shade = track_shade();
+        let start = theme::THEME.progress_filled;
+        let end = theme::THEME.mauve;
+        let head = ui::indeterminate_head(self.elapsed, BAR_WIDTH);
+
+        let mut spans = Vec::with_capacity(BAR_WIDTH);
+        for index in 0..BAR_WIDTH {
+            let distance = head.saturating_sub(index);
+            if index <= head && distance < ui::INDETERMINATE_BAND {
+                let color = gradient(
+                    start,
+                    end,
+                    ui::INDETERMINATE_BAND - 1 - distance,
+                    ui::INDETERMINATE_BAND,
+                );
+                spans.push(Span::styled(FILLED_GLYPH.to_string(), fill_style(color)));
+            } else {
+                spans.push(Span::styled(" ".to_string(), Style::default().bg(shade)));
+            }
+        }
+
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             utils::format_size_binary(self.processed_bytes, 3),
@@ -346,7 +378,6 @@ mod tests {
             rendered.contains("50 B"),
             "bar must show the processed size: {rendered:?}"
         );
-        assert!(rendered.contains(TRACK_GLYPH));
         assert!(
             !rendered.contains("/ 0 B") && !rendered.contains("0.0%"),
             "bar must not show a total size or percentage when it is unknown: {rendered:?}"
@@ -354,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn scanning_shows_empty_progress_and_hides_stale_totals() {
+    fn scanning_hides_stale_totals() {
         let ahead = ProgressBar::new()
             .scanning(true)
             .rate(100.0)
@@ -364,7 +395,6 @@ mod tests {
         let ahead = test_support::render_text(100, 5, |frame| {
             frame.render_widget(ahead.render(), frame.area());
         });
-        assert!(ahead.contains(TRACK_GLYPH) && !ahead.contains(FILLED_GLYPH));
         assert!(ahead.contains("500 B / 1000 B") && ahead.contains("Items: 5/10"));
         assert!(!ahead.contains('%') && !ahead.contains("ETA") && !ahead.contains("/s"));
 
@@ -412,6 +442,5 @@ mod tests {
             text.contains('\u{258C}'),
             "half block missing from {text:?}"
         );
-        assert_eq!(text.chars().filter(|&ch| ch == TRACK_GLYPH).count(), 17);
     }
 }

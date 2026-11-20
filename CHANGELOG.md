@@ -18,6 +18,14 @@
 
 ### Changed
 
+- **TUI visual refresh**: the TUI now uses the Aurora palette with keycap-style
+  shortcuts, brighter selection cues, a subtle solid progress track, an
+  animated indeterminate bar while scanning and a smooth braille spinner. Dark
+  and light variants keep their contrast targets, and colour-depth degradation
+  (including `NO_COLOR`) still works.
+- **CLI scan feedback**: snapshot, restore and bundle progress bars show a
+  moving block highlight in the text colour while scanning, instead of a bare
+  elapsed/bytes line.
 - **Adaptive parallelism**: command workers, async windows, verification
   buffers, repository traversal and Rayon tasks now derive their defaults from
   detected CPUs and available memory (cgroup-aware on Linux). The automatic

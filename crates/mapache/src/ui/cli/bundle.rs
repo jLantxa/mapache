@@ -17,7 +17,7 @@ use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     ui::{
         SPINNER_TICK_CHARS,
-        cli::color::Colorize,
+        cli::{color::Colorize, with_scan_bar},
         default_bar_draw_target, default_progress_style,
         events::{BackupEvent, Event, EventSender},
     },
@@ -109,9 +109,13 @@ pub fn make_event_sender(
         ))
         .expect("invalid progress bar template for bundle bytes (undetermined)");
 
-    let scanning_style = base_style
-        .template(&format!("{bytes_label:<6} {{processed_bytes_fmt}}"))
-        .expect("invalid progress bar template for bundle scan");
+    let scanning_style = with_scan_bar(
+        base_style
+            .template(&format!(
+                "{bytes_label:<6} [{{scan_bar}}] {{processed_bytes_fmt}}"
+            ))
+            .expect("invalid progress bar template for bundle scan"),
+    );
 
     //  Data Bar
     let data_bar = if total_bytes > 0 {

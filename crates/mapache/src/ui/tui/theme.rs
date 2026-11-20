@@ -128,7 +128,7 @@ pub(crate) fn field(label: &str, label_width: usize, value: impl Into<String>) -
     )
 }
 
-/// Electric Pastel colour palette used throughout the TUI.
+/// Aurora colour palette used throughout the TUI.
 pub(crate) struct Theme {
     // ── Core palette ────────────────────────────────────────────
     pub bg: Color,
@@ -143,6 +143,9 @@ pub(crate) struct Theme {
     pub red: Color,
     pub peach: Color,
     pub teal: Color,
+    pub mauve: Color,
+    /// Primary brand accent, aliased for shared decorations.
+    pub accent: Color,
 
     // ── Pre-built styles ─────────────────────────────────────────
     pub header: Style,         // Bold coloured header text
@@ -150,8 +153,10 @@ pub(crate) struct Theme {
     pub border_focused: Style, // Border for focussed / active element
     pub selection: Style,      // Selected/highlighted row background
     pub menu_key: Style,       // Keyboard-hint key styling
-    pub menu_selected: Style,  // Focused action in the command menu
-    pub footer: Style,         // Footer / secondary text
+    /// Raised "keycap" used by footers and the help overlay.
+    pub key_cap: Style,
+    pub menu_selected: Style, // Focused action in the command menu
+    pub footer: Style,        // Footer / secondary text
 
     // Snapshot-table columns
     pub snap_id: Style,
@@ -392,50 +397,53 @@ struct Palette {
     pink: Color,
 }
 
-/// Electric Pastel (dark).
+/// Aurora (dark): a deep navy canvas with an elevated slate surface and cool
+/// neon accents. Muted text still targets a high contrast ratio on the page so
+/// long sessions stay comfortable.
 const DARK: Palette = {
     use Color::Rgb;
     Palette {
-        bg: Rgb(14, 24, 30),
-        surface: Rgb(22, 34, 42),
-        overlay: Rgb(34, 46, 54),
-        border_line: Rgb(56, 74, 88),
-        selection_bg: Rgb(70, 92, 106),
-        subtext_dim: Rgb(76, 100, 112),
-        subtext: Rgb(132, 155, 167),
-        text: Rgb(228, 235, 240),
-        blue: Rgb(110, 180, 255),
-        green: Rgb(110, 230, 150),
-        yellow: Rgb(255, 215, 110),
-        red: Rgb(255, 110, 135),
-        mauve: Rgb(170, 110, 255),
-        peach: Rgb(255, 170, 110),
-        teal: Rgb(110, 230, 210),
-        pink: Rgb(255, 110, 175),
+        bg: Rgb(11, 18, 32),
+        surface: Rgb(17, 28, 43),
+        // Base for the subtle solid progress track on the dark canvas.
+        overlay: Rgb(88, 110, 130),
+        border_line: Rgb(43, 63, 84),
+        selection_bg: Rgb(48, 84, 112),
+        subtext_dim: Rgb(107, 130, 153),
+        subtext: Rgb(166, 184, 201),
+        text: Rgb(234, 242, 248),
+        blue: Rgb(122, 162, 247),
+        green: Rgb(126, 231, 168),
+        yellow: Rgb(245, 212, 122),
+        red: Rgb(255, 128, 149),
+        mauve: Rgb(183, 155, 255),
+        peach: Rgb(255, 185, 138),
+        teal: Rgb(103, 232, 249),
+        pink: Rgb(244, 146, 196),
     }
 };
 
-/// Electric Pastel (light): darker text and accents target at least 6:1
-/// contrast on the page, panels, and selected rows.
+/// Aurora (light): warm paper and a cool elevated surface. Text and accents
+/// target at least 6:1 contrast on the page, panels, and selected rows.
 const LIGHT: Palette = {
     use Color::Rgb;
     Palette {
-        bg: Rgb(250, 250, 248),
-        surface: Rgb(238, 240, 238),
+        bg: Rgb(250, 249, 246),
+        surface: Rgb(239, 242, 245),
         overlay: Rgb(125, 138, 136),
-        border_line: Rgb(125, 138, 136),
-        selection_bg: Rgb(235, 242, 249),
-        subtext_dim: Rgb(78, 88, 94),
-        subtext: Rgb(76, 89, 96),
+        border_line: Rgb(110, 124, 140),
+        selection_bg: Rgb(232, 242, 250),
+        subtext_dim: Rgb(72, 84, 92),
+        subtext: Rgb(70, 82, 90),
         text: Rgb(26, 36, 42),
         blue: Rgb(20, 80, 170),
-        green: Rgb(10, 104, 54),
-        yellow: Rgb(119, 84, 0),
-        red: Rgb(176, 28, 48),
-        mauve: Rgb(105, 50, 175),
-        peach: Rgb(149, 65, 0),
-        teal: Rgb(0, 101, 97),
-        pink: Rgb(168, 29, 106),
+        green: Rgb(10, 100, 50),
+        yellow: Rgb(110, 78, 0),
+        red: Rgb(165, 20, 45),
+        mauve: Rgb(95, 40, 165),
+        peach: Rgb(140, 60, 0),
+        teal: Rgb(0, 96, 92),
+        pink: Rgb(150, 20, 95),
     }
 };
 
@@ -451,6 +459,7 @@ fn build(variant: ThemeVariant, mode: ColorMode) -> Theme {
     let palette = palette_for(variant);
     let color = |color: Color| degrade(color, mode);
     let bg = color(palette.bg);
+    let accent = color(palette.teal);
 
     // With colours disabled a background tint can no longer mark the selection,
     // so fall back to reverse video, which every terminal understands.
@@ -468,10 +477,7 @@ fn build(variant: ThemeVariant, mode: ColorMode) -> Theme {
         };
         (
             selection,
-            Style::new()
-                .bg(color(palette.teal))
-                .fg(bg)
-                .add_modifier(Modifier::BOLD),
+            Style::new().bg(accent).fg(bg).add_modifier(Modifier::BOLD),
         )
     };
 
@@ -486,16 +492,18 @@ fn build(variant: ThemeVariant, mode: ColorMode) -> Theme {
         yellow: color(palette.yellow),
         red: color(palette.red),
         peach: color(palette.peach),
-        teal: color(palette.teal),
+        teal: accent,
+        mauve: color(palette.mauve),
+        accent,
 
-        header: Style::new()
-            .fg(color(palette.teal))
-            .add_modifier(Modifier::BOLD),
+        header: Style::new().fg(accent).add_modifier(Modifier::BOLD),
         border: Style::new().fg(color(palette.border_line)),
-        border_focused: Style::new().fg(color(palette.teal)),
+        border_focused: Style::new().fg(accent),
         selection,
-        menu_key: Style::new()
-            .fg(color(palette.teal))
+        menu_key: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+        key_cap: Style::new()
+            .fg(accent)
+            .bg(color(palette.surface))
             .add_modifier(Modifier::BOLD),
         menu_selected,
         footer: Style::new().fg(color(palette.subtext)),
@@ -539,8 +547,8 @@ fn build(variant: ThemeVariant, mode: ColorMode) -> Theme {
 }
 
 /// Theme selection made once, before the first [`THEME`] access. The defaults
-/// keep the historic dark truecolor look for tests and for any caller that
-/// never initialises the theme.
+/// keep the dark Aurora look for tests and for any caller that never
+/// initialises the theme.
 static SELECTION: OnceLock<(ThemeVariant, ColorMode)> = OnceLock::new();
 
 /// Selects the theme. Call before the TUI starts drawing; a later call is
@@ -567,7 +575,7 @@ pub fn block(title: &str) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(THEME.border)
-        .title(format!(" {} ", title))
+        .title(format!(" {title} "))
         .title_style(THEME.header)
 }
 
@@ -591,7 +599,7 @@ pub fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: u
 
 pub fn key_hint(key: &str, label: &str) -> Vec<Span<'static>> {
     vec![
-        Span::styled(format!(" {} ", key), THEME.menu_key),
+        Span::styled(format!(" {} ", key), THEME.key_cap),
         Span::styled(format!(" {} ", label), Style::new().fg(THEME.subtext)),
     ]
 }
@@ -695,7 +703,10 @@ pub fn format_tags(tags: impl IntoIterator<Item = impl AsRef<str>>) -> String {
 }
 
 /// Characters used for the loading spinner animation in TUI screens.
-pub const SPINNER_CHARS: &[char] = &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D2}'];
+pub const SPINNER_CHARS: &[char] = &[
+    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280f}',
+];
 
 #[cfg(test)]
 mod tests {
@@ -838,6 +849,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn keycaps_are_raised_and_accent_coloured() {
+        let key = key_hint("Enter", "run");
+        assert_eq!(key[0].style.bg, Some(THEME.surface));
+        assert_eq!(key[0].style.fg, Some(THEME.accent));
+        assert!(key[0].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

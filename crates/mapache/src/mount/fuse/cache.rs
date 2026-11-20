@@ -177,4 +177,71 @@ mod tests {
         assert!(cache.inner.lock().record_hit(&id2).is_some());
         assert!(cache.inner.lock().record_hit(&id1).is_none());
     }
+
+    #[tokio::test]
+    async fn test_tree_cache_hit_and_eviction() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::fs::node::Node;
+
+        struct TreeLoader {
+            trees: HashMap<ID, Vec<u8>>,
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl BlobLoader for TreeLoader {
+            async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.trees
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| MapacheError::NotFound("tree not found".to_string()))
+            }
+        }
+
+        let id_a = ID::from_content(b"tree-a");
+        let id_b = ID::from_content(b"tree-b");
+        let mut trees = HashMap::new();
+        trees.insert(id_a, serde_json::to_vec(&Tree { nodes: vec![] }).unwrap());
+        trees.insert(
+            id_b,
+            serde_json::to_vec(&Tree {
+                nodes: vec![Node {
+                    name: "child".to_string(),
+                    ..Default::default()
+                }],
+            })
+            .unwrap(),
+        );
+
+        let loader = Arc::new(TreeLoader {
+            trees,
+            calls: AtomicUsize::new(0),
+        });
+        let cache = TreeCache::new(loader.clone(), 1);
+
+        let first = cache.load(&id_a).await.unwrap();
+        assert_eq!(loader.calls.load(Ordering::SeqCst), 1);
+
+        let second = cache.load(&id_a).await.unwrap();
+        assert_eq!(
+            loader.calls.load(Ordering::SeqCst),
+            1,
+            "cache hit must not load"
+        );
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let other = cache.load(&id_b).await.unwrap();
+        assert_eq!(loader.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(other.nodes.len(), 1);
+
+        let reloaded = cache.load(&id_a).await.unwrap();
+        assert_eq!(
+            loader.calls.load(Ordering::SeqCst),
+            3,
+            "id_a must have been evicted"
+        );
+        assert!(!Arc::ptr_eq(&first, &reloaded));
+    }
 }

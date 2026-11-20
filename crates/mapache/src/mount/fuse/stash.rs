@@ -301,3 +301,163 @@ pub(super) fn node_to_fileattr(ino: INodeNo, parent_time: SystemTime, node: &Nod
         flags: 0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attr(ino: INodeNo, kind: fuser::FileType) -> FileAttr {
+        simple_attr(ino, kind, 0, SystemTime::UNIX_EPOCH)
+    }
+
+    #[test]
+    fn stash_tracks_paths_dot_entries_and_symlinks() {
+        let mut stash = Stash::new(SystemTime::UNIX_EPOCH);
+        let dir = stash.add_dir(INodeNo::ROOT, "dir".to_string());
+        let lazy = stash.add_snapshot_dir(dir, "snap".to_string(), ID::from_content(b"tree"));
+        let link = stash.add_symlink(INodeNo::ROOT, "link".to_string(), "target".to_string());
+
+        assert_ne!(dir, INodeNo::ROOT);
+        assert_ne!(lazy, dir);
+        assert_ne!(link, lazy);
+
+        assert_eq!(
+            stash.get_attr_by_name(INodeNo::ROOT, "."),
+            stash.get_attr(INodeNo::ROOT)
+        );
+        assert_eq!(
+            stash.get_attr_by_name(dir, ".."),
+            stash.get_attr(INodeNo::ROOT)
+        );
+        assert_eq!(
+            stash.get_attr_by_name(INodeNo::ROOT, "dir").map(|a| a.kind),
+            Some(fuser::FileType::Directory)
+        );
+        assert_eq!(stash.get_attr_by_name(INodeNo::ROOT, "missing"), None);
+        assert_eq!(
+            stash.get_attr_by_name(dir, "snap").map(|a| a.ino),
+            Some(lazy)
+        );
+        assert_eq!(stash.read_link(link).as_deref(), Some("target"));
+        assert_eq!(stash.read_link(dir), None);
+
+        let names: Vec<_> = stash
+            .read_dir(INodeNo::ROOT, 0)
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        assert_eq!(names, [".", "..", "dir", "link"]);
+
+        let names: Vec<_> = stash
+            .read_dir(INodeNo::ROOT, 2)
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        assert_eq!(names, ["dir", "link"]);
+
+        match &stash.get_node(lazy).unwrap().kind {
+            NodeKind::LazyDir { .. } => {}
+            other => panic!("expected a lazy directory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stash_upgrade_lazy_dir_indexes_children() {
+        let mut stash = Stash::new(SystemTime::UNIX_EPOCH);
+        let lazy =
+            stash.add_snapshot_dir(INodeNo::ROOT, "snap".to_string(), ID::from_content(b"tree"));
+        let ino_a = stash.next_ino();
+        let ino_b = stash.next_ino();
+        let blob_id = ID::from_content(b"blob");
+
+        let mut attr_a = attr(ino_a, fuser::FileType::RegularFile);
+        attr_a.size = 7;
+        let attr_b = attr(ino_b, fuser::FileType::Symlink);
+
+        stash.upgrade_lazy_dir(
+            lazy,
+            vec![
+                (
+                    "a".to_string(),
+                    NodeKind::File {
+                        blobs: vec![blob_id],
+                    },
+                    attr_a,
+                ),
+                (
+                    "b".to_string(),
+                    NodeKind::Symlink {
+                        target: "a".to_string(),
+                    },
+                    attr_b,
+                ),
+            ],
+        );
+
+        assert_eq!(stash.get_attr_by_name(lazy, "a").map(|a| a.size), Some(7));
+        assert_eq!(
+            stash.get_attr_by_name(lazy, "b").map(|a| a.kind),
+            Some(fuser::FileType::Symlink)
+        );
+        assert_eq!(stash.get_node(lazy).unwrap().attr.nlink, 4);
+
+        let names: Vec<_> = stash
+            .read_dir(lazy, 0)
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        assert_eq!(names, [".", "..", "a", "b"]);
+
+        assert_eq!(stash.get_node(ino_a).unwrap().parent, lazy);
+        assert_eq!(stash.read_link(ino_b).as_deref(), Some("a"));
+        match &stash.get_node(ino_a).unwrap().kind {
+            NodeKind::File { blobs } => assert_eq!(blobs, &[blob_id]),
+            other => panic!("expected a file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn node_to_fileattr_maps_metadata() {
+        let parent_time = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+
+        let mut node = Node {
+            name: "n".to_string(),
+            metadata: crate::fs::node::Metadata {
+                size: 123,
+                mode: Some(0o104_755),
+                owner_uid: Some(1000),
+                owner_gid: Some(1001),
+                rdev: Some(42),
+                modified_time: Some(modified),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        for (node_type, expected_kind) in [
+            (NodeType::File, fuser::FileType::RegularFile),
+            (NodeType::Directory, fuser::FileType::Directory),
+            (NodeType::Symlink, fuser::FileType::Symlink),
+            (NodeType::BlockDevice, fuser::FileType::BlockDevice),
+            (NodeType::CharDevice, fuser::FileType::CharDevice),
+            (NodeType::Fifo, fuser::FileType::NamedPipe),
+            (NodeType::Socket, fuser::FileType::Socket),
+        ] {
+            node.node_type = node_type;
+            let actual = node_to_fileattr(INodeNo(9), parent_time, &node);
+            assert_eq!(actual.kind, expected_kind);
+            assert_eq!(actual.perm, 0o4755, "file-type bits must be masked out");
+            assert_eq!(actual.uid, 1000);
+            assert_eq!(actual.gid, 1001);
+            assert_eq!(actual.rdev, 42);
+            assert_eq!(actual.size, 123);
+            assert_eq!(actual.blocks, 123u64.div_ceil(BLKSIZE as u64));
+            assert_eq!(actual.mtime, modified);
+            assert_eq!(
+                actual.atime, parent_time,
+                "missing atime falls back to parent"
+            );
+        }
+    }
+}

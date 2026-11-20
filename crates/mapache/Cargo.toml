@@ -66,7 +66,7 @@ zeroize = { version = "1.9", features = ["derive"] }
 zstd = "0.14"
 
 [target.'cfg(unix)'.dependencies]
-fuser = { version = "0.18", optional = true, default-features = false }
+fuser = { version = "0.19", optional = true, default-features = false }
 xattr = "1.7"
 
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]

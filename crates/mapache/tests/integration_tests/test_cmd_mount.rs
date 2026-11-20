@@ -6,6 +6,8 @@ mod tests {
     };
 
     use anyhow::{Context, Result, bail};
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     use mapache::commands::{self, UseSnapshot, cmd_mount, cmd_snapshot};
 
@@ -63,6 +65,28 @@ mod tests {
             let mount_meta = std::fs::symlink_metadata(&mount_path)?;
 
             assert_eq!(source_meta.file_type(), mount_meta.file_type());
+
+            #[cfg(unix)]
+            {
+                assert_eq!(
+                    source_meta.permissions().mode(),
+                    mount_meta.permissions().mode(),
+                    "permission bits differ for {}",
+                    path.display()
+                );
+                assert_eq!(
+                    source_meta.uid(),
+                    mount_meta.uid(),
+                    "owner differs for {}",
+                    path.display()
+                );
+                assert_eq!(
+                    source_meta.gid(),
+                    mount_meta.gid(),
+                    "group differs for {}",
+                    path.display()
+                );
+            }
 
             if source_meta.is_file() {
                 assert_eq!(source_meta.len(), mount_meta.len());

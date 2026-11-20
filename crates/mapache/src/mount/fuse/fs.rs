@@ -334,8 +334,16 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
         reply.ok();
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+    fn open(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _flags: OpenFlags,
+        _kill_suid_gid: bool,
+        reply: ReplyOpen,
+    ) {
         tracing::debug!(target: "fuse", "OPEN ino={}", ino.0);
+        // `kill_suid_gid` only matters for writes; this mount is read-only.
         match self.stash.read().get_attr(ino) {
             Some(attr) if attr.kind == fuser::FileType::RegularFile => {
                 if self.metadata_only {

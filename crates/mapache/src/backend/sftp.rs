@@ -13,8 +13,8 @@ use russh::{
     keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key},
 };
 use russh_sftp::{
-    client::SftpSession,
-    protocol::{FileAttributes, OpenFlags},
+    client::{SftpSession, error::Error as SftpClientError},
+    protocol::{FileAttributes, OpenFlags, StatusCode},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter},
@@ -558,6 +558,18 @@ impl SftpBackend {
         super::join_base_path(&self.base_path, path)
     }
 
+    /// A collision-resistant name used to set an old destination aside while
+    /// a replacement is attempted. The temporary extension lets repository
+    /// maintenance reclaim it if the process is interrupted.
+    fn backup_path(path: &Path) -> PathBuf {
+        let mut os = path.as_os_str().to_os_string();
+        os.push(format!(
+            ".{:032x}.{REPO_TMP_EXTENSION}",
+            rand::random::<u128>()
+        ));
+        PathBuf::from(os)
+    }
+
     async fn exists_exact_full(sftp: &SftpSession, full_path: &Path) -> bool {
         sftp.metadata(full_path.to_string_lossy()).await.is_ok()
     }
@@ -683,43 +695,138 @@ impl SftpBackend {
     }
 
     async fn rename_full(sftp: &SftpSession, full_from: &Path, full_to: &Path) -> Result<()> {
-        let from_str = full_from.to_string_lossy().to_string();
-        let to_str = full_to.to_string_lossy().to_string();
+        let from = full_from.to_string_lossy();
+        let to = full_to.to_string_lossy();
 
         if let Err(e) = Self::set_readonly_status_full(sftp, full_from, false).await {
             tracing::warn!(target: "backend", "sftp: failed to unlock source {:?} before rename: {e}", full_from);
         }
 
-        let rename = || async {
-            sftp.rename(&from_str, &to_str).await.map_err(|e| {
-                MapacheError::Backend(format!(
+        // The extension gives explicit overwrite semantics. Servers that do
+        // not advertise it are answered locally, without a protocol round trip.
+        match sftp.posix_rename(from.as_ref(), to.as_ref()).await {
+            Ok(true) => return Self::set_readonly_status_full(sftp, full_to, true).await,
+            Ok(false) => {}
+            Err(SftpClientError::Status(status))
+                if status.status_code == StatusCode::PermissionDenied =>
+            {
+                // A read-only destination can be reported here too. Unlock it
+                // and repeat the atomic rename before considering a fallback.
+                if let Err(e) = Self::set_readonly_status_full(sftp, full_to, false).await {
+                    tracing::warn!(target: "backend", "sftp: failed to unlock destination {:?} before rename: {e}", full_to);
+                }
+                match sftp.posix_rename(from.as_ref(), to.as_ref()).await {
+                    Ok(true) => return Self::set_readonly_status_full(sftp, full_to, true).await,
+                    Ok(false) => {}
+                    Err(e) => {
+                        return Err(MapacheError::Backend(format!(
+                            "failed to rename {:?} -> {:?}: {}",
+                            full_from, full_to, e
+                        )));
+                    }
+                }
+            }
+            Err(SftpClientError::Status(status))
+                if status.status_code == StatusCode::OpUnsupported => {}
+            Err(e) => {
+                return Err(MapacheError::Backend(format!(
                     "failed to rename {:?} -> {:?}: {}",
                     full_from, full_to, e
-                ))
-            })
-        };
-
-        // Prefer an atomic overwrite-rename: most servers (OpenSSH, vsftpd,
-        // ProFTPD) replace the destination in a single operation, leaving no
-        // window in which the file is missing.
-        if rename().await.is_ok() {
-            Self::set_readonly_status_full(sftp, full_to, true).await?;
-            return Ok(());
-        }
-
-        // The server rejected the overwrite (some implementations do): fall
-        // back to delete-then-rename, keeping the original error handling.
-        if Self::exists_exact_full(sftp, full_to).await {
-            if let Err(e) = Self::set_readonly_status_full(sftp, full_to, false).await {
-                tracing::warn!(target: "backend", "sftp: failed to unlock destination {:?} before remove: {e}", full_to);
-            }
-            if let Err(e) = sftp.remove_file(&to_str).await {
-                tracing::warn!(target: "backend", "sftp: failed to remove existing destination {:?} before rename: {e}", full_to);
+                )));
             }
         }
 
-        rename().await?;
-        Self::set_readonly_status_full(sftp, full_to, true).await
+        match sftp.rename(from.as_ref(), to.as_ref()).await {
+            Ok(()) => Self::set_readonly_status_full(sftp, full_to, true).await,
+            Err(error) => {
+                match &error {
+                    SftpClientError::Status(status)
+                        if status.status_code == StatusCode::PermissionDenied =>
+                    {
+                        // A read-only destination is the common reason for this
+                        // status. Unlock it and retry without touching its data.
+                        if let Err(e) = Self::set_readonly_status_full(sftp, full_to, false).await {
+                            tracing::warn!(target: "backend", "sftp: failed to unlock destination {:?} before rename: {e}", full_to);
+                        }
+                        sftp.rename(from.as_ref(), to.as_ref()).await.map_err(|e| {
+                            MapacheError::Backend(format!(
+                                "failed to rename {:?} -> {:?}: {}",
+                                full_from, full_to, e
+                            ))
+                        })?;
+                    }
+                    SftpClientError::Status(status)
+                        if status.status_code == StatusCode::Failure =>
+                    {
+                        // A generic failure is also how servers report a
+                        // rejected overwrite. Replace the destination only
+                        // while both endpoints are still present.
+                        if !Self::exists_exact_full(sftp, full_from).await {
+                            return Err(MapacheError::Backend(format!(
+                                "failed to rename {:?} -> {:?}: source is missing after {} ({})",
+                                full_from, full_to, status.status_code, status.error_message
+                            )));
+                        }
+                        if !Self::exists_exact_full(sftp, full_to).await {
+                            return Err(MapacheError::Backend(format!(
+                                "failed to rename {:?} -> {:?}: {} ({})",
+                                full_from, full_to, status.status_code, status.error_message
+                            )));
+                        }
+
+                        if let Err(e) = Self::set_readonly_status_full(sftp, full_to, false).await {
+                            tracing::warn!(target: "backend", "sftp: failed to unlock destination {:?} before rename: {e}", full_to);
+                        }
+
+                        // Retry after unlocking: some servers only reject
+                        // read-only destinations.
+                        if sftp.rename(from.as_ref(), to.as_ref()).await.is_ok() {
+                            return Self::set_readonly_status_full(sftp, full_to, true).await;
+                        }
+
+                        // Set the old destination aside so a second failure can
+                        // be undone instead of destroying data.
+                        let backup = Self::backup_path(full_to);
+                        let backup_str = backup.to_string_lossy();
+                        sftp.rename(to.as_ref(), backup_str.as_ref())
+                            .await
+                            .map_err(|e| {
+                                MapacheError::Backend(format!(
+                                    "failed to set aside destination {:?} before rename: {}",
+                                    full_to, e
+                                ))
+                            })?;
+
+                        if let Err(e) = sftp.rename(from.as_ref(), to.as_ref()).await {
+                            if let Err(restore) =
+                                sftp.rename(backup_str.as_ref(), to.as_ref()).await
+                            {
+                                return Err(MapacheError::Backend(format!(
+                                    "failed to rename {:?} -> {:?}: {}; could not restore the original destination from {:?}: {}",
+                                    full_from, full_to, e, backup, restore
+                                )));
+                            }
+                            Self::set_readonly_status_full(sftp, full_to, true).await?;
+                            return Err(MapacheError::Backend(format!(
+                                "failed to rename {:?} -> {:?}: {}",
+                                full_from, full_to, e
+                            )));
+                        }
+
+                        if let Err(e) = Self::remove_recursively_full(sftp, &backup).await {
+                            tracing::warn!(target: "backend", "sftp: failed to remove replaced destination backup {:?}: {e}", backup);
+                        }
+                    }
+                    _ => {
+                        return Err(MapacheError::Backend(format!(
+                            "failed to rename {:?} -> {:?}: {}",
+                            full_from, full_to, error
+                        )));
+                    }
+                }
+                Self::set_readonly_status_full(sftp, full_to, true).await
+            }
+        }
     }
 }
 

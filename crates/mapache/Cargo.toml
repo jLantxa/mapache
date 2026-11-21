@@ -38,7 +38,7 @@ russh = { version = "0.65", default-features = false, features = [
   "flate2",
   "ring",
 ] }
-russh-sftp = "3.0"
+russh-sftp = "4.0"
 rust-s3 = { version = "0.38", default-features = false, features = [
   "with-tokio",
   "tokio-rustls-tls-ring",
@@ -89,6 +89,7 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 anyhow = "1.0"
+bytes = "1.12"
 flate2 = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "tokio"] }
 proptest = "1.12"

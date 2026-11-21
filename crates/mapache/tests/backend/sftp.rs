@@ -21,6 +21,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use bytes::Bytes;
 use mapache::backend::{
     BackendOptions, Handle as BackendHandle, StorageBackend as _, WriteContents,
     sftp::{AuthMethod, SftpBackend},
@@ -30,8 +31,10 @@ use russh::{
     keys::{PrivateKey, PublicKey},
     server::{Auth, ChannelOpenHandle, Msg, Server as _, Session, VerifiedPublicKey},
 };
+use russh_sftp::extensions::{POSIX_RENAME, PosixRenameExtension};
 use russh_sftp::protocol::{
-    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Packet, SftpHandle, Status,
+    StatusCode, Version,
 };
 use tokio::net::TcpListener;
 use zeroize::Zeroizing;
@@ -85,16 +88,36 @@ enum AuthPolicy {
     PublicKey(PublicKey),
 }
 
+/// How the in-process server handles renames onto an existing path.
+#[derive(Clone, Copy, Default)]
+enum RenameMode {
+    /// Ordinary rename replaces the destination, like most Unix servers.
+    #[default]
+    Overwrite,
+    /// Ordinary rename rejects an existing destination; no POSIX extension.
+    RejectExisting,
+    /// Ordinary rename rejects an existing destination, but the POSIX
+    /// extension is advertised and performs the replacement.
+    Posix,
+    /// Ordinary rename rejects an existing destination and also fails when
+    /// moving the source, exercising restoration of the set-aside original.
+    FailSource,
+}
+
 pub async fn build() -> Result<Fixture> {
     build_with(SftpAuth::default()).await
 }
 
 pub async fn build_with(auth: SftpAuth) -> Result<Fixture> {
+    build_with_rename(auth, RenameMode::default()).await
+}
+
+async fn build_with_rename(auth: SftpAuth, rename: RenameMode) -> Result<Fixture> {
     let policy = match auth {
         SftpAuth::Password => AuthPolicy::Password(PASSWORD.to_string()),
         SftpAuth::PublicKey => AuthPolicy::PublicKey(client_public_key()?),
     };
-    let server = TestServer::start(policy).await?;
+    let server = TestServer::start(policy, rename).await?;
     build_fixture(server, BASE_DIR, auth).await
 }
 
@@ -131,8 +154,8 @@ struct TestServer {
 }
 
 impl TestServer {
-    /// Boots the server on an ephemeral loopback port with the given auth policy.
-    async fn start(policy: AuthPolicy) -> Result<Self> {
+    /// Boots the server on an ephemeral loopback port with the given policies.
+    async fn start(policy: AuthPolicy, rename: RenameMode) -> Result<Self> {
         let dir =
             tempfile::tempdir().context("creating temporary directory for the SFTP server")?;
         let root = dir.path().to_path_buf();
@@ -176,6 +199,7 @@ impl TestServer {
         let mut server = Server {
             root: root.clone(),
             policy,
+            rename,
         };
         let task = tokio::spawn(async move {
             let _ = server.run_on_socket(config, &listener).await;
@@ -278,6 +302,7 @@ fn sanitize(path: &str) -> String {
 struct Server {
     root: PathBuf,
     policy: AuthPolicy,
+    rename: RenameMode,
 }
 
 impl russh::server::Server for Server {
@@ -287,6 +312,7 @@ impl russh::server::Server for Server {
         SshSession {
             root: self.root.clone(),
             policy: self.policy.clone(),
+            rename: self.rename,
             channels: HashMap::new(),
         }
     }
@@ -295,6 +321,7 @@ impl russh::server::Server for Server {
 struct SshSession {
     root: PathBuf,
     policy: AuthPolicy,
+    rename: RenameMode,
     channels: HashMap<ChannelId, Channel<Msg>>,
 }
 
@@ -361,7 +388,7 @@ impl russh::server::Handler for SshSession {
 
         session.channel_success(channel_id)?;
 
-        let handler = SftpHandler::new(self.root.clone());
+        let handler = SftpHandler::new(self.root.clone(), self.rename);
         russh_sftp::server::run(channel.into_stream(), handler).await;
 
         Ok(())
@@ -376,15 +403,17 @@ impl russh::server::Handler for SshSession {
 /// an opaque string id, exactly as the protocol expects.
 struct SftpHandler {
     root: PathBuf,
+    rename: RenameMode,
     next_id: u64,
-    files: HashMap<String, fs::File>,
-    dirs: HashMap<String, std::vec::IntoIter<File>>,
+    files: HashMap<SftpHandle, fs::File>,
+    dirs: HashMap<SftpHandle, std::vec::IntoIter<File>>,
 }
 
 impl SftpHandler {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, rename: RenameMode) -> Self {
         Self {
             root,
+            rename,
             next_id: 0,
             files: HashMap::new(),
             dirs: HashMap::new(),
@@ -397,9 +426,22 @@ impl SftpHandler {
         self.root.join(path.trim_start_matches('/'))
     }
 
-    fn next_handle(&mut self) -> String {
+    fn next_handle(&mut self) -> SftpHandle {
         self.next_id += 1;
-        format!("handle-{}", self.next_id)
+        format!("handle-{}", self.next_id).into()
+    }
+
+    /// Moves a path, optionally refusing to replace an existing destination.
+    fn move_path(&self, oldpath: &str, newpath: &str, overwrite: bool) -> Result<(), StatusCode> {
+        if matches!(self.rename, RenameMode::FailSource) && oldpath.ends_with("source.txt") {
+            return Err(StatusCode::Failure);
+        }
+
+        let destination = self.real(newpath);
+        if !overwrite && destination.exists() {
+            return Err(StatusCode::Failure);
+        }
+        fs::rename(self.real(oldpath), destination).map_err(|e| status_from_io(&e))
     }
 }
 
@@ -485,7 +527,13 @@ impl russh_sftp::server::Handler for SftpHandler {
         _version: u32,
         _extensions: HashMap<String, String>,
     ) -> Result<Version, StatusCode> {
-        Ok(Version::new())
+        let mut version = Version::new();
+        if matches!(self.rename, RenameMode::Posix) {
+            version
+                .extensions
+                .insert(POSIX_RENAME.to_string(), "1".to_string());
+        }
+        Ok(version)
     }
 
     async fn open(
@@ -505,7 +553,7 @@ impl russh_sftp::server::Handler for SftpHandler {
         Ok(Handle { id, handle })
     }
 
-    async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
+    async fn close(&mut self, id: u32, handle: SftpHandle) -> Result<Status, StatusCode> {
         self.files.remove(&handle);
         self.dirs.remove(&handle);
         Ok(ok(id))
@@ -514,7 +562,7 @@ impl russh_sftp::server::Handler for SftpHandler {
     async fn read(
         &mut self,
         id: u32,
-        handle: String,
+        handle: SftpHandle,
         offset: u64,
         len: u32,
     ) -> Result<Data, StatusCode> {
@@ -544,7 +592,7 @@ impl russh_sftp::server::Handler for SftpHandler {
     async fn write(
         &mut self,
         id: u32,
-        handle: String,
+        handle: SftpHandle,
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, StatusCode> {
@@ -571,7 +619,7 @@ impl russh_sftp::server::Handler for SftpHandler {
         })
     }
 
-    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, StatusCode> {
+    async fn fstat(&mut self, id: u32, handle: SftpHandle) -> Result<Attrs, StatusCode> {
         let file = self.files.get(&handle).ok_or(StatusCode::Failure)?;
         let meta = file.metadata().map_err(|e| status_from_io(&e))?;
         Ok(Attrs {
@@ -608,7 +656,7 @@ impl russh_sftp::server::Handler for SftpHandler {
         Ok(Handle { id, handle })
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusCode> {
+    async fn readdir(&mut self, id: u32, handle: SftpHandle) -> Result<Name, StatusCode> {
         let iter = self.dirs.get_mut(&handle).ok_or(StatusCode::Failure)?;
         // The whole (remaining) directory is returned in one packet; the next
         // call reports EOF.
@@ -654,9 +702,130 @@ impl russh_sftp::server::Handler for SftpHandler {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, StatusCode> {
-        fs::rename(self.real(&oldpath), self.real(&newpath)).map_err(|e| status_from_io(&e))?;
+        self.move_path(
+            &oldpath,
+            &newpath,
+            matches!(self.rename, RenameMode::Overwrite),
+        )?;
         Ok(ok(id))
     }
+
+    async fn extended(
+        &mut self,
+        id: u32,
+        request: String,
+        data: Vec<u8>,
+    ) -> Result<Packet, StatusCode> {
+        if request != POSIX_RENAME || !matches!(self.rename, RenameMode::Posix) {
+            return Err(StatusCode::OpUnsupported);
+        }
+
+        let mut payload = Bytes::from(data);
+        let extension: PosixRenameExtension =
+            russh_sftp::de::from_bytes(&mut payload).map_err(|_| StatusCode::BadMessage)?;
+        self.move_path(&extension.oldpath, &extension.newpath, true)?;
+        Ok(Packet::Status(ok(id)))
+    }
+}
+
+#[tokio::test]
+async fn rename_replaces_destination_without_posix_extension() -> Result<()> {
+    let fixture = build_with_rename(SftpAuth::Password, RenameMode::RejectExisting).await?;
+    let backend = fixture.backend();
+
+    backend
+        .write(
+            &BackendHandle::new(Path::new("source.txt")),
+            WriteContents::Borrowed(b"new"),
+        )
+        .await?;
+    backend
+        .write(
+            &BackendHandle::new(Path::new("destination.txt")),
+            WriteContents::Borrowed(b"old"),
+        )
+        .await?;
+
+    backend
+        .rename(Path::new("source.txt"), Path::new("destination.txt"))
+        .await?;
+
+    let data = backend
+        .read(&BackendHandle::new(Path::new("destination.txt")), 0, 0)
+        .await?;
+    ensure!(data == b"new");
+    ensure!(!backend.path_exists(Path::new("source.txt")).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn posix_rename_replaces_destination() -> Result<()> {
+    let fixture = build_with_rename(SftpAuth::Password, RenameMode::Posix).await?;
+    let backend = fixture.backend();
+
+    backend
+        .write(
+            &BackendHandle::new(Path::new("source.txt")),
+            WriteContents::Borrowed(b"new"),
+        )
+        .await?;
+    backend
+        .write(
+            &BackendHandle::new(Path::new("destination.txt")),
+            WriteContents::Borrowed(b"old"),
+        )
+        .await?;
+
+    // Ordinary rename is rejected by this server, so success proves the
+    // advertised POSIX extension was used.
+    backend
+        .rename(Path::new("source.txt"), Path::new("destination.txt"))
+        .await?;
+
+    let data = backend
+        .read(&BackendHandle::new(Path::new("destination.txt")), 0, 0)
+        .await?;
+    ensure!(data == b"new");
+    ensure!(!backend.path_exists(Path::new("source.txt")).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn rename_restores_destination_when_replacement_fails() -> Result<()> {
+    let fixture = build_with_rename(SftpAuth::Password, RenameMode::FailSource).await?;
+    let backend = fixture.backend();
+
+    backend
+        .write(
+            &BackendHandle::new(Path::new("source.txt")),
+            WriteContents::Borrowed(b"new"),
+        )
+        .await?;
+    backend
+        .write(
+            &BackendHandle::new(Path::new("destination.txt")),
+            WriteContents::Borrowed(b"old"),
+        )
+        .await?;
+
+    let result = backend
+        .rename(Path::new("source.txt"), Path::new("destination.txt"))
+        .await;
+    ensure!(result.is_err(), "the replacement must report the failure");
+
+    let destination = backend
+        .read(&BackendHandle::new(Path::new("destination.txt")), 0, 0)
+        .await?;
+    ensure!(
+        destination == b"old",
+        "the original destination must be restored"
+    );
+
+    let source = backend
+        .read(&BackendHandle::new(Path::new("source.txt")), 0, 0)
+        .await?;
+    ensure!(source == b"new", "the source must be left untouched");
+    Ok(())
 }
 
 /// Public-key authentication against the in-process server: the backend
@@ -684,7 +853,11 @@ async fn public_key_authentication() -> Result<()> {
 /// The correct password authenticates; a wrong one is rejected.
 #[tokio::test]
 async fn rejects_wrong_password() -> Result<()> {
-    let server = TestServer::start(AuthPolicy::Password(PASSWORD.to_string())).await?;
+    let server = TestServer::start(
+        AuthPolicy::Password(PASSWORD.to_string()),
+        RenameMode::default(),
+    )
+    .await?;
 
     let accepted = server.connect(BASE_DIR, SftpAuth::Password).await;
     ensure!(accepted.is_ok(), "the correct password must authenticate");
@@ -707,7 +880,7 @@ async fn rejects_unknown_public_key() -> Result<()> {
         .context("parsing the test host key")?
         .public_key()
         .clone();
-    let server = TestServer::start(AuthPolicy::PublicKey(trusted)).await?;
+    let server = TestServer::start(AuthPolicy::PublicKey(trusted), RenameMode::default()).await?;
 
     let rejected = server.connect(BASE_DIR, SftpAuth::PublicKey).await;
     ensure!(rejected.is_err(), "an unknown public key must be rejected");
@@ -718,7 +891,11 @@ async fn rejects_unknown_public_key() -> Result<()> {
 /// its own files, and must map repository-relative paths correctly.
 #[tokio::test]
 async fn non_empty_base_path_isolation() -> Result<()> {
-    let server = TestServer::start(AuthPolicy::Password(PASSWORD.to_string())).await?;
+    let server = TestServer::start(
+        AuthPolicy::Password(PASSWORD.to_string()),
+        RenameMode::default(),
+    )
+    .await?;
 
     let nested = server.connect("nested/repo", SftpAuth::Password).await?;
     let sibling = server.connect("sibling", SftpAuth::Password).await?;

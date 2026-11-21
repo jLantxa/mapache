@@ -517,8 +517,13 @@ pub struct SiteSpec {
     /// CPUs attributed to one worker in the demand model. This can be zero for
     /// sites that only bound handles or in-flight slots, not CPU work.
     pub demand_cores: f32,
-    /// Estimated peak bytes held by one worker (0 = not memory bound).
+    /// Estimated peak bytes held by one worker, used to size concurrency
+    /// (0 = not memory bound).
     pub bytes_per_unit: u64,
+    /// Bytes attributed to one worker in the demand model. Defaults to
+    /// [`Self::bytes_per_unit`]; differs when sizing must include bytes that
+    /// are reported under another group.
+    pub demand_bytes_per_unit: u64,
     /// Lower bound for the resolved value.
     pub min: usize,
     /// Hard workload ceiling, independent of available CPUs and memory.
@@ -542,9 +547,18 @@ impl SiteSpec {
             cores_per_worker,
             demand_cores: cores_per_worker,
             bytes_per_unit,
+            demand_bytes_per_unit: bytes_per_unit,
             min,
             max,
         }
+    }
+
+    /// Reports a different byte amount in the demand model than the one used
+    /// to size the site. The decoded restore buffers, for example, constrain
+    /// prefetch but are accounted for under the Decode group.
+    const fn with_demand_bytes(mut self, bytes: u64) -> Self {
+        self.demand_bytes_per_unit = bytes;
+        self
     }
 
     /// Marks a site as a handle/slot cap rather than a CPU consumer.
@@ -653,7 +667,7 @@ impl PlanDemand {
             .saturating_add((value as f64 * spec.demand_cores as f64).ceil() as usize);
         cell.used_bytes = cell
             .used_bytes
-            .saturating_add((value as u64).saturating_mul(spec.bytes_per_unit));
+            .saturating_add((value as u64).saturating_mul(spec.demand_bytes_per_unit));
     }
 
     fn add_bytes(&mut self, pipeline: Pipeline, group: BudgetGroup, bytes: u64) {
@@ -827,6 +841,8 @@ pub struct Plan {
     pub restore_blob_concurrency: usize,
     pub restore_decoded_budget: u64,
     pub restore_max_open_files: usize,
+    /// Largest encoded segment held per prefetch stream.
+    pub restore_pack_segment_max_size: u64,
 
     // GC / clean / repack
     pub gc_repack_workers: usize,
@@ -883,16 +899,30 @@ impl Plan {
             sites: Vec::new(),
         };
 
+        // Restore buffers are the largest per-worker allocation. Derive both the
+        // encoded segment and the decoded budget from the memory budget so a
+        // small machine does not reserve an excessive share of RAM, while large
+        // machines keep their previous buffer sizes.
         let segment_max = config
             .and_then(|c| c.restore_pack_segment_max_size)
-            .unwrap_or(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE);
-        let segment_max = segment_max.max(1);
+            .unwrap_or_else(|| DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE.min((budget / 64).max(1)))
+            .max(1);
+        let restore_decoded_budget = config
+            .and_then(|c| c.restore_decoded_budget)
+            .unwrap_or_else(|| {
+                // At most a quarter of the budget across all streams. The Decode
+                // group owns 40% of it and prefetch never exceeds 8, so the
+                // aggregate stays inside the group on every machine size.
+                (budget / 32).clamp(DEFAULT_RESTORE_DECODED_BUDGET, MAX_RESTORE_DECODED_BUDGET)
+            });
+        // Encoded bytes are attributed to the I/O group; decoded buffers are
+        // attributed to Decode below. Prefetch sizing, however, must see both
+        // because they are live at the same time per stream.
+        let io_stream_bytes = segment_max + MAX_CHUNK_SIZE;
+        let prefetch_sizing_bytes = io_stream_bytes + restore_decoded_budget;
 
         let reader_bytes = 2 * MAX_CHUNK_SIZE + MIN_CHUNK_SIZE;
         let packer_bytes = packer_bytes(pack_size);
-        // Decoded buffers are accounted for from the Decode group so they are
-        // not hidden inside the prefetch stream estimate.
-        let io_stream_bytes = segment_max + MAX_CHUNK_SIZE;
 
         // Snapshot / bundle create.
         let snapshot_readers = resolver.resolve(SiteSpec::new(
@@ -922,10 +952,11 @@ impl Plan {
                 BudgetGroup::Io,
                 "runtime.restore-pack-prefetch",
                 0.25,
-                io_stream_bytes,
+                prefetch_sizing_bytes,
                 1,
                 8,
-            ),
+            )
+            .with_demand_bytes(io_stream_bytes),
             restore_explicit_prefetch,
         );
         let restore_blob_concurrency = resolver.resolve_explicit(
@@ -953,20 +984,6 @@ impl Plan {
             .without_cpu_demand(),
             config.and_then(|c| c.restore_max_open_files),
         );
-        let decode_limits = group_limits(
-            Pipeline::Restore,
-            BudgetGroup::Decode,
-            cpu_cap,
-            budget,
-            &policy.shares,
-        );
-        let restore_decoded_budget = config
-            .and_then(|c| c.restore_decoded_budget)
-            .unwrap_or_else(|| {
-                let per_stream = decode_limits.bytes / restore_pack_prefetch.max(1) as u64;
-                per_stream.clamp(DEFAULT_RESTORE_DECODED_BUDGET, MAX_RESTORE_DECODED_BUDGET)
-            });
-
         // GC / clean / repack.
         let gc_repack_workers = resolver.resolve_explicit(
             SiteSpec::new(
@@ -1264,6 +1281,7 @@ impl Plan {
             restore_blob_concurrency,
             restore_decoded_budget,
             restore_max_open_files,
+            restore_pack_segment_max_size: segment_max,
             gc_repack_workers,
             gc_repack_packers,
             gc_segment_window,
@@ -1552,7 +1570,7 @@ pub fn plan() -> &'static Plan {
     })
 }
 
-const MIN_BLOCKING_THREADS: usize = 16;
+const MIN_BLOCKING_THREADS: usize = 4;
 const MAX_BLOCKING_THREADS: usize = 128;
 
 fn blocking_thread_cap(cpus: usize) -> usize {
@@ -1801,7 +1819,7 @@ mod tests {
     #[test]
     fn blocking_thread_cap_is_bounded() {
         assert_eq!(blocking_thread_cap(1), MIN_BLOCKING_THREADS);
-        assert_eq!(blocking_thread_cap(8), MIN_BLOCKING_THREADS);
+        assert_eq!(blocking_thread_cap(8), 16);
         assert_eq!(blocking_thread_cap(24), 48);
         assert_eq!(blocking_thread_cap(64), MAX_BLOCKING_THREADS);
         assert_eq!(blocking_thread_cap(256), MAX_BLOCKING_THREADS);
@@ -1921,6 +1939,10 @@ mod tests {
         assert_eq!(plan.snapshot_packers, 4);
         assert_eq!(plan.restore_pack_prefetch, 4);
         assert_eq!(plan.restore_decoded_budget, MAX_RESTORE_DECODED_BUDGET);
+        assert_eq!(
+            plan.restore_pack_segment_max_size,
+            DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE
+        );
         assert_eq!(plan.gc_repack_workers, 2);
         assert_eq!(plan.verify_batch_concurrency, 2);
     }
@@ -1930,10 +1952,49 @@ mod tests {
         let plan = build(2, 2, 16);
         assert!(plan.snapshot_readers <= 2);
         assert!(plan.snapshot_packers <= 2);
-        // Prefetch is I/O bound, so a small container still gets a few streams.
-        assert!(plan.restore_pack_prefetch <= 4);
+        // Sizing prefetch against the decoded buffer as well as the encoded
+        // segment keeps small containers at a low stream count.
+        assert!(plan.restore_pack_prefetch <= 2);
         assert!(plan.gc_repack_workers <= 2);
         assert!(plan.verify_parallel <= 2);
+    }
+
+    #[test]
+    fn small_machine_restore_buffers_stay_proportional() {
+        for (cpus, gib) in [(2, 1), (4, 2), (4, 4), (8, 4)] {
+            let plan = build(cpus, gib, 16);
+            let live = (plan.restore_pack_prefetch as u64).saturating_mul(
+                plan.restore_decoded_budget + plan.restore_pack_segment_max_size + MAX_CHUNK_SIZE,
+            );
+            assert!(
+                live <= plan.memory_budget / 6,
+                "{cpus}c/{gib}GiB: restore buffers {live} exceed 1/6 of budget {}",
+                plan.memory_budget
+            );
+            assert!(
+                plan.restore_decoded_budget < MAX_RESTORE_DECODED_BUDGET,
+                "{cpus}c/{gib}GiB decoded budget must scale below the large-machine cap"
+            );
+            if gib <= 2 {
+                assert!(
+                    plan.restore_pack_segment_max_size < DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
+                    "{cpus}c/{gib}GiB segment must shrink with the budget"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn restore_demand_splits_encoded_and_decoded_bytes() {
+        let plan = build(8, 16, 16);
+        let streams = plan.restore_pack_prefetch as u64;
+        let io = plan.demand.group(Pipeline::Restore, BudgetGroup::Io);
+        let decode = plan.demand.group(Pipeline::Restore, BudgetGroup::Decode);
+        assert_eq!(
+            io.used_bytes,
+            streams * (plan.restore_pack_segment_max_size + MAX_CHUNK_SIZE)
+        );
+        assert_eq!(decode.used_bytes, streams * plan.restore_decoded_budget);
     }
 
     #[test]

@@ -38,6 +38,7 @@ use crate::{
     common::{
         ID,
         error::{MapacheError, Result},
+        sysinfo,
     },
     fs::{filesystem, node::Node, path_exists, tree::SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
@@ -267,12 +268,11 @@ pub(crate) struct ShardedFileHandleCache {
 
 impl ShardedFileHandleCache {
     fn new(max_total_handles: usize) -> Self {
-        let num_shards = (std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            * 4)
-        .next_power_of_two()
-        .min(64);
+        // Use the same detected CPU count as the parallelism plan so that
+        // MAPACHE_CPU_COUNT and cgroup quotas also reduce cache sharding.
+        let num_shards = (sysinfo::profile().logical_cpus.max(1) * 4)
+            .next_power_of_two()
+            .min(64);
         let handles_per_shard = (max_total_handles / num_shards).max(1);
 
         let shards: Box<[Mutex<FileHandleCache>]> = (0..num_shards)

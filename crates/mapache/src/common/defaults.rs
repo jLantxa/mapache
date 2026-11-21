@@ -182,7 +182,7 @@ impl RuntimeDefaults {
                 .unwrap_or(DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD),
             restore_pack_segment_max_size: c
                 .and_then(|c| c.restore_pack_segment_max_size)
-                .unwrap_or(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE),
+                .unwrap_or(plan.restore_pack_segment_max_size),
             min_pack_size_factor: c
                 .and_then(|c| c.min_pack_size_factor)
                 .unwrap_or(DEFAULT_MIN_PACK_SIZE_FACTOR),

@@ -18,12 +18,12 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 ///
 /// Arena count and background thread behaviour are left at jemalloc's own
 /// defaults, which scale themselves to the machine and the load. Only the decay
-/// settings are pinned, to trade a little allocator throughput for returning
-/// freed memory to the OS promptly rather than letting a long operation sit at
-/// its high-water mark.
+/// settings are pinned: a shorter decay was chosen after comparing backup and
+/// restore runs, since it returns freed memory to the OS sooner and lowers peak
+/// RSS without a clear throughput cost. The benefit varies with workload and host.
 #[cfg(target_os = "linux")]
 #[unsafe(export_name = "_rjem_malloc_conf")]
-pub static JEMALLOC_CONF: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:1000\0";
+pub static JEMALLOC_CONF: &[u8] = b"dirty_decay_ms:100,muzzy_decay_ms:100\0";
 
 struct MainExitCode(i32);
 

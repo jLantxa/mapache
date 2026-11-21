@@ -12,6 +12,11 @@ pub enum MapacheError {
     #[error("backend error: {0}")]
     Backend(String),
 
+    /// A backend failure that must not be retried because a retry could hide
+    /// an inconsistent remote state (for example, a failed rollback).
+    #[error("permanent backend error: {0}")]
+    BackendPermanent(String),
+
     #[error("authentication error: {0}")]
     Auth(String),
 
@@ -84,6 +89,7 @@ impl MapacheError {
     pub fn inner(&self) -> String {
         match self {
             MapacheError::Backend(s)
+            | MapacheError::BackendPermanent(s)
             | MapacheError::Auth(s)
             | MapacheError::Crypto(s)
             | MapacheError::Compression(s)

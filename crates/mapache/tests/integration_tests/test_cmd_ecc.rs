@@ -6,7 +6,9 @@ mod tests {
     use anyhow::{Context, Result};
 
     use mapache::{
-        backend::{BackendNode, StorageBackend, localfs::LocalFS, read_backend_dir},
+        backend::{
+            BackendNode, Handle, StorageBackend, WriteContents, localfs::LocalFS, read_backend_dir,
+        },
         commands::cmd_ecc::SubCmd,
         repository::{
             manifest::EccConfig,
@@ -253,51 +255,50 @@ mod tests {
         let synthetic = SyntheticData::new(dataset);
         let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
-        // Init repo WITH ECC.
-        let ecc_config = EccConfig::from_overhead(10);
         let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
-        let _ = Repository::init(
+        Repository::init(
             mapache::repository::repo::THIS_REPOSITORY_VERSION,
             &ctx.auth,
             None,
             backend.clone(),
-            ecc_config,
+            EccConfig::from_overhead(10),
             false,
         )
         .await
         .context("init with ECC failed")?;
+        ctx.snapshot(vec![backup_data_tmp_path.join("file.txt")])
+            .await
+            .context("snapshot failed")?;
 
-        ctx.snapshot(vec![
-            backup_data_tmp_path.join("file.txt"),
-            backup_data_tmp_path.join("0"),
-        ])
-        .await
-        .context("snapshot failed")?;
+        let snapshot_path = read_backend_dir(backend.as_ref(), &PathBuf::from(SNAPSHOTS_DIR))
+            .await?
+            .into_iter()
+            .find_map(|node| match node {
+                BackendNode::File(path, _) if path.extension().is_none() => Some(path),
+                _ => None,
+            })
+            .context("no snapshot file")?;
+        let sidecar_path = snapshot_path.with_extension("ecc");
+        let sidecar_before = backend.read(&Handle::new(&sidecar_path), 0, 0).await?;
+        backend
+            .write(
+                &Handle::new(&snapshot_path),
+                WriteContents::Borrowed(b"corrupt"),
+            )
+            .await?;
 
         let ecc_before = total_ecc_files(backend.as_ref()).await?;
-        assert!(ecc_before > 0, "sidecars should exist before regenerate");
-
-        // Regenerate all sidecars.
         ctx.ecc_builder(SubCmd::Regenerate)
             .run(&ctx.global)
             .await
             .context("ecc regenerate failed")?;
 
-        // Sidecars should exist with the same count.
-        let ecc_after = total_ecc_files(backend.as_ref()).await?;
-        assert!(ecc_after > 0, "sidecars should exist after regenerate");
+        assert_eq!(total_ecc_files(backend.as_ref()).await?, ecc_before);
         assert_eq!(
-            ecc_before, ecc_after,
-            "same number of sidecars after regenerate"
+            backend.read(&Handle::new(&sidecar_path), 0, 0).await?,
+            sidecar_before,
+            "sidecar must survive for a corrupt base file"
         );
-
-        // Verify the repo still works.
-        ctx.verify_builder()
-            .read_packs(true)
-            .run(&ctx.global)
-            .await
-            .context("verify after regenerate should pass")?;
-
         Ok(())
     }
 

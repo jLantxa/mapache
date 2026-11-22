@@ -51,6 +51,24 @@
 
 - `/proc/meminfo` parsing now ignores malformed lines instead of discarding the
   whole memory snapshot, and size options reject per-second suffixes.
+- `rechunk` and bundle import now flush all rewritten blobs before publishing
+  snapshots, and save every new snapshot before removing an old one, so an
+  interrupted command cannot leave dangling references or drop the last copy
+  of a snapshot.
+- ECC sidecars are regenerated only for files whose stored bytes still match
+  their content ID. Corrupt files keep their existing sidecar, and `ecc enable`
+  and `ecc set-percent` no longer mark a repository as fully protected when any
+  file was skipped.
+- The cache invalidates both paths after a rename, including repairs that
+  replace a cached object with a previously uncached source, and `remove` no
+  longer lets a concurrent read repopulate the cache with deleted bytes.
+- Repository paths are validated as relative to the backend root, and symlinks
+  are rejected during path traversal and directory listings on local and SFTP
+  backends, so crafted paths or remote links cannot escape the configured base.
+- Hashed `known_hosts` entries are verified instead of ignored, and Argon2
+  parameters read from untrusted keyfiles are capped before any derivation.
+- Derived restore buffer budgets now scale with the configured memory budget
+  instead of being floored to a fixed size on small machines.
 
 ### Removed
 

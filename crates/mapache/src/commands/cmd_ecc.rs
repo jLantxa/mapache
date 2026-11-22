@@ -1,4 +1,9 @@
-use std::{io, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use clap::{Args, Subcommand};
 use indicatif::ProgressBar;
@@ -7,7 +12,7 @@ use parking_lot::Mutex;
 use crate::{
     backend::{self, Handle, StorageBackend, WriteContents, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError},
+    common::{ContentIdType, ID, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError},
     ecc,
     repository::{
         manifest::EccConfig,
@@ -134,8 +139,13 @@ async fn cmd_enable(
     ui::cli::log!("Enabling ECC with {}% overhead...", percent);
     tracing::info!(target: "ecc", "Enabling ECC with {}% overhead", percent);
 
-    let count =
+    let (count, skipped) =
         regenerate_sidecars(repo, backend, secure_storage, &config, cleanup_handler).await?;
+    if skipped > 0 {
+        return Err(EccError::InvalidArg(format!(
+            "cannot enable ECC: {skipped} files failed content-ID verification"
+        )));
+    }
 
     let mut manifest = repo.manifest().clone();
     manifest.set_ecc(Some(config));
@@ -208,8 +218,13 @@ async fn cmd_set_percent(
     // Each sidecar is replaced in place (tmp + rename). During the operation a
     // transient mix of old/new K/P exists, but every sidecar self-describes its
     // own K/P in its header, so verify/repair stays functional throughout.
-    let count =
+    let (count, skipped) =
         regenerate_sidecars(repo, backend, secure_storage, &new_config, cleanup_handler).await?;
+    if skipped > 0 {
+        return Err(EccError::InvalidArg(format!(
+            "cannot change ECC percentage: {skipped} files failed content-ID verification"
+        )));
+    }
 
     // Step 2: Update manifest with the new ECC config.
     // The manifest's K/P is only used for future encodings (new packs, indices,
@@ -258,8 +273,12 @@ async fn cmd_regenerate(
 
     // Regenerate sidecars. We don't need to delete the sidecars first because:
     // they will be rewritten or discarded by the GC the next time we run clean.
-    let count =
+    let (count, skipped) =
         regenerate_sidecars(repo, backend, secure_storage, &config, cleanup_handler).await?;
+    if skipped > 0 {
+        ui::cli::warning!("Regeneration skipped {skipped} files with mismatched content IDs");
+        tracing::warn!(target: "ecc", "Regeneration skipped {skipped} files");
+    }
 
     ui::cli::log!(
         "\nDone. Generated {} sidecars in {}",
@@ -346,6 +365,13 @@ async fn list_all_sidecar_paths(
     Ok(ecc_paths)
 }
 
+fn matches_path_id(path: &Path, data: &[u8]) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(ID::from_hex(name), Ok(id) if ID::from_content(data) == id)
+}
+
 /// Generate fresh ECC sidecars for every file that supports ECC
 /// (packs, indices, snapshots) using the given config.
 ///
@@ -356,12 +382,13 @@ async fn regenerate_sidecars(
     secure_storage: &SecureStorage,
     config: &EccConfig,
     cleanup_handler: &CleanupHandler,
-) -> Result<usize, EccError> {
+) -> Result<(usize, usize), EccError> {
     let k = config.data_shards as usize;
     let p = config.parity_shards as usize;
 
     let rate_estimator = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
     let mut total = 0usize;
+    let mut skipped = 0usize;
 
     for file_type in &[
         ContentIdType::Pack,
@@ -407,6 +434,17 @@ async fn regenerate_sidecars(
             })?;
 
             if raw_data.is_empty() {
+                bar.inc(1);
+                rate_estimator.lock().observe(bar.position() as f64);
+                continue;
+            }
+
+            if !matches_path_id(path, &raw_data) {
+                ui::cli::warning!(
+                    "Skipping ECC regeneration for {}: content does not match its ID",
+                    path.display()
+                );
+                skipped += 1;
                 bar.inc(1);
                 rate_estimator.lock().observe(bar.position() as f64);
                 continue;
@@ -461,5 +499,5 @@ async fn regenerate_sidecars(
         bar.finish_and_clear();
     }
 
-    Ok(total)
+    Ok((total, skipped))
 }

@@ -68,7 +68,7 @@ pub struct KeyFile {
 impl KeyFile {
     pub fn argon2_params(&self) -> Result<argon2::Params> {
         let KdfConfig::Argon2id(params) = &self.kdf;
-        kdf::validate_argon2_params(params.m, params.t, params.p).map_err(|e| {
+        kdf::validate_keyfile_argon2_params(params.m, params.t, params.p).map_err(|e| {
             MapacheError::Crypto(format!("invalid Argon2 parameters in keyfile: {e}"))
         })?;
         argon2::ParamsBuilder::new()
@@ -565,13 +565,12 @@ mod tests {
         assert!(kf_with(1024, 0, 1).argon2_params().is_err());
         assert!(kf_with(1024, 1, 0).argon2_params().is_err());
 
+        assert!(kf_with(1_048_576, 1_000_000, 16).argon2_params().is_err());
+        assert!(kf_with(65_537, 1, 1).argon2_params().is_err());
+        assert!(kf_with(65_536, 33, 1).argon2_params().is_err());
+
         // Legitimate values still pass.
         assert!(kf_with(1024, 1, 1).argon2_params().is_ok());
-        assert!(kf_with(1_048_576, 1_000_000, 16).argon2_params().is_ok());
-
-        assert!(kdf::validate_bundle_argon2_params(65_536, 32, 1).is_ok());
-        assert!(kdf::validate_bundle_argon2_params(65_537, 1, 1).is_err());
-        assert!(kdf::validate_bundle_argon2_params(65_536, 33, 1).is_err());
-        assert!(kdf::validate_bundle_argon2_params(8, 65, 1).is_err());
+        assert!(kf_with(65_536, 32, 1).argon2_params().is_ok());
     }
 }

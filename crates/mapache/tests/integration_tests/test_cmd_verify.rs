@@ -159,7 +159,7 @@ mod tests {
         // Bit flips should make it fail
         {
             let backend_nodes =
-                read_backend_dir(backend.as_ref(), &ctx.repo_path.join(OBJECTS_DIR)).await?;
+                read_backend_dir(backend.as_ref(), &PathBuf::from(OBJECTS_DIR)).await?;
 
             let first_pack_path = &ctx.repo_path.join(
                 backend_nodes

@@ -83,6 +83,8 @@ async fn rechunk_with_repo(
     let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
     let num_snapshots = snapshot_stream.len();
     let mut rechunked_blob_list_map = HashMap::new();
+    // Keep new snapshots until their blobs are durable.
+    let mut rewritten_snapshots = Vec::new();
 
     repo.init_pack_saver(parallelism::plan().snapshot_packers)?;
 
@@ -125,12 +127,21 @@ async fn rechunk_with_repo(
         )
         .await?;
 
+        let snapshot_bytes = serde_json::to_string(&snapshot_data)
+            .map_err(MapacheError::Serialization)?
+            .into_bytes();
+        rewritten_snapshots.push((snapshot_id, snapshot_bytes));
+    }
+
+    // Flush blobs first, then write every new snapshot before deleting an old one.
+    repo.flush_and_finalize_pack_saver().await?;
+
+    let mut new_snapshot_ids = Vec::with_capacity(rewritten_snapshots.len());
+    for (_, snapshot_bytes) in &rewritten_snapshots {
         let (new_snapshot_id, _) = repo
             .save_file(
                 &SaveID::CalculateID,
-                serde_json::to_string(&snapshot_data)
-                    .map_err(MapacheError::Serialization)?
-                    .as_bytes(),
+                snapshot_bytes,
                 StorageHint {
                     file_type: ContentIdType::Snapshot,
                     is_metadata: true,
@@ -138,15 +149,20 @@ async fn rechunk_with_repo(
                 None,
             )
             .await?;
+        new_snapshot_ids.push(new_snapshot_id);
+    }
+
+    for ((old_snapshot_id, _), new_snapshot_id) in
+        rewritten_snapshots.iter().zip(new_snapshot_ids.iter())
+    {
         // A rechunk that produces no changes rewrites the snapshot to identical
         // bytes, yielding the same content-addressed ID. Deleting the old file
         // in that case would remove the snapshot we just saved.
-        if new_snapshot_id != snapshot_id {
-            repo.delete_file(ContentIdType::Snapshot, &snapshot_id, None)
+        if new_snapshot_id != old_snapshot_id {
+            repo.delete_file(ContentIdType::Snapshot, old_snapshot_id, None)
                 .await?;
         }
     }
 
-    repo.flush_and_finalize_pack_saver().await?;
     Ok(())
 }

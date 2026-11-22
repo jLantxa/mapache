@@ -25,7 +25,7 @@ pub mod sftp;
 pub mod mock;
 
 use std::{
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
     time::SystemTime,
 };
@@ -597,9 +597,24 @@ pub fn resolve_read_offset(file_size: u64, offset: isize) -> u64 {
     }
 }
 
-/// Joins a backend base path with a repo-relative path.
-pub fn join_base_path(base: &Path, path: &Path) -> PathBuf {
-    base.join(path)
+/// Joins a repository-relative path, rejecting components that could escape the base.
+pub fn join_base_path(base: &Path, path: &Path) -> Result<PathBuf> {
+    // An empty path (or ".") denotes the repository root itself.
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(base.to_path_buf());
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+        || path.file_name().is_none()
+    {
+        return Err(MapacheError::Backend(format!(
+            "invalid repository path '{}': expected a relative path with normal components",
+            path.display()
+        )));
+    }
+
+    Ok(base.join(path))
 }
 
 /// Classifies a filesystem entry into a `BackendNode` based on metadata.

@@ -23,8 +23,8 @@ use crate::{
     common::{
         config::RuntimeConfig,
         defaults::{
-            DEFAULT_PACK_SIZE, DEFAULT_RESTORE_DECODED_BUDGET,
-            DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE,
+            DEFAULT_PACK_SIZE, DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE, MAX_CHUNK_SIZE,
+            MIN_CHUNK_SIZE,
         },
         sysinfo::{self, SystemProfile},
         vars::{MAX_BLOCKING_THREADS_ENVVAR, get_envvar},
@@ -909,12 +909,7 @@ impl Plan {
             .max(1);
         let restore_decoded_budget = config
             .and_then(|c| c.restore_decoded_budget)
-            .unwrap_or_else(|| {
-                // At most a quarter of the budget across all streams. The Decode
-                // group owns 40% of it and prefetch never exceeds 8, so the
-                // aggregate stays inside the group on every machine size.
-                (budget / 32).clamp(DEFAULT_RESTORE_DECODED_BUDGET, MAX_RESTORE_DECODED_BUDGET)
-            });
+            .unwrap_or_else(|| (budget / 32).clamp(MIN_MEMORY_BUDGET, MAX_RESTORE_DECODED_BUDGET));
         // Encoded bytes are attributed to the I/O group; decoded buffers are
         // attributed to Decode below. Prefetch sizing, however, must see both
         // because they are live at the same time per stream.

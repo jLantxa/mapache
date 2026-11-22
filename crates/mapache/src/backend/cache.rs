@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -24,6 +25,9 @@ use crate::{
 enum DownloadState {
     /// The file is currently being downloaded. The u32 tracks the attempt number.
     Downloading(u32),
+    /// The file is being removed. Readers wait for this state to clear so they
+    /// cannot download the old object and resurrect it in the cache afterwards.
+    Removing,
     /// The download has failed. Stores the error message, time of failure,
     /// and how many times it has been attempted. After a cooldown period,
     /// retries are allowed up to `MAX_CACHE_RETRIES` to avoid infinite loops
@@ -87,7 +91,56 @@ impl CacheBackend {
     }
 }
 
+fn is_not_found(error: &MapacheError) -> bool {
+    match error {
+        MapacheError::NotFound(_) => true,
+        MapacheError::Io(e) => e.kind() == io::ErrorKind::NotFound,
+        _ => false,
+    }
+}
+
 impl CacheBackend {
+    /// Claims paths and waits for any in-flight downloads to finish.
+    async fn claim_paths_for_removal(&self, paths: &[&Path]) {
+        loop {
+            let notified = self.download_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let claimed = {
+                let mut queue = self.download_queue.lock();
+                if paths.iter().any(|path| {
+                    matches!(
+                        queue.get(*path),
+                        Some(DownloadState::Downloading(_)) | Some(DownloadState::Removing)
+                    )
+                }) {
+                    false
+                } else {
+                    for path in paths {
+                        queue.insert((*path).to_path_buf(), DownloadState::Removing);
+                    }
+                    true
+                }
+            };
+
+            if claimed {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn release_paths(&self, paths: &[&Path]) {
+        {
+            let mut queue = self.download_queue.lock();
+            for path in paths {
+                queue.remove(*path);
+            }
+        }
+        self.download_notify.notify_waiters();
+    }
+
     /// Cache a complete file into the local cache.
     async fn cache_file(&self, path: &Path) -> Result<()> {
         let path_buf = path.to_path_buf();
@@ -107,7 +160,9 @@ impl CacheBackend {
             let (claimable, failure): (bool, Option<String>) = {
                 let mut queue = self.download_queue.lock();
                 match queue.get(&path_buf) {
-                    Some(DownloadState::Downloading(_)) => (false, None),
+                    Some(DownloadState::Downloading(_)) | Some(DownloadState::Removing) => {
+                        (false, None)
+                    }
                     Some(DownloadState::Failed(msg, since, attempts)) => {
                         if *attempts >= MAX_CACHE_RETRIES {
                             if since.elapsed() >= FAILED_EXPIRY {
@@ -286,16 +341,28 @@ impl StorageBackend for CacheBackend {
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         tracing::debug!(target: "cache", "Cache: rename {:?} -> {:?}", from, to);
-        // Rename on the backend first (source of truth). Only then update the
-        // cache. If the cache rename fails, remove the stale entry so the next
-        // read fetches fresh data from the backend.
-        self.backend.rename(from, to).await?;
+        let paths = [from, to];
+        // Claim both paths so readers cannot repopulate the cache mid-rename.
+        self.claim_paths_for_removal(&paths).await;
 
-        if self.cache.rename(from, to).await.is_err() {
-            let _ = self.cache.remove(from).await;
+        let result: Result<()> = async {
+            self.backend.rename(from, to).await?;
+
+            // Invalidate both entries: either side may hold stale bytes.
+            for path in paths {
+                if let Err(e) = self.cache.remove(path).await
+                    && !is_not_found(&e)
+                {
+                    tracing::warn!(target: "cache",
+                        "Failed to invalidate cache entry {:?} after rename: {}", path, e);
+                }
+            }
+            Ok(())
         }
+        .await;
 
-        Ok(())
+        self.release_paths(&paths);
+        result
     }
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
@@ -304,34 +371,21 @@ impl StorageBackend for CacheBackend {
 
     async fn remove(&self, file_path: &Path) -> Result<()> {
         tracing::debug!(target: "cache", "Cache: remove {:?}", file_path);
-        let path_buf = file_path.to_path_buf();
 
-        loop {
-            let notified = self.download_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
+        // Later readers must wait for the removal instead of re-downloading.
+        let paths = [file_path];
+        self.claim_paths_for_removal(&paths).await;
 
-            let wait = {
-                let mut queue = self.download_queue.lock();
-                if matches!(queue.get(&path_buf), Some(DownloadState::Downloading(_))) {
-                    true
-                } else {
-                    queue.remove(&path_buf);
-                    false
-                }
-            };
-
-            if wait {
-                notified.await;
-                continue;
-            }
-            break;
+        let result: Result<()> = async {
+            self.cache.remove(file_path).await?;
+            self.backend.remove(file_path).await?;
+            Ok(())
         }
+        .await;
 
-        self.cache.remove(file_path).await?;
-        self.backend.remove(file_path).await?;
+        self.release_paths(&paths);
 
-        Ok(())
+        result
     }
 }
 
@@ -530,6 +584,118 @@ mod tests {
         // Verify data was also written to the cache
         let cached = cache.cache.read(&handle, 0, 0).await?;
         assert_eq!(cached, data);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rename_invalidates_cached_destination() -> Result<()> {
+        let mock = Arc::new(MockBackend::new());
+        mock.put_file("to", b"old destination".to_vec());
+        mock.put_file("tmp", b"repaired destination".to_vec());
+
+        let temp_dir = tempfile::tempdir()?;
+        let cache = Arc::new(CacheBackend::new(
+            temp_dir.path().to_path_buf(),
+            mock.clone(),
+        ));
+        let handle = Handle {
+            path: Path::new("to"),
+            hint: Some(StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            }),
+        };
+
+        assert_eq!(cache.read(&handle, 0, 0).await?, b"old destination");
+
+        // ECC repair renames a hint-less temp file over a cached object.
+        cache.rename(Path::new("tmp"), Path::new("to")).await?;
+        assert!(!cache.cache.path_exists(Path::new("to")).await);
+        assert_eq!(cache.read(&handle, 0, 0).await?, b"repaired destination");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_remove_blocks_new_downloads() -> Result<()> {
+        let mock = Arc::new(MockBackend::new());
+        mock.put_file("racy", b"old bytes".to_vec());
+
+        // Hold both operations briefly to overlap the removal with a reader
+        // that starts after the removal guard has been claimed.
+        mock.add_hook(Arc::new(|op| match op {
+            BackendOp::Read { path, .. } if path == Path::new("racy") => MockEffect {
+                delay: Some(Duration::from_millis(100)),
+                ..Default::default()
+            },
+            BackendOp::Remove(path) if path == Path::new("racy") => MockEffect {
+                delay: Some(Duration::from_millis(100)),
+                ..Default::default()
+            },
+            _ => MockEffect::default(),
+        }));
+
+        let temp_dir = tempfile::tempdir()?;
+        let cache = Arc::new(CacheBackend::new(
+            temp_dir.path().to_path_buf(),
+            mock.clone(),
+        ));
+
+        let remover = {
+            let cache = cache.clone();
+            tokio::spawn(async move { cache.remove(Path::new("racy")).await })
+        };
+
+        let guard_claimed = async {
+            loop {
+                if matches!(
+                    cache.download_queue.lock().get(Path::new("racy")),
+                    Some(DownloadState::Removing)
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), guard_claimed)
+            .await
+            .expect("removal guard was not claimed");
+
+        let reader = {
+            let cache = cache.clone();
+            tokio::spawn(async move {
+                cache
+                    .read(
+                        &Handle {
+                            path: Path::new("racy"),
+                            hint: Some(StorageHint {
+                                file_type: ContentIdType::Snapshot,
+                                is_metadata: true,
+                            }),
+                        },
+                        0,
+                        0,
+                    )
+                    .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!reader.is_finished(), "reader must wait for the removal");
+
+        remover.await.expect("remover task panicked")?;
+        let read_result = tokio::time::timeout(Duration::from_secs(2), reader)
+            .await
+            .expect("reader hung after removal")
+            .expect("reader task panicked");
+
+        assert!(
+            read_result.is_err(),
+            "a reader must not resurrect a removed object in the cache"
+        );
+        assert!(!mock.path_exists(Path::new("racy")).await);
+        assert!(!cache.cache.path_exists(Path::new("racy")).await);
 
         Ok(())
     }

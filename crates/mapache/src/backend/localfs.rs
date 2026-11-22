@@ -28,9 +28,55 @@ impl LocalFS {
         Self { base_path }
     }
 
-    /// Helper to resolve a repository-relative path to an absolute path on disk.
-    fn full_path(&self, path: &Path) -> PathBuf {
-        super::join_base_path(&self.base_path, path)
+    /// Resolves a repository-relative path, rejecting symlinks in every component.
+    fn full_path(&self, path: &Path) -> Result<PathBuf> {
+        super::join_base_path(&self.base_path, path)?;
+
+        let mut current =
+            std::fs::canonicalize(&self.base_path).unwrap_or_else(|_| self.base_path.clone());
+        if path.as_os_str().is_empty() || path == Path::new(".") {
+            return Ok(current);
+        }
+        if let Some(parent) = path.parent() {
+            for component in parent.components() {
+                current.push(component);
+                match std::fs::symlink_metadata(&current) {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                    Ok(_) => {
+                        return Err(MapacheError::Backend(format!(
+                            "repository path '{}' traverses a symlink or a non-directory",
+                            path.display()
+                        )));
+                    }
+                    // Missing parents are fine; keep building the final path.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(MapacheError::Backend(format!(
+                            "failed to inspect repository path '{}': {error}",
+                            path.display()
+                        )));
+                    }
+                }
+            }
+        }
+
+        let file_name = path.file_name().ok_or_else(|| {
+            MapacheError::Backend(format!(
+                "repository path '{}' has no filename",
+                path.display()
+            ))
+        })?;
+        let full_path = current.join(file_name);
+        if let Ok(metadata) = std::fs::symlink_metadata(&full_path)
+            && metadata.file_type().is_symlink()
+        {
+            return Err(MapacheError::Backend(format!(
+                "repository path '{}' is a symlink",
+                path.display()
+            )));
+        }
+
+        Ok(full_path)
     }
 
     #[inline(always)]
@@ -44,7 +90,7 @@ impl LocalFS {
     /// protecting them from accidental modification. On Windows, this is also
     /// required before a file can be overwritten or renamed.
     async fn set_readonly_status(&self, path: &Path, readonly: bool) -> Result<()> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
 
         // If unsetting read-only and file doesn't exist, just return Ok
         let metadata = match tokio::fs::symlink_metadata(&full_path).await {
@@ -244,7 +290,7 @@ impl StorageBackend for LocalFS {
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let path = handle.path;
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
         tracing::trace!(target: "backend", "LocalFS: read {:?} (offset={}, length={})", path, offset, length);
 
         let mut file = tokio::fs::File::open(&full_path).await.map_err(|e| {
@@ -335,8 +381,8 @@ impl StorageBackend for LocalFS {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let fullpath_from = self.full_path(from);
-        let fullpath_to = self.full_path(to);
+        let fullpath_from = self.full_path(from)?;
+        let fullpath_to = self.full_path(to)?;
         tracing::debug!(target: "backend", "LocalFS: rename {:?} -> {:?}", from, to);
 
         // On Windows, the source must be writable to be renamed/moved
@@ -373,7 +419,7 @@ impl StorageBackend for LocalFS {
     }
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
         tracing::debug!(target: "backend", "LocalFS: create_dir {:?}", path);
         tokio::fs::create_dir_all(&full_path).await?;
 
@@ -386,7 +432,7 @@ impl StorageBackend for LocalFS {
     }
 
     async fn remove(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
         tracing::debug!(target: "backend", "LocalFS: remove {:?}", path);
 
         match tokio::fs::symlink_metadata(&full_path).await {
@@ -424,12 +470,16 @@ impl StorageBackend for LocalFS {
     }
 
     async fn path_exists(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
+        let Ok(full_path) = self.full_path(path) else {
+            return false;
+        };
         self.exists_exact(&full_path).await
     }
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
+        let base =
+            std::fs::canonicalize(&self.base_path).unwrap_or_else(|_| self.base_path.clone());
         let mut nodes = Vec::new();
         tracing::debug!(target: "backend", "LocalFS: list_dir {:?}", path);
 
@@ -449,6 +499,19 @@ impl StorageBackend for LocalFS {
             ))
         })? {
             let entry_path = entry.path();
+            let file_type = entry.file_type().await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "could not get file type for '{}': {}",
+                    entry_path.display(),
+                    e
+                ))
+            })?;
+
+            // Symlinks and special files are not repository entries.
+            if !file_type.is_file() && !file_type.is_dir() {
+                continue;
+            }
+
             let metadata = entry.metadata().await.map_err(|e| {
                 MapacheError::Backend(format!(
                     "could not get metadata for '{}': {}",
@@ -459,7 +522,7 @@ impl StorageBackend for LocalFS {
 
             // Strip the base_path to keep paths relative to the repo root
             let relative = entry_path
-                .strip_prefix(&self.base_path)
+                .strip_prefix(&base)
                 .map(Path::to_path_buf)
                 .map_err(|_| {
                     MapacheError::Backend("found entry outside of repository base path".into())
@@ -467,7 +530,7 @@ impl StorageBackend for LocalFS {
 
             nodes.push(super::classify_backend_node(
                 relative,
-                metadata.is_file(),
+                file_type.is_file(),
                 metadata.len(),
             ));
         }
@@ -476,7 +539,9 @@ impl StorageBackend for LocalFS {
     }
 
     async fn is_file(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
+        let Ok(full_path) = self.full_path(path) else {
+            return false;
+        };
         match tokio::fs::symlink_metadata(&full_path).await {
             Ok(meta) => meta.is_file(),
             Err(_) => false,
@@ -484,7 +549,9 @@ impl StorageBackend for LocalFS {
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
+        let Ok(full_path) = self.full_path(path) else {
+            return false;
+        };
         match tokio::fs::symlink_metadata(&full_path).await {
             Ok(meta) => meta.is_dir(),
             Err(_) => false,
@@ -492,7 +559,7 @@ impl StorageBackend for LocalFS {
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
         let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(|e| {
             MapacheError::Backend(format!("lstat failed for {}: {}", path.display(), e))
         })?;
@@ -614,6 +681,29 @@ mod tests {
             .await?;
 
         assert_eq!(std::fs::read(base_path.join(handle.path))?, b"stored");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_local_fs_listing_skips_symlinks() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempdir()?;
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        std::fs::write(outside.join("secret.tmp"), b"do not delete")?;
+        let base = temp_dir.path().join("repo");
+        std::fs::create_dir(&base)?;
+        std::fs::create_dir(base.join("entries"))?;
+        symlink(&outside, base.join("entries/link"))?;
+
+        let local_fs = LocalFS::new(base);
+        let nodes = local_fs.list_dir(Path::new("entries")).await?;
+        assert!(nodes.is_empty());
+        let recursive = local_fs.list_dir_recursive(Path::new("entries")).await?;
+        assert!(recursive.is_empty());
+
         Ok(())
     }
 

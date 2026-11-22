@@ -109,57 +109,26 @@ impl client::Handler for MapacheSftpHandler {
             path.unwrap_or_else(|| PathBuf::from(SSH_KNOWN_HOSTS_PATH))
         };
 
-        let content = if known_hosts_path.exists() {
-            std::fs::read_to_string(&known_hosts_path)?
-        } else {
-            String::new()
-        };
-
-        let mut found_host = false;
         let host_port = if self.port == 22 {
             self.host.clone()
         } else {
             format!("[{}]:{}", self.host, self.port)
         };
 
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+        match verify_known_host(&known_hosts_path, &self.host, self.port, &server_public_key)? {
+            HostKeyVerification::Known => return Ok(true),
+            HostKeyVerification::Changed => {
+                return Err(MapacheError::Backend(format!(
+                    "security alert: Remote host identification has changed for '{}'.\n\
+                     This could indicate a man-in-the-middle attack or a legitimate host key rotation.\n\
+                     The host key fingerprint received was {}.\n\
+                     Please verify the server's key or update your known_hosts file at {:?}.",
+                    self.host,
+                    utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default()),
+                    known_hosts_path
+                )));
             }
-
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 3 {
-                continue;
-            }
-
-            let hosts = parts[0];
-            let host_match = hosts.split(',').any(|h| h == self.host || h == host_port);
-
-            if host_match {
-                found_host = true;
-                let key_type = parts[1];
-                let key_base64 = parts[2];
-
-                if let Ok(key_bytes) = utils::base64::decode(key_base64)
-                    && server_public_key.algorithm().as_str() == key_type
-                    && server_public_key.to_bytes().as_deref() == Ok(&key_bytes[..])
-                {
-                    return Ok(true);
-                }
-            }
-        }
-
-        if found_host {
-            return Err(MapacheError::Backend(format!(
-                "security alert: Remote host identification has changed for '{}'.\n\
-                 This could indicate a man-in-the-middle attack or a legitimate host key rotation.\n\
-                 The host key fingerprint received was {}.\n\
-                 Please verify the server's key or update your known_hosts file at {:?}.",
-                self.host,
-                utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default()),
-                known_hosts_path
-            )));
+            HostKeyVerification::Unknown => {}
         }
 
         // Host not found in known_hosts. Prompt the user.
@@ -217,6 +186,115 @@ impl client::Handler for MapacheSftpHandler {
                 "host key verification failed.".to_string(),
             ))?
         }
+    }
+}
+
+/// Result of comparing a server key with the recorded host entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostKeyVerification {
+    Known,
+    Changed,
+    Unknown,
+}
+
+/// Check a server key against literal and OpenSSH-hashed `known_hosts` entries.
+fn verify_known_host(
+    path: &Path,
+    host: &str,
+    port: u16,
+    server_public_key: &russh::keys::PublicKey,
+) -> Result<HostKeyVerification> {
+    let content = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    let host_port = if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
+    };
+
+    let mut found_host = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+
+        let hosts = parts[0];
+        let host_match = hosts.split(',').any(|h| h == host || h == host_port);
+
+        if host_match {
+            found_host = true;
+            let key_type = parts[1];
+            let key_base64 = parts[2];
+
+            if let Ok(key_bytes) = utils::base64::decode(key_base64)
+                && server_public_key.algorithm().as_str() == key_type
+                && server_public_key.to_bytes().as_deref() == Ok(&key_bytes[..])
+            {
+                return Ok(HostKeyVerification::Known);
+            }
+        }
+    }
+
+    if found_host {
+        return Ok(HostKeyVerification::Changed);
+    }
+
+    // The SSH library verifies hashed entries for the exact host token.
+    let recorded = russh::keys::known_hosts::known_host_keys_path(host, port, path)
+        .map_err(|e| MapacheError::Backend(format!("failed to check known_hosts: {e}")))?;
+
+    if recorded.is_empty() {
+        Ok(HostKeyVerification::Unknown)
+    } else if recorded.iter().any(|(_, key)| key == server_public_key) {
+        Ok(HostKeyVerification::Known)
+    } else {
+        Ok(HostKeyVerification::Changed)
+    }
+}
+
+#[cfg(test)]
+mod known_hosts_tests {
+    use std::io::Write;
+
+    use russh::keys::parse_public_key_base64;
+
+    use super::*;
+
+    const HASHED_EXAMPLE_COM: &str = concat!(
+        "|1|O33ESRMWPVkMYIwJ1Uw+n877jTo=|nuuC5vEqXlEZ/8BXQR7m619W6Ak= ",
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF"
+    );
+    const MATCHING_KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
+
+    fn known_hosts_file(entries: &[&str]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for entry in entries {
+            writeln!(file, "{entry}").unwrap();
+        }
+        file.flush().unwrap();
+        file
+    }
+
+    #[test]
+    fn hashed_entry_matches_recorded_key() {
+        let file = known_hosts_file(&[HASHED_EXAMPLE_COM]);
+        let key = parse_public_key_base64(MATCHING_KEY).unwrap();
+
+        assert_eq!(
+            verify_known_host(file.path(), "example.com", 22, &key).unwrap(),
+            HostKeyVerification::Known
+        );
     }
 }
 
@@ -559,9 +637,51 @@ impl SftpBackend {
         .await
     }
 
-    #[inline]
-    fn full_path(&self, path: &Path) -> PathBuf {
+    fn full_path(&self, path: &Path) -> Result<PathBuf> {
         super::join_base_path(&self.base_path, path)
+    }
+
+    /// Rejects symlinks below the trusted configured base.
+    async fn check_no_symlinks(sftp: &SftpSession, base: &Path, full: &Path) -> Result<()> {
+        let relative = full.strip_prefix(base).map_err(|_| {
+            MapacheError::Backend(format!(
+                "path {:?} is outside the repository base {:?}",
+                full, base
+            ))
+        })?;
+        let components: Vec<_> = relative.components().collect();
+        let mut current = base.to_path_buf();
+        for (index, component) in components.iter().enumerate() {
+            current.push(component);
+            let metadata = match sftp.symlink_metadata(current.to_string_lossy()).await {
+                Ok(metadata) => metadata,
+                Err(SftpClientError::Status(status))
+                    if status.status_code == StatusCode::NoSuchFile =>
+                {
+                    break;
+                }
+                Err(e) => {
+                    return Err(MapacheError::Backend(format!(
+                        "failed to inspect repository path {:?}: {}",
+                        full, e
+                    )));
+                }
+            };
+            let kind = metadata.file_type();
+            if kind.is_symlink() {
+                return Err(MapacheError::Backend(format!(
+                    "repository path {:?} traverses a symlink",
+                    full
+                )));
+            }
+            if index + 1 < components.len() && !kind.is_dir() {
+                return Err(MapacheError::Backend(format!(
+                    "repository path {:?} traverses a non-directory",
+                    full
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// A collision-resistant name used to set an old destination aside while
@@ -593,6 +713,48 @@ impl SftpBackend {
             "failed to rename {:?} -> {:?}: {}",
             from, to, error
         ))
+    }
+
+    /// Creates `full_path` and its parents without traversing symlinks.
+    async fn create_dir_all_checked(
+        sftp: &SftpSession,
+        base: &Path,
+        full_path: &Path,
+    ) -> Result<()> {
+        if full_path == base {
+            return Self::create_dir_all_full(sftp, base).await;
+        }
+
+        if let Some(parent) = full_path.parent() {
+            Box::pin(Self::create_dir_all_checked(sftp, base, parent)).await?;
+        }
+
+        let path_str = full_path.to_string_lossy().to_string();
+        match sftp.symlink_metadata(&path_str).await {
+            Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+            Ok(_) => Err(MapacheError::Backend(format!(
+                "path {:?} exists but is not a real directory",
+                full_path
+            ))),
+            Err(SftpClientError::Status(status))
+                if status.status_code == StatusCode::NoSuchFile =>
+            {
+                sftp.create_dir(&path_str).await.map_err(|e| {
+                    MapacheError::Backend(format!(
+                        "failed to create directory {:?} in sftp backend: {}",
+                        full_path, e
+                    ))
+                })?;
+                if let Err(e) = Self::set_readonly_status_full(sftp, full_path, false).await {
+                    tracing::warn!(target: "backend", "sftp: failed to set permissions on new dir {full_path:?}: {e}");
+                }
+                Ok(())
+            }
+            Err(e) => Err(MapacheError::Backend(format!(
+                "failed to inspect directory {:?} in sftp backend: {}",
+                full_path, e
+            ))),
+        }
     }
 
     async fn create_dir_all_full(sftp: &SftpSession, full_path: &Path) -> Result<()> {
@@ -663,19 +825,36 @@ impl SftpBackend {
     }
 
     async fn remove_recursively_full(sftp: &SftpSession, full_path: &Path) -> Result<()> {
-        if !Self::exists_exact_full(sftp, full_path).await {
-            return Ok(());
+        let path_str = full_path.to_string_lossy().to_string();
+        let meta = match sftp.symlink_metadata(&path_str).await {
+            Ok(meta) => meta,
+            Err(SftpClientError::Status(status))
+                if status.status_code == StatusCode::NoSuchFile =>
+            {
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(MapacheError::Backend(format!(
+                    "failed to inspect {:?} in sftp backend: {}",
+                    full_path, e
+                )));
+            }
+        };
+
+        // Never chmod or recurse through a symlink: remove the link itself.
+        if meta.file_type().is_symlink() {
+            return sftp.remove_file(&path_str).await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "failed to remove symlink {:?} in sftp backend: {}",
+                    full_path, e
+                ))
+            });
         }
 
-        let path_str = full_path.to_string_lossy().to_string();
         if let Err(e) = Self::set_readonly_status_full(sftp, full_path, false).await {
             tracing::warn!(target: "backend", "sftp: failed to unlock {full_path:?} before recursive remove: {e}");
         }
 
-        let meta = sftp
-            .symlink_metadata(&path_str)
-            .await
-            .map_err(|e| MapacheError::Backend(e.to_string()))?;
         if meta.is_file() {
             return sftp.remove_file(&path_str).await.map_err(|e| {
                 MapacheError::Backend(format!(
@@ -833,7 +1012,9 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn path_exists(&self, path: &Path) -> bool {
-        let full = self.full_path(path);
+        let Ok(full) = self.full_path(path) else {
+            return false;
+        };
         let res = self
             .retry(|| async {
                 let conn = self.manager.get_connection().await?;
@@ -845,12 +1026,13 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
-        let full = self.full_path(handle.path);
+        let full = self.full_path(handle.path)?;
         let limiter = self.download_limiter.clone();
         tracing::trace!(target: "backend", "SFTP: read {:?} (offset={}, length={})", handle.path, offset, length);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full).await?;
             let mut file = conn
                 .sftp
                 .open(full.to_string_lossy().to_string())
@@ -909,8 +1091,8 @@ impl StorageBackend for SftpBackend {
         let mut tmp_os = handle.path.as_os_str().to_os_string();
         tmp_os.push(format!(".{REPO_TMP_EXTENSION}"));
         let tmp_path = PathBuf::from(tmp_os);
-        let full_tmp = self.full_path(&tmp_path);
-        let full_dst = self.full_path(handle.path);
+        let full_tmp = self.full_path(&tmp_path)?;
+        let full_dst = self.full_path(handle.path)?;
         let limiter = self.upload_limiter.clone();
         tracing::trace!(target: "backend", "SFTP: write {:?} ({} bytes)", handle.path, contents.len());
 
@@ -918,8 +1100,10 @@ impl StorageBackend for SftpBackend {
             let conn = self.manager.get_connection().await?;
 
             if let Some(parent) = full_tmp.parent() {
-                Self::create_dir_all_full(&conn.sftp, parent).await?;
+                Self::create_dir_all_checked(&conn.sftp, &self.base_path, parent).await?;
             }
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full_tmp).await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full_dst).await?;
 
             let file = conn
                 .sftp
@@ -958,23 +1142,26 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let full_from = self.full_path(from);
-        let full_to = self.full_path(to);
+        let full_from = self.full_path(from)?;
+        let full_to = self.full_path(to)?;
         tracing::debug!(target: "backend", "SFTP: rename {:?} -> {:?}", from, to);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full_from).await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full_to).await?;
             Self::rename_full(&conn.sftp, &full_from, &full_to).await
         })
         .await
     }
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
-        let full = self.full_path(path);
+        let full = self.full_path(path)?;
         tracing::debug!(target: "backend", "SFTP: list_dir {:?}", path);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full).await?;
 
             let entries = conn
                 .sftp
@@ -993,11 +1180,16 @@ impl StorageBackend for SftpBackend {
                 if name == "." || name == ".." {
                     continue;
                 }
+                // Symlinks and special files are not repository entries.
+                let file_type = entry.file_type();
+                if !file_type.is_file() && !file_type.is_dir() {
+                    continue;
+                }
                 let path = path.join(name);
                 let metadata = entry.metadata();
                 out.push(super::classify_backend_node(
                     path,
-                    metadata.is_file(),
+                    file_type.is_file(),
                     metadata.len(),
                 ));
             }
@@ -1008,33 +1200,37 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
-        let full = self.full_path(path);
+        let full = self.full_path(path)?;
         tracing::debug!(target: "backend", "SFTP: create_dir {:?}", path);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
-            Self::create_dir_all_full(&conn.sftp, &full).await
+            Self::create_dir_all_checked(&conn.sftp, &self.base_path, &full).await
         })
         .await
     }
 
     async fn remove(&self, file_path: &Path) -> Result<()> {
-        let full = self.full_path(file_path);
+        let full = self.full_path(file_path)?;
         tracing::debug!(target: "backend", "SFTP: remove {:?}", file_path);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full).await?;
             Self::remove_recursively_full(&conn.sftp, &full).await
         })
         .await
     }
 
     async fn is_file(&self, path: &Path) -> bool {
-        let full = self.full_path(path);
+        let Ok(full) = self.full_path(path) else {
+            return false;
+        };
         let res = self
             .retry(|| async {
                 let conn = self.manager.get_connection().await?;
-                let meta = conn.sftp.metadata(full.to_string_lossy()).await;
+                Self::check_no_symlinks(&conn.sftp, &self.base_path, &full).await?;
+                let meta = conn.sftp.symlink_metadata(full.to_string_lossy()).await;
                 Ok(meta.map(|s| s.is_file()).unwrap_or(false))
             })
             .await;
@@ -1043,11 +1239,14 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
-        let full = self.full_path(path);
+        let Ok(full) = self.full_path(path) else {
+            return false;
+        };
         let res = self
             .retry(|| async {
                 let conn = self.manager.get_connection().await?;
-                let meta = conn.sftp.metadata(full.to_string_lossy()).await;
+                Self::check_no_symlinks(&conn.sftp, &self.base_path, &full).await?;
+                let meta = conn.sftp.symlink_metadata(full.to_string_lossy()).await;
                 Ok(meta.map(|s| s.is_dir()).unwrap_or(false))
             })
             .await;
@@ -1056,10 +1255,11 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
-        let full = self.full_path(path);
+        let full = self.full_path(path)?;
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
+            Self::check_no_symlinks(&conn.sftp, &self.base_path, &full).await?;
             let meta = conn
                 .sftp
                 .symlink_metadata(full.to_string_lossy())

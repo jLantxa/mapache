@@ -982,7 +982,8 @@ async fn run_import_bundle(
     }
 
     if to_import.is_empty() {
-        // Still create a snapshot pointing to the bundle's root tree
+        // Persist blobs before publishing the snapshot that references them.
+        repo.flush_and_finalize_pack_saver().await?;
         let _ =
             create_import_snapshot(repo, bundle_path, &bundle_index, root_tree_id, global).await?;
         return Ok(());
@@ -1040,6 +1041,9 @@ async fn run_import_bundle(
     if let Some(ref bar) = bar {
         bar.finish_and_clear();
     }
+
+    // Persist blobs before publishing the snapshot that references them.
+    repo.flush_and_finalize_pack_saver().await?;
 
     // Create snapshot for this bundle
     let snapshot_id =
@@ -1197,20 +1201,11 @@ async fn import_impl(
         .unwrap_or(parallelism::plan().bundle_stream_concurrency);
 
     repo.reload_master_index().await?;
-    repo.init_pack_saver(readers)?;
 
     for bundle_path in &args.input {
+        repo.init_pack_saver(readers)?;
         run_import_bundle(&repo, bundle_path, &args.internal_password, global, args).await?;
     }
-
-    // Flush pack saver
-    if !global.json {
-        cli::log!(
-            "{} Persisting repository index...",
-            "[finalize]".bold().cyan()
-        );
-    }
-    repo.flush_and_finalize_pack_saver().await?;
 
     if !global.json {
         cli::log!();

@@ -47,33 +47,49 @@ pub fn validate_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(
     Ok(())
 }
 
-const BUNDLE_ARGON2_MAX_MEMORY_KIB: u32 = 65_536;
-const BUNDLE_ARGON2_MAX_ITERATIONS: u32 = 64;
-const BUNDLE_ARGON2_MAX_WORK_KIB_ITERATIONS: u64 = 2_097_152;
+/// Caps shared by unauthenticated files whose KDF parameters we must trust
+/// before any password or authentication check can happen.
+const UNTRUSTED_ARGON2_MAX_MEMORY_KIB: u32 = 65_536;
+const UNTRUSTED_ARGON2_MAX_ITERATIONS: u32 = 64;
+const UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS: u64 = 2_097_152;
 
-/// Validate bundle KDF costs before deriving a key from its unauthenticated header.
-pub fn validate_bundle_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), String> {
+fn validate_untrusted_argon2_params(
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    label: &str,
+) -> Result<(), String> {
     validate_argon2_params(m_cost, t_cost, p_cost)?;
 
-    if m_cost > BUNDLE_ARGON2_MAX_MEMORY_KIB {
+    if m_cost > UNTRUSTED_ARGON2_MAX_MEMORY_KIB {
         return Err(format!(
-            "bundle memory cost {m_cost} KiB exceeds the limit {BUNDLE_ARGON2_MAX_MEMORY_KIB} KiB"
+            "{label} memory cost {m_cost} KiB exceeds the limit {UNTRUSTED_ARGON2_MAX_MEMORY_KIB} KiB"
         ));
     }
-    if t_cost > BUNDLE_ARGON2_MAX_ITERATIONS {
+    if t_cost > UNTRUSTED_ARGON2_MAX_ITERATIONS {
         return Err(format!(
-            "bundle iteration cost {t_cost} exceeds the limit {BUNDLE_ARGON2_MAX_ITERATIONS}"
+            "{label} iteration cost {t_cost} exceeds the limit {UNTRUSTED_ARGON2_MAX_ITERATIONS}"
         ));
     }
 
     let work = u64::from(m_cost) * u64::from(t_cost);
-    if work > BUNDLE_ARGON2_MAX_WORK_KIB_ITERATIONS {
+    if work > UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS {
         return Err(format!(
-            "bundle Argon2 work factor {work} exceeds the limit {BUNDLE_ARGON2_MAX_WORK_KIB_ITERATIONS} KiB-iterations"
+            "{label} Argon2 work factor {work} exceeds the limit {UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS} KiB-iterations"
         ));
     }
 
     Ok(())
+}
+
+/// Validate bundle KDF costs before deriving a key from its unauthenticated header.
+pub fn validate_bundle_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), String> {
+    validate_untrusted_argon2_params(m_cost, t_cost, p_cost, "bundle")
+}
+
+/// Validate keyfile KDF costs before deriving a key from an unauthenticated keyfile.
+pub fn validate_keyfile_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), String> {
+    validate_untrusted_argon2_params(m_cost, t_cost, p_cost, "keyfile")
 }
 
 /// Return default Argon2id parameters (fast, no benchmarking).

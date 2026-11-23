@@ -93,7 +93,7 @@ bytes = "1.12"
 flate2 = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "tokio"] }
 proptest = "1.12"
-rstest = "0.28"
+rstest = "0.29"
 # In-process S3 server used by the backend conformance tests (`s3s` + `s3s-fs`,
 # served with `hyper-util`). Never shipped.
 s3s = "0.17"

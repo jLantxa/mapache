@@ -455,7 +455,7 @@ impl Screen for FindScreen {
         self.check_search_updates();
         self.spinner.tick();
 
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
+        let inner = frame.area().inner(theme::content_margin());
 
         let has_results = !self.results.is_empty();
         let detail_height = if has_results && self.selected_result().is_some() {

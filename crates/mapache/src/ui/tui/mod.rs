@@ -16,7 +16,6 @@ use crate::{
 mod app;
 mod background;
 mod help;
-mod logs;
 mod screens;
 #[cfg(test)]
 mod test_support;
@@ -30,6 +29,13 @@ pub use theme::{ColorMode, ThemeVariant};
 pub struct Appearance {
     pub variant: ThemeVariant,
     pub color: ColorMode,
+}
+
+/// An action offered by the active screen in the command palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaletteCommand {
+    pub id: &'static str,
+    pub label: &'static str,
 }
 
 struct TerminalGuard;

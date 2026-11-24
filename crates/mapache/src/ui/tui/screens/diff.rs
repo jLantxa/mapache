@@ -678,7 +678,7 @@ impl Screen for DiffScreen {
             }
         }
 
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
+        let inner = frame.area().inner(theme::content_margin());
 
         let detail_h = if self.loading || self.error.is_some() {
             0

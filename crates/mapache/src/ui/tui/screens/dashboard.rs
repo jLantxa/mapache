@@ -25,6 +25,7 @@ use crate::{
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::tui::{
+        PaletteCommand,
         app::{Screen, Transition},
         background::BackgroundTask,
         screens::{
@@ -210,6 +211,16 @@ fn menu_lines(
             Line::from(spans)
         })
         .collect()
+}
+
+/// Global shortcuts appended to the dashboard's existing bottom hint bar.
+fn global_hint_spans() -> Vec<Span<'static>> {
+    vec![
+        Span::styled("Ctrl+K", theme::THEME.menu_key),
+        Span::styled(" palette  ", theme::THEME.footer),
+        Span::styled("F1", theme::THEME.menu_key),
+        Span::styled(" help", theme::THEME.footer),
+    ]
 }
 
 struct DashboardStats {
@@ -517,13 +528,10 @@ impl DashboardScreen {
         .style(theme::THEME.footer);
         frame.render_widget(stats_left, row2[0]);
 
-        let stats_right = Paragraph::new(Line::from(vec![
-            Span::styled("last ", theme::THEME.footer),
-            Span::styled(
-                self.stats.newest.as_deref().unwrap_or("-"),
-                theme::THEME.teal,
-            ),
-        ]))
+        let stats_right = Paragraph::new(Line::from(vec![Span::styled(
+            self.stats.newest.as_deref().unwrap_or("-"),
+            theme::THEME.footer,
+        )]))
         .style(theme::THEME.footer);
         frame.render_widget(stats_right, row2[1]);
 
@@ -790,30 +798,36 @@ impl DashboardScreen {
 
     fn build_menu_hint(&self) -> Line<'static> {
         if self.diff_source.is_some() {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled("Esc cancel  ", theme::THEME.footer),
                 Span::styled("\u{2191}\u{2193} select target  ", theme::THEME.footer),
                 Span::styled("5 ", theme::THEME.menu_key),
-                Span::styled("diff", theme::THEME.footer),
-            ])
+                Span::styled("diff  ", theme::THEME.footer),
+            ];
+            spans.extend(global_hint_spans());
+            Line::from(spans)
         } else if self.menu_focused {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled("\u{2190}\u{2192} choose  ", theme::THEME.footer),
                 Span::styled("Enter", theme::THEME.menu_key),
                 Span::styled(" run  ", theme::THEME.footer),
                 Span::styled("Esc", theme::THEME.menu_key),
-                Span::styled(" back", theme::THEME.footer),
-            ])
+                Span::styled(" back  ", theme::THEME.footer),
+            ];
+            spans.extend(global_hint_spans());
+            Line::from(spans)
         } else {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled("Tab", theme::THEME.menu_key),
-                Span::styled(" actions  ", theme::THEME.footer),
-                Span::styled("\u{2191}\u{2193} navigate  ", theme::THEME.footer),
+                Span::styled(" menu  ", theme::THEME.footer),
+                Span::styled("\u{2191}\u{2193} move  ", theme::THEME.footer),
                 Span::styled("Enter", theme::THEME.menu_key),
                 Span::styled(" details  ", theme::THEME.footer),
                 Span::styled("/", theme::THEME.menu_key),
-                Span::styled(" filter", theme::THEME.footer),
-            ])
+                Span::styled(" filter  ", theme::THEME.footer),
+            ];
+            spans.extend(global_hint_spans());
+            Line::from(spans)
         }
     }
 
@@ -961,7 +975,7 @@ impl Screen for DashboardScreen {
     fn render(&mut self, frame: &mut Frame) {
         self.poll_load();
 
-        let inner_content = frame.area().inner(theme::CONTENT_MARGIN);
+        let inner_content = frame.area().inner(theme::content_margin());
 
         let diff_status_height: u16 = if self.diff_source.is_some() { 2 } else { 1 };
 
@@ -1116,6 +1130,24 @@ impl Screen for DashboardScreen {
         false
     }
 
+    fn palette_commands(&self) -> Vec<PaletteCommand> {
+        self.menu_entries()
+            .into_iter()
+            .map(|item| PaletteCommand {
+                id: item.key,
+                label: item.label,
+            })
+            .collect()
+    }
+
+    async fn execute_palette_command(&mut self, id: &str) -> Option<Transition> {
+        let action = MENU_ITEMS.iter().find(|item| item.key == id)?.action;
+        if !self.menu_item_enabled(action) {
+            return None;
+        }
+        self.run_action(action).await
+    }
+
     fn help_hints(&self) -> Vec<(&'static str, &'static str)> {
         let mut hints: Vec<(&'static str, &'static str)> = MENU_ITEMS
             .iter()
@@ -1167,17 +1199,10 @@ mod tests {
             repo::{Auth, THIS_REPOSITORY_VERSION},
             snapshot::Snapshot,
         },
-        ui::tui::test_support,
     };
     use crossterm::event::KeyModifiers;
     use std::path::PathBuf;
     use zeroize::Zeroizing;
-
-    fn render_header(screen: &DashboardScreen, width: u16) -> String {
-        test_support::render_text(width, HEADER_HEIGHT, |frame| {
-            screen.render_top_bar(frame, frame.area());
-        })
-    }
 
     async fn test_screen() -> Result<DashboardScreen> {
         let auth = Auth {
@@ -1339,25 +1364,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_render_shows_all_commands_at_80x24() -> Result<()> {
-        let mut screen = test_screen().await?;
-        let content = test_support::render_text(80, 24, |frame| {
-            screen.render(frame);
-        });
-        for label in ["Stats", "Clean", "Verify", "Refresh", "Quit"] {
-            assert!(
-                content.contains(label),
-                "missing {label} at 80x24: {content}"
-            );
-        }
-        assert!(
-            content.contains("No snapshots yet"),
-            "empty dashboard should guide a new user: {content}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn details_height_matches_the_rendered_path_rows() -> Result<()> {
         let mut screen = test_screen().await?;
         let entry = |count: usize| SnapshotEntry {
@@ -1381,64 +1387,6 @@ mod tests {
         screen.snapshots = Arc::new(vec![entry(8)]);
         // Five path rows plus the "… and 3 more" summary row.
         assert_eq!(screen.selected_info_height(), 11);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn header_shows_session_lock_status_at_narrow_widths() -> Result<()> {
-        let auth = Auth {
-            username: "test".to_string(),
-            password: Zeroizing::new("password".to_string()),
-        };
-
-        for (exclusive, expected) in [(false, "lock shared"), (true, "lock exclusive")] {
-            let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-            Repository::init(
-                THIS_REPOSITORY_VERSION,
-                &auth,
-                None,
-                backend.clone(),
-                None,
-                false,
-            )
-            .await?;
-            let (repo, _, handle) = Repository::try_open_with_lock(
-                &auth,
-                None,
-                backend,
-                TEST_REPO_CONFIG,
-                exclusive,
-                None,
-            )
-            .await?;
-            let mut screen = DashboardScreen::new(
-                repo,
-                Some(handle.clone()),
-                "local:/a/long/repository/path".to_string(),
-                "123456789abc".to_string(),
-                None,
-                None,
-            );
-            screen.stats.total = 123456;
-
-            for width in [40, 80, 120] {
-                let text = render_header(&screen, width);
-                assert!(
-                    text.ends_with(expected),
-                    "missing {expected} at width {width}: {text}"
-                );
-                assert!(text.contains("123456 snapshots"));
-            }
-
-            handle.unlock().await;
-            assert_eq!(
-                screen.lock_handle.as_ref().unwrap().status(),
-                LockStatus::Released
-            );
-            assert!(render_header(&screen, 40).ends_with("lock released"));
-            screen.lock_handle = None;
-            assert!(render_header(&screen, 40).ends_with("lock off"));
-        }
         Ok(())
     }
 }

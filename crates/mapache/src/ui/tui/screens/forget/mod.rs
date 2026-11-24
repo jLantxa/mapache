@@ -437,7 +437,7 @@ impl Screen for ForgetScreen {
         match self.phase {
             ForgetPhase::Selection => self.render_selection(frame),
             ForgetPhase::Retention => {
-                let inner = frame.area().inner(theme::CONTENT_MARGIN);
+                let inner = frame.area().inner(theme::content_margin());
                 self.retention.render(frame, inner);
             }
             ForgetPhase::Confirm => {

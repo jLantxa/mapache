@@ -17,7 +17,7 @@ pub fn render_summary(
     state: &TaskProgressState,
     result: &Option<Result<(), String>>,
 ) {
-    let inner = area.inner(theme::CONTENT_MARGIN);
+    let inner = area.inner(theme::content_margin());
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(10), Constraint::Length(1)])

@@ -251,7 +251,7 @@ impl VerifyScreen {
     }
 
     fn render_summary(&self, frame: &mut Frame) {
-        let area = frame.area().inner(theme::CONTENT_MARGIN);
+        let area = frame.area().inner(theme::content_margin());
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         match &self.summary {

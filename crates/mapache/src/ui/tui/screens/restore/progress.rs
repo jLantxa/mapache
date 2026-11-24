@@ -48,6 +48,6 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
 
 pub fn render_progress(frame: &mut Frame, area: Rect, state: &TaskProgressState) {
     let widget = TaskProgressWidget::new(state, "Restore");
-    let inner = area.inner(theme::CONTENT_MARGIN);
+    let inner = area.inner(theme::content_margin());
     widget.render(frame, inner);
 }

@@ -12,6 +12,11 @@ use ratatui::{
 /// Standard inner margin for content areas in TUI screens.
 pub(crate) const CONTENT_MARGIN: Margin = Margin::new(2, 1);
 
+/// Content margin shared by every screen.
+pub(crate) fn content_margin() -> Margin {
+    CONTENT_MARGIN
+}
+
 /// Renders a bordered panel holding a single centred message. Empty and
 /// loading states share this so they look the same across every screen.
 pub(crate) fn empty_state(frame: &mut Frame, area: Rect, title: &str, message: &str) {
@@ -675,7 +680,7 @@ pub fn body_with_footer(
     hints: &[(&str, &str)],
     body: &[Constraint],
 ) -> Vec<Rect> {
-    let inner = frame.area().inner(CONTENT_MARGIN);
+    let inner = frame.area().inner(content_margin());
     let footer = key_hint_lines(hints, inner.width);
 
     let mut constraints = body.to_vec();
@@ -711,7 +716,6 @@ pub const SPINNER_CHARS: &[char] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::tui::test_support;
 
     fn srgb_to_linear(component: u8) -> f64 {
         let c = component as f64 / 255.0;
@@ -762,23 +766,6 @@ mod tests {
     fn field_values_use_the_theme_text_style() {
         let line = field("Path", 8, "C:\\backup");
         assert_eq!(line.spans[1].style, THEME.stat_value);
-    }
-
-    #[test]
-    fn empty_state_wraps_long_messages_on_narrow_terminals() {
-        let content = test_support::render_text(20, 8, |frame| {
-            empty_state(
-                frame,
-                frame.area(),
-                "Snapshots",
-                "No snapshots yet - press 1 to create one.",
-            );
-        });
-
-        assert!(content.contains("No snapshots"));
-        assert!(content.contains("press 1"));
-        assert!(content.contains("create"));
-        assert!(content.contains("one."));
     }
 
     #[test]

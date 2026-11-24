@@ -87,7 +87,7 @@ impl RestoreConfig {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let inner = area.inner(theme::CONTENT_MARGIN);
+        let inner = area.inner(theme::content_margin());
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

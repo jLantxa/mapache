@@ -20,12 +20,14 @@ use crate::ui::tui::{
 /// Bindings that work on every screen, independent of the active screen.
 const GLOBAL_HINTS: &[(&str, &str)] = &[
     ("? / F1", "toggle this help"),
+    ("Ctrl+K", "command palette"),
     ("Ctrl+N", "notification centre"),
-    ("Ctrl+L", "log overlay"),
+    ("Esc", "close any panel"),
     ("Ctrl+C", "quit mapache"),
     ("\u{2191}\u{2193}", "navigate / scroll"),
     ("PgUp/PgDn", "scroll this help"),
     ("Wheel", "scroll with the mouse"),
+    ("Drag", "scroll by dragging"),
 ];
 
 /// Renders the help overlay as a centred modal over the current screen.

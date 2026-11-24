@@ -108,7 +108,7 @@ impl ProgressState {
 }
 
 pub fn render_progress(frame: &mut Frame, state: &ProgressState, dry_run: bool) {
-    let inner = frame.area().inner(theme::CONTENT_MARGIN);
+    let inner = frame.area().inner(theme::content_margin());
 
     let has_errors = state.has_errors();
     let error_height = if has_errors { 5 } else { 0 };

@@ -1555,7 +1555,7 @@ mod tests {
         // are garbage and are dropped with the old pack, not re-encoded. The
         // repack progress therefore advances exactly once, and its final count
         // is the value reported when the task finishes.
-        let events = events.lock();
+        let events = events.lock().clone();
         let mut repack_pos = 0;
         let mut repack_total = None;
         let mut repack_finished_at = None;

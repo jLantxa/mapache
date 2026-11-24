@@ -1767,9 +1767,9 @@ mapache tui -r <URL> --color ansi256
 
 Launches an interactive terminal user interface with screens for:
 
-- **Dashboard** — overview with version, snapshot count, latest snapshot and
-  session lock status (`shared`, `exclusive`, `released` or `off`). Lock status
-  comes from the in-memory session handle, without additional repository queries.
+- **Dashboard** — overview with version, repository path and ID, snapshot count,
+  latest snapshot, session lock status and the command menu. Lock status comes
+  from the in-memory session handle, without additional repository queries.
 - **File explorer** — browse snapshot contents with inline detail panel
 - **Snapshot detail** — inspect individual snapshots
 - **Snapshot creation wizard**
@@ -1790,18 +1790,20 @@ Launches an interactive terminal user interface with screens for:
   showing live per-phase progress and a pass/fail report with the integrity
   counters
 
-Press `?` (or `F1`) anywhere for a list of key bindings, `Ctrl+C` to quit, and
-use the mouse wheel to scroll. `q` returns to the previous screen — cancelling
+The global shortcuts are `Ctrl+K` (command palette) and `F1` or `?` (help); both
+are shown in the dashboard footer. `Ctrl+C` quits, and the mouse wheel — or drag
+with the left button — scrolls. `q` returns to the previous screen — cancelling
 any running operation — and only quits from the dashboard. Long-running work
 such as loading the dashboard, searching, diffing, or snapshot, restore, clean
 and verify runs in the background, so the interface stays responsive.
 
-Transient toasts report info, success, warnings and errors. They expire on
-their own, and any key press or mouse click dismisses them immediately. Press
-`Ctrl+N` for the notification centre, which keeps the full
-history (`c` clears it, `Esc` or `Ctrl+N` closes it). `Ctrl+L` opens an overlay
-of recent log records, which are captured even when `MAPACHE_DEBUG_LEVEL` is
-unset (`c` clears it, `Esc` or `Ctrl+L` closes it).
+`Ctrl+K` opens a fuzzy **command palette** with both global actions and commands
+from the active screen.
+
+Transient toasts report info, success, warnings and errors, expire on their
+own, and are dismissed by any key press or click. `Ctrl+N` opens the
+notification centre with the full history (`c` clears it). File-based debug
+logging is enabled independently with `MAPACHE_DEBUG_LEVEL`.
 
 ### TUI Colours and Themes
 
@@ -1899,7 +1901,7 @@ include: `bash`, `zsh`, `fish`, `powershell`, `elvish`, and `nushell`.
 | `MAPACHE_PASSWORD_COMMAND` | Shell command that prints repository credentials as JSON |
 | `MAPACHE_REFRESH_RATE` | UI progress refresh rate in Hz (float) |
 | `MAPACHE_DEBUG_PATH` | Directory to write debug logs to |
-| `MAPACHE_DEBUG_LEVEL` | Debug log level: `trace`, `debug`, `info`, `warn`, `error` (default: `debug`) |
+| `MAPACHE_DEBUG_LEVEL` | Debug log level: `trace`, `debug`, `info`, `warn`, `error`; unset disables the file logger |
 | `NO_COLOR` | Disable colour in the TUI (equivalent to `--color never`) |
 
 If `MAPACHE_REPOSITORY` is set, the `-r` flag can be omitted for all commands.

@@ -242,7 +242,7 @@ impl Screen for SnapshotDetailScreen {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        let inner = frame.area().inner(theme::CONTENT_MARGIN);
+        let inner = frame.area().inner(theme::content_margin());
 
         let footer = theme::key_hint_lines(&self.help_hints(), inner.width);
         let chunks = Layout::default()

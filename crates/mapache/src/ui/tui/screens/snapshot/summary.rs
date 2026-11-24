@@ -15,7 +15,7 @@ use crate::{
 
 pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>, dry_run: bool) {
     let area = frame.area();
-    let inner = area.inner(theme::CONTENT_MARGIN);
+    let inner = area.inner(theme::content_margin());
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

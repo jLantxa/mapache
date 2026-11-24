@@ -18,6 +18,9 @@
 - **Clean repack count**: `mapache clean` now logs how many blobs were repacked
   when the repack progress bar finishes. The TUI also shows the count in its
   clean summary.
+- **TUI modernization**: the TUI gains a `Ctrl+K` command palette, `Esc` to
+  close any panel and mouse-drag scrolling. The global shortcuts (`Ctrl+K`
+  palette, `F1`/`?` help) are shown in the dashboard footer.
 
 ### Changed
 

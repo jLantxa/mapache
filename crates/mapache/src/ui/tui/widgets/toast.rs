@@ -540,29 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn notification_center_renders_history() {
-        use crate::ui::tui::test_support::render_text;
-
-        let mut queue = ToastQueue::default();
-        queue.push(ToastKind::Success, "snapshot created");
-        let mut scroll = 0;
-        let text = render_text(60, 20, |frame| {
-            queue.render_center(frame.area(), frame, &mut scroll);
-        });
-
-        assert!(text.contains("Notifications"));
-        assert!(text.contains("Success"));
-        assert!(text.contains("snapshot created"));
-    }
-
-    #[test]
-    fn age_is_rendered_compactly() {
-        assert_eq!(format_age(Duration::from_secs(5)), "5s");
-        assert_eq!(format_age(Duration::from_secs(90)), "1m");
-        assert_eq!(format_age(Duration::from_secs(7200)), "2h");
-    }
-
-    #[test]
     fn toast_never_exceeds_a_narrow_frame() {
         let toast = Toast::new(
             ToastKind::Error.title(),

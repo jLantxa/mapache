@@ -1367,6 +1367,10 @@ The garbage collector:
 3. Repacks small packs and obsolete-pack survivors into new pack files.
 4. Removes orphaned index entries.
 
+When repacking runs, the number of blobs repacked is logged alongside the other
+cleanup messages (for example, "Deleted 4 index files") and shown in the TUI
+clean summary.
+
 `--no-repack` skips repacking (equivalent to tolerance = 100%).
 
 The garbage collector can be safely interrupted with SIGINT/SIGTERM (Ctrl+C).

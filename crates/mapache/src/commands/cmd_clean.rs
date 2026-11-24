@@ -328,6 +328,7 @@ pub struct CleanReport {
     pub small_packs: usize,
     pub tolerated_packs: usize,
     pub unresolved_references: usize,
+    pub repacked_blobs: usize,
 
     pub added_bytes: u64,
     pub deleted_bytes: u64,
@@ -429,6 +430,7 @@ where
         })?;
         tracing::info!(target: "clean", "GC execution finished. Added: {}, Deleted: {}", utils::format_size_binary(gc_sizes.added_bytes, 1), utils::format_size_binary(gc_sizes.deleted_bytes, 1));
 
+        report.repacked_blobs = gc_sizes.repacked_blobs;
         report.added_bytes = gc_sizes.added_bytes;
         report.deleted_bytes = gc_sizes.deleted_bytes;
     }

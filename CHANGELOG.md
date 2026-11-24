@@ -15,6 +15,9 @@
   and ETA on its progress bar, and can be interrupted safely with Ctrl+C
   (SIGINT / SIGTERM), exiting with code `130`. Interruption leaves the on-disk
   index and packs consistent.
+- **Clean repack count**: `mapache clean` now logs how many blobs were repacked
+  when the repack progress bar finishes. The TUI also shows the count in its
+  clean summary.
 
 ### Changed
 

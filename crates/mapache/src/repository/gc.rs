@@ -118,6 +118,8 @@ fn check_shutdown(signal: &AtomicBool) -> Result<()> {
 pub struct GcSizes {
     pub added_bytes: u64,
     pub deleted_bytes: u64,
+    /// Number of referenced blobs re-encoded into new packs by the repack phase.
+    pub repacked_blobs: usize,
 }
 
 /// Per-pack byte accounting gathered while scanning the index. `blob_type` is
@@ -647,7 +649,7 @@ impl Plan {
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
             self.repo.init_pack_saver(defaults::gc_repack_packers())?;
 
-            self.repack(reporter.0.clone()).await?;
+            gc_sizes.repacked_blobs = self.repack(reporter.0.clone()).await?;
 
             // New index is now on disk; subsequent deletions are safe to
             // interrupt partway.
@@ -689,7 +691,8 @@ impl Plan {
 
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
-    async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
+    /// Returns the number of blobs re-encoded into new packs.
+    async fn repack(&mut self, event_sender: EventSender) -> Result<usize> {
         // Retain only the authoritative pack for each referenced blob. Obsolete
         // pack footers can contain phantom copies that are not represented by
         // the index and must not be submitted for repacking.
@@ -740,7 +743,7 @@ impl Plan {
 
         if blobs_to_repack == 0 {
             tracing::debug!(target: "gc", "No blobs to repack");
-            return Ok(());
+            return Ok(0);
         }
 
         let r = GcReporter(event_sender);
@@ -819,8 +822,10 @@ impl Plan {
             .await;
 
         repack_result?;
+        let repacked_blobs = pos.load(Ordering::Relaxed) as usize;
         r.finish_task(GcTaskKind::RepackingBlobs);
-        Ok(())
+        r.log(format!("Repacked {repacked_blobs} blobs"));
+        Ok(repacked_blobs)
     }
 
     /// Delete old index files.
@@ -1537,8 +1542,52 @@ mod tests {
         assert!(plan.obsolete_packs.contains(&obsolete_pack));
         assert!(plan.unused_packs.contains(&unused_pack));
 
-        let gc_sizes = plan.execute(noop_sender()).await?;
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let events_for_sender = events.clone();
+        let sender: EventSender = Arc::new(move |event| {
+            events_for_sender.lock().push(event);
+        });
+        let gc_sizes = plan.execute(sender).await?;
         assert!(gc_sizes.deleted_bytes > 0);
+        assert_eq!(gc_sizes.repacked_blobs, 1);
+
+        // The obsolete pack held A, B and C, but only A is referenced: B and C
+        // are garbage and are dropped with the old pack, not re-encoded. The
+        // repack progress therefore advances exactly once, and its final count
+        // is the value reported when the task finishes.
+        let events = events.lock();
+        let mut repack_pos = 0;
+        let mut repack_total = None;
+        let mut repack_finished_at = None;
+        for (index, event) in events.iter().enumerate() {
+            let Event::Gc(event) = event else { continue };
+            match event {
+                GcEvent::TaskProgress {
+                    kind: GcTaskKind::RepackingBlobs,
+                    pos,
+                    total,
+                } => {
+                    repack_pos = *pos;
+                    if repack_total.is_none() {
+                        repack_total = *total;
+                    }
+                }
+                GcEvent::TaskFinished {
+                    kind: GcTaskKind::RepackingBlobs,
+                } => repack_finished_at = Some(index),
+                _ => {}
+            }
+        }
+        assert_eq!(repack_total, Some(1));
+        assert_eq!(repack_pos, 1);
+        let repack_finished_at = repack_finished_at.expect("repack task finished");
+        assert!(
+            events
+                .iter()
+                .skip(repack_finished_at + 1)
+                .any(|event| matches!(event, Event::Gc(GcEvent::Log(_)))),
+            "a log event should follow the repack task"
+        );
 
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
         assert!(repo.load_blob(&blob_b).await.is_err());

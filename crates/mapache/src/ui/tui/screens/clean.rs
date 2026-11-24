@@ -348,6 +348,7 @@ fn summary_lines(outcome: &cmd_clean::CleanReport) -> Vec<Line<'static>> {
     } else {
         let net = outcome.deleted_bytes as i64 - outcome.added_bytes as i64;
         lines.push(Line::from(Span::styled("Result", theme::THEME.header)));
+        lines.push(kv("Repacked blobs", outcome.repacked_blobs.to_string()));
         lines.push(kv(
             "Added",
             utils::format_size_binary(outcome.added_bytes, 3),

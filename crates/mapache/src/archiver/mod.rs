@@ -221,7 +221,8 @@ pub(crate) async fn run_pipeline(
                         ))),
                     );
                     tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
-                    progress.processed_node();
+                    // The item could not be scanned, so it was never counted
+                    // in the expected items either: only record it as skipped.
                     continue;
                 }
                 Some(Ok(n)) => Some(n),
@@ -531,10 +532,17 @@ pub(crate) async fn snapshot(
         )
         .await?;
 
+        // The parent tree stores names relative to the root it was created
+        // with. Rebuilding them with the *current* root makes every path differ
+        // whenever the source list changes (and therefore the LCP moves), so
+        // use the parent's own root to recover the original absolute paths.
         let previous_tree_stream = SerializedNodeStream::new(
             repo.clone(),
             snapshot_options.parent_snapshot.map(|p| p.snapshot.tree),
-            snapshot_options.snapshot_root_path.clone(),
+            snapshot_options
+                .parent_snapshot
+                .map(|p| p.snapshot.root.clone())
+                .unwrap_or_else(|| snapshot_options.snapshot_root_path.clone()),
             None,
             None,
         )

@@ -113,7 +113,6 @@ pub(crate) fn process_item_sync(
         }),
     );
 
-    let mut deleted_node = None;
     let out = match diff_type {
         NodeDiff::Deleted => {
             let prev = prev_node.ok_or_else(|| {
@@ -121,7 +120,10 @@ pub(crate) fn process_item_sync(
                     "inconsistent state: Deleted diff but no prev_node for {path:?}"
                 ))
             })?;
-            deleted_node = Some(prev.node);
+            // A deletion is recorded in the diff counts, but there is no file
+            // left on the filesystem to process, so it must not advance the
+            // processed-items progress or emit a completion event.
+            report_node_diff(&prev.node, diff_type, ctx.progress);
             None
         }
 
@@ -259,12 +261,7 @@ pub(crate) fn process_item_sync(
         }
     };
 
-    let reported_node = out
-        .as_ref()
-        .map(|node| &node.node)
-        .or(deleted_node.as_ref());
-
-    if let Some(node) = reported_node {
+    if let Some(node) = out.as_ref().map(|node| &node.node) {
         report_node_diff(node, diff_type, ctx.progress);
         ctx.progress.processed_node();
         emit_event(

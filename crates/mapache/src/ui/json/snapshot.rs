@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::{
     common::{defaults, global::GlobalOpts},
+    fs::tree::NodeDiff,
     ui::{
         events::{BackupEvent, Event, EventSender},
         json::JsonReporter,
@@ -97,9 +98,14 @@ pub(crate) fn make_event_sender(
             }
             BackupEvent::NodeProcessing {
                 ref path,
+                diff,
                 size_hint,
-                ..
             } => {
+                // Deletions never emit NodeProcessed, so tracking them as
+                // active files would leave stale entries in the status.
+                if diff == NodeDiff::Deleted {
+                    return;
+                }
                 let is_slow = defaults::runtime()
                     .ui_snapshot_progress_item_min_size
                     .is_none_or(|t| size_hint.is_none_or(|s| s >= t));

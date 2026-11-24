@@ -603,6 +603,22 @@ mod filesystem_boundary_tests {
     }
 }
 
+/// Rebuilds a filesystem path from a serialized node name.
+///
+/// Snapshots spanning several Windows drives have an empty root and store the
+/// top-level drives as logical names (`C`, `D`). Join them as real drive
+/// prefixes so the paths match the ones produced by `FSNodeStream`.
+fn join_serialized_path(parent: &Path, name: &str) -> PathBuf {
+    #[cfg(windows)]
+    if parent.as_os_str().is_empty()
+        && name.len() == 1
+        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return PathBuf::from(format!("{}:\\", name));
+    }
+    parent.join(name)
+}
+
 /// A depth‑first pre‑order stream of serialized nodes from the repository.
 pub struct SerializedNodeStream {
     inner: Pin<Box<dyn Stream<Item = Result<StreamNodeInfo>> + Send>>,
@@ -633,7 +649,7 @@ impl SerializedNodeStream {
 
             let parent = Arc::new(base_path);
             for node in tree.nodes.into_iter().rev() {
-                if filter.allow(&parent.join(&node.name)) {
+                if filter.allow(&join_serialized_path(&parent, &node.name)) {
                     stack.push((parent.clone(), node));
                 }
             }
@@ -655,7 +671,7 @@ impl SerializedNodeStream {
     ) -> Pin<Box<dyn Stream<Item = Result<StreamNodeInfo>> + Send>> {
         try_stream! {
             while let Some((parent, node)) = state.stack.pop() {
-                let path = parent.join(&node.name);
+                let path = join_serialized_path(&parent, &node.name);
                 if !state.filter.allow(&path) {
                     continue;
                 }

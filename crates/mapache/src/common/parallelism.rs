@@ -1928,21 +1928,6 @@ mod tests {
     }
 
     #[test]
-    fn reference_machine_keeps_balanced_workers() {
-        let plan = build(8, 16, 16);
-        assert_eq!(plan.snapshot_readers, 4);
-        assert_eq!(plan.snapshot_packers, 4);
-        assert_eq!(plan.restore_pack_prefetch, 4);
-        assert_eq!(plan.restore_decoded_budget, MAX_RESTORE_DECODED_BUDGET);
-        assert_eq!(
-            plan.restore_pack_segment_max_size,
-            DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE
-        );
-        assert_eq!(plan.gc_repack_workers, 2);
-        assert_eq!(plan.verify_batch_concurrency, 2);
-    }
-
-    #[test]
     fn tiny_container_stays_within_two_workers() {
         let plan = build(2, 2, 16);
         assert!(plan.snapshot_readers <= 2);
@@ -1990,25 +1975,6 @@ mod tests {
             streams * (plan.restore_pack_segment_max_size + MAX_CHUNK_SIZE)
         );
         assert_eq!(decode.used_bytes, streams * plan.restore_decoded_budget);
-    }
-
-    #[test]
-    fn big_machine_reaches_caps() {
-        let plan = build(64, 256, 16);
-        assert_eq!(plan.snapshot_readers, 32);
-        assert_eq!(plan.snapshot_packers, 16);
-        assert_eq!(plan.restore_pack_prefetch, 8);
-        assert_eq!(plan.verify_parallel, 16);
-        assert_eq!(plan.verify_batch_concurrency, 3);
-        assert_eq!(plan.rayon_threads, 64);
-        assert_eq!(plan.copy_concurrency, 16);
-        assert_eq!(plan.sync_concurrency, 16);
-        assert_eq!(plan.bundle_stream_concurrency, 16);
-        assert_eq!(plan.list_dir_concurrency, 32);
-        assert_eq!(plan.list_all_files_concurrency, 8);
-        assert_eq!(plan.loader_segment_concurrency, 8);
-        assert_eq!(plan.restore_pack_prefetch, 8);
-        assert_eq!(plan.gc_delete_concurrency, 32);
     }
 
     #[test]

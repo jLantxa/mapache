@@ -53,6 +53,15 @@ const UNTRUSTED_ARGON2_MAX_MEMORY_KIB: u32 = 65_536;
 const UNTRUSTED_ARGON2_MAX_ITERATIONS: u32 = 64;
 const UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS: u64 = 2_097_152;
 
+/// Largest iteration count accepted for a given memory cost. Calibration uses
+/// this so generated parameters never exceed the reader work cap.
+fn max_untrusted_iterations(m_cost: u32) -> u32 {
+    let by_work = UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS / u64::from(m_cost.max(1));
+    by_work
+        .min(u64::from(UNTRUSTED_ARGON2_MAX_ITERATIONS))
+        .max(1) as u32
+}
+
 fn validate_untrusted_argon2_params(
     m_cost: u32,
     t_cost: u32,
@@ -122,24 +131,27 @@ pub fn calibrate_params(target: Duration, max_memory_mib: Option<u32>) -> Params
 
 /// Determine Argon2id parameters for the current hardware.
 ///
-/// Target is a minimum: calibration always overshoots (slower = stronger).
-/// The result must not exceed `CALIBRATE_UPPER × target`.
+/// Target is a minimum, except that memory, iterations and total work are
+/// capped at the values every reader accepts. Calibration therefore always
+/// produces a keyfile/bundle that can be opened again, even on very fast
+/// hardware.
 ///
 /// 1. Determine optimal parallelism (capped to 4).
 /// 2. Start with the maximum memory that fits under `max_memory_mib`.
-/// 3. Increase `t` until duration >= target.
+/// 3. Increase `t` until duration >= target or the reader work cap is reached.
 /// 4. If too slow (> upper bound), reduce memory and repeat.
 fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
     fn find_t(p: u32, m: u32, target: Duration, salt: &[u8]) -> (u32, Duration) {
+        let max_t = max_untrusted_iterations(m);
         let mut t = 1;
         let mut duration = bench(DUMMY_PASSWORD, salt, m, t, p, 1);
 
-        while duration < target {
+        while duration < target && t < max_t {
             // Argon2 cost is ~linear in t for fixed m: estimate the t that
             // hits the target from the last measurement instead of t += 1.
             let per_iter = duration.as_secs_f64() / f64::from(t);
             let estimated = (target.as_secs_f64() / per_iter).ceil() as u32;
-            t = estimated.max(t + 1);
+            t = estimated.max(t + 1).min(max_t);
             duration = bench(DUMMY_PASSWORD, salt, m, t, p, 1);
         }
         (t, duration)
@@ -147,8 +159,10 @@ fn calibrate(target: Duration, max_memory_mib: u32) -> Params {
 
     let p = optimal_parallelism();
 
-    let max_memory_kib = max_memory_mib.saturating_mul(size::KiB as u32);
     let min_memory_kib = CALIBRATE_MEMORY_BOUNDS.0.saturating_mul(size::KiB as u32);
+    let max_memory_kib = max_memory_mib
+        .min(UNTRUSTED_ARGON2_MAX_MEMORY_KIB)
+        .saturating_mul(size::KiB as u32);
     let mut m = find_max_memory(p, max_memory_kib);
 
     let salt = SecureStorage::generate_salt::<32>();
@@ -224,6 +238,7 @@ mod tests {
     #[case(1, 1500, 1408)]
     #[case(4, 256 * 1024, 256 * 1024)]
     #[case(2, 4096, 4096)]
+    #[case(3, 64 * 1024, 65_280)]
     fn find_max_memory_alignment(#[case] p: u32, #[case] max_kib: u32, #[case] expected: u32) {
         let m = find_max_memory(p, max_kib);
         let block = 128 * p;
@@ -231,6 +246,24 @@ mod tests {
         assert!(m <= max_kib);
         assert_eq!(m % block, 0);
         assert!(m >= block);
+    }
+
+    #[test]
+    #[serial]
+    fn calibration_stops_at_the_reader_work_cap() {
+        // An unreachable target forces the work cap to bind. Memory alignment
+        // depends on the host's core count, so only the work bound is fixed.
+        let params = calibrate(Duration::from_secs(3600), 64);
+        let (m, t, p) = (params.m_cost(), params.t_cost(), params.p_cost());
+
+        let max_t = (UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS
+            / u64::from(UNTRUSTED_ARGON2_MAX_MEMORY_KIB)) as u32;
+        assert!(m > UNTRUSTED_ARGON2_MAX_MEMORY_KIB / 2, "m={m}");
+        assert!(m <= UNTRUSTED_ARGON2_MAX_MEMORY_KIB, "m={m}");
+        assert_eq!(t, max_t, "m={m}");
+        assert!(u64::from(m) * u64::from(t) <= UNTRUSTED_ARGON2_MAX_WORK_KIB_ITERATIONS);
+        assert!(validate_keyfile_argon2_params(m, t, p).is_ok());
+        assert!(validate_bundle_argon2_params(m, t, p).is_ok());
     }
 
     #[test]

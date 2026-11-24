@@ -1262,6 +1262,31 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn serialized_drive_names_reconstruct_windows_drive_prefixes() {
+        // Snapshots spanning several drives store the drive letters as
+        // single-component names under an empty root. Streaming them without
+        // restoring the `X:\` prefix makes every restored path miss its source.
+        assert_eq!(
+            join_serialized_path(Path::new(""), "C"),
+            PathBuf::from(r"C:\")
+        );
+        assert_eq!(
+            join_serialized_path(Path::new(""), "d"),
+            PathBuf::from(r"d:\")
+        );
+        // Only single letters under the empty root are drive prefixes.
+        assert_eq!(
+            join_serialized_path(Path::new(""), "CD"),
+            PathBuf::from("CD")
+        );
+        assert_eq!(
+            join_serialized_path(Path::new(r"C:\"), "Users"),
+            PathBuf::from(r"C:\Users")
+        );
+    }
+
     #[tokio::test]
     async fn test_fs_node_stream_with_root() -> Result<()> {
         let temp_dir = tempdir()?;

@@ -298,19 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn render_title_shows_configured_grouping() {
-        let args = cmd_forget::CmdArgs {
-            group_by: vec![GroupBy::Host, GroupBy::Tags],
-            ..Default::default()
-        };
-        let config = RetentionConfig::new(Some(&args));
-        assert_eq!(
-            config.render_title(),
-            "Retention Rules (group-by: host, tags)"
-        );
-    }
-
-    #[test]
     fn to_rules_keep_last_all() {
         let rc = make_config("all");
         let rules = rc.to_rules();

@@ -870,4 +870,79 @@ mod tests {
         );
         assert_eq!(saver.probes(), 0);
     }
+
+    #[tokio::test]
+    async fn deleted_node_is_counted_as_a_diff_but_not_as_processed_work() {
+        use std::sync::Mutex;
+
+        use crate::fs::node::{Metadata, NodeType};
+
+        let progress = SnapshotProgress::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_sender = seen.clone();
+        let event_sender: EventSender = Arc::new(move |event| {
+            seen_for_sender.lock().unwrap().push(event);
+        });
+        let shutdown = AtomicBool::new(false);
+        let skipped = AtomicU64::new(0);
+
+        let deleted = StreamNode {
+            node: Node {
+                name: "gone.txt".to_string(),
+                node_type: NodeType::File,
+                metadata: Metadata {
+                    size: 4096,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            num_children: 0,
+        };
+
+        // ProbeSaver panics if anything tries to store a blob: a deleted file
+        // no longer exists on disk and must never reach the chunking path.
+        let saver = Arc::new(ProbeSaver::new());
+        let mut ctx = ItemContext {
+            blob_saver: saver,
+            progress: &progress,
+            event_sender: &event_sender,
+            shutdown_signal: &shutdown,
+            skipped_items: &skipped,
+            bufs: None,
+        };
+
+        let result = process_item_sync(
+            Path::new("/does/not/exist/gone.txt"),
+            Some(deleted),
+            None,
+            NodeDiff::Deleted,
+            &mut ctx,
+        )
+        .expect("a deletion must not need filesystem access");
+        assert!(result.is_none(), "deleted nodes are not saved to the tree");
+
+        let summary = progress.summary();
+        assert_eq!(summary.diff_counts.deleted_files, 1);
+        assert_eq!(summary.diff_counts.deleted_dirs, 0);
+        assert_eq!(summary.processed_items_count, 0);
+        assert_eq!(summary.processed_bytes, 0);
+
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|event| matches!(
+                event,
+                Event::Backup(BackupEvent::NodeProcessing {
+                    diff: NodeDiff::Deleted,
+                    ..
+                })
+            )),
+            "deletions must still be reported to observers"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|event| matches!(event, Event::Backup(BackupEvent::NodeProcessed { .. }))),
+            "a deleted file has no completion event, so status tracking must not leave it active"
+        );
+    }
 }

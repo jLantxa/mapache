@@ -492,6 +492,8 @@ impl KeyManager {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
@@ -521,6 +523,23 @@ mod tests {
         let wrong_password_res = KeyManager::decode_master_key("wrong_password", &key_file);
         assert!(wrong_password_res.is_err());
 
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_calibrated_key_file_roundtrip() -> Result<()> {
+        let auth = Auth {
+            username: "calibrated_user".to_string(),
+            password: Zeroizing::new("calibrated_password".to_string()),
+        };
+        let master_key = KeyManager::generate_new_master_key();
+
+        let key_file_value = KeyManager::generate_key_file(&auth, &master_key, true)?;
+        let key_file: KeyFile = serde_json::from_value(key_file_value)?;
+
+        let decoded_master_key = KeyManager::decode_master_key(&auth.password, &key_file)?;
+        assert_eq!(*master_key, *decoded_master_key);
         Ok(())
     }
 
@@ -568,8 +587,9 @@ mod tests {
         assert!(kf_with(1_048_576, 1_000_000, 16).argon2_params().is_err());
         assert!(kf_with(65_537, 1, 1).argon2_params().is_err());
         assert!(kf_with(65_536, 33, 1).argon2_params().is_err());
+        assert!(kf_with(65_536, 65, 1).argon2_params().is_err());
 
-        // Legitimate values still pass.
+        // At maximum memory the work cap binds before the iteration cap.
         assert!(kf_with(1024, 1, 1).argon2_params().is_ok());
         assert!(kf_with(65_536, 32, 1).argon2_params().is_ok());
     }

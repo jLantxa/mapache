@@ -540,6 +540,53 @@ mod tests {
         Ok(())
     }
 
+    /// A parent snapshot stores names relative to *its* root. When a later
+    /// snapshot adds a source and moves the common root, rebuilding the old
+    /// names against the new root must not turn every unchanged file into a
+    /// delete plus a new file.
+    #[tokio::test]
+    async fn test_snapshot_diff_uses_parent_root_when_lcp_moves() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let root = ctx._tmp_dir.path().join("sources");
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir_all(&a)?;
+        std::fs::create_dir_all(&b)?;
+        for path in [a.join("one.txt"), a.join("two.txt"), b.join("three.txt")] {
+            std::fs::write(path, "identical contents")?;
+        }
+        ctx.init_repo().await?;
+
+        let one = a.join("one.txt").to_string_lossy().into_owned();
+        let two = a.join("two.txt").to_string_lossy().into_owned();
+        let three = b.join("three.txt").to_string_lossy().into_owned();
+
+        // With only sources under `a`, the snapshot root is `a` and the stored
+        // node names are `one.txt` and `two.txt`.
+        ctx.run_mapache_ok(&["snapshot", "--json", &one, &two])?;
+
+        // Adding `b/three.txt` moves the root to `sources`. The parent stream
+        // must still be rebuilt from `a` to match the fresh scan.
+        let output = ctx.run_mapache_ok(&["snapshot", "--json", &one, &two, &three])?;
+        let summary = output
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|value| {
+                value.get("msg_type").and_then(|v| v.as_str()) == Some("snapshot_complete")
+            })
+            .and_then(|value| value.get("summary").cloned())
+            .context("snapshot_complete summary missing from JSON output")?;
+        let counts = &summary["diff_counts"];
+        let count = |name: &str| counts.get(name).and_then(|v| v.as_u64());
+
+        assert_eq!(count("unchanged_files"), Some(2), "summary: {summary}");
+        assert_eq!(count("new_files"), Some(1), "summary: {summary}");
+        assert_eq!(count("deleted_files"), Some(0), "summary: {summary}");
+        assert_eq!(count("changed_files"), Some(0), "summary: {summary}");
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_snapshot_skip_if_unchanged() -> Result<()> {
         let mut ctx = TestContext::new().await?;

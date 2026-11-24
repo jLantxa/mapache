@@ -15,9 +15,9 @@
   and ETA on its progress bar, and can be interrupted safely with Ctrl+C
   (SIGINT / SIGTERM), exiting with code `130`. Interruption leaves the on-disk
   index and packs consistent.
-- **Clean repack count**: `mapache clean` now logs how many blobs were repacked
-  when the repack progress bar finishes. The TUI also shows the count in its
-  clean summary.
+- **Clean reporting**: `mapache clean` now logs how many blobs were repacked
+  when the repack progress bar finishes, plus a breakdown of bytes added,
+  deleted and net freed. The TUI clean summary shows the same figures.
 - **TUI modernization**: the TUI gains a `Ctrl+K` command palette, `Esc` to
   close any panel and mouse-drag scrolling. The global shortcuts (`Ctrl+K`
   palette, `F1`/`?` help) are shown in the dashboard footer.
@@ -71,18 +71,34 @@
 - Repository paths are validated as relative to the backend root, and symlinks
   are rejected during path traversal and directory listings on local and SFTP
   backends, so crafted paths or remote links cannot escape the configured base.
+- SFTP restores replace an existing destination with POSIX rename when the
+  server supports it. Otherwise the old destination is kept until the new one
+  is in place and is restored if the replacement fails, so a failed transfer
+  cannot leave the destination missing.
 - Hashed `known_hosts` entries are verified instead of ignored, and Argon2
   parameters read from untrusted keyfiles are capped before any derivation.
+  Calibration now stays inside those caps, so `--calibrate-kdf` cannot write a
+  keyfile or bundle that a later run refuses to open. Keyfiles written by older
+  versions that exceed 64 MiB, 64 iterations or 2 GiB of memory-hard work are
+  rejected; regenerate them with v0.8.0 without `--calibrate-kdf` before
+  upgrading.
+- Incremental snapshots compare the parent against its own root, so adding or
+  removing a source path no longer reports unchanged files as new or deleted.
+  Snapshots spanning several Windows drives restore their drive prefixes.
 - Derived restore buffer budgets now scale with the configured memory budget
   instead of being floored to a fixed size on small machines.
 
 ### Removed
 
+- The TUI log overlay (`Ctrl+L`) and its in-memory log buffer are gone. File
+  logging is opt-in through `MAPACHE_DEBUG_LEVEL` (and `MAPACHE_DEBUG_PATH`);
+  when it is unset, no tracing subscriber is installed.
 - The `verify --parallel` option and `[verify].parallel` config setting were
   removed. Verification workers and buffers are derived from the adaptive plan;
   tune them through `--cpu-scale`, `--memory-budget` and `[runtime]` instead.
 - Repository and bundle format v1 support, including the migration command,
-  has been removed. Migrate existing v1 repositories with mapache v0.8.0 before
+  has been removed. v1 was deprecated in v0.7.0 and its removal was announced
+  for v0.9.0; migrate any remaining v1 repositories with mapache v0.8.0 before
   upgrading.
 
 ## v0.8.0 (2026-11-07)

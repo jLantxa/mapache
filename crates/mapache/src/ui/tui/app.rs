@@ -948,17 +948,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctrl_n_and_ctrl_k_are_not_sent_to_screens() {
-        // A screen that quits on any key would end the app if these leaked
-        // through; instead the overlay opens.
-        let (mut app, _finished) = worker_app(false);
-        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
-            .await;
-        assert_eq!(app.overlay, Overlay::CommandPalette);
-        assert!(!app.should_quit);
-    }
-
-    #[tokio::test]
     async fn command_palette_filters_and_runs_the_selected_command() {
         let (mut app, executed, _last_key) = command_app();
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))

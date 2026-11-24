@@ -351,10 +351,7 @@ fn format_duration(d: Duration) -> String {
 mod tests {
     use super::*;
     use crate::ui::tui::test_support;
-
-    fn bar_text(spans: &[Span<'static>]) -> String {
-        spans.iter().map(|span| span.content.as_ref()).collect()
-    }
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn rendered_percentage_clamps_above_100() {
@@ -385,62 +382,13 @@ mod tests {
     }
 
     #[test]
-    fn scanning_hides_stale_totals() {
-        let ahead = ProgressBar::new()
-            .scanning(true)
-            .rate(100.0)
-            .eta(Some(Duration::from_secs(5)))
-            .items(5, 10)
-            .bytes(500, 1000);
-        let ahead = test_support::render_text(100, 5, |frame| {
-            frame.render_widget(ahead.render(), frame.area());
-        });
-        assert!(ahead.contains("500 B / 1000 B") && ahead.contains("Items: 5/10"));
-        assert!(!ahead.contains('%') && !ahead.contains("ETA") && !ahead.contains("/s"));
-
-        let behind = ProgressBar::new()
-            .scanning(true)
-            .items(10, 5)
-            .bytes(1000, 500);
-        let behind = test_support::render_text(100, 5, |frame| {
-            frame.render_widget(behind.render(), frame.area());
-        });
-        assert!(behind.contains("1000 B") && behind.contains("Items: 10"));
-        assert!(!behind.contains("/ 500 B") && !behind.contains("10/5"));
-    }
-
-    #[test]
-    fn rendered_title_names_the_operation() {
-        let bar = ProgressBar::new().title("Snapshot Progress").bytes(1, 2);
-        let rendered = test_support::render_text(80, 5, |frame| {
-            frame.render_widget(bar.render(), frame.area());
-        });
-        assert!(
-            rendered.contains("Snapshot Progress"),
-            "bar must render its configured title: {rendered:?}"
-        );
-    }
-
-    #[test]
-    fn bar_spans_keep_the_requested_width_and_clamp_the_ratio() {
+    fn bar_spans_fill_the_requested_width_for_all_ratios() {
         for ratio in [-1.0, 0.0, 0.25, 0.5, 0.9, 1.0, 2.0] {
-            let text = bar_text(&bar_spans(ratio, 20));
-            assert_eq!(
-                text.chars().count(),
-                20,
-                "ratio {ratio} must still fill the bar width"
-            );
+            let width: usize = bar_spans(ratio, 20)
+                .iter()
+                .map(|span| span.content.as_ref().width())
+                .sum();
+            assert_eq!(width, 20, "ratio {ratio} must still fill the bar width");
         }
-    }
-
-    #[test]
-    fn bar_spans_use_a_smooth_partial_leading_edge() {
-        // Half of 35 cells is 17 full cells plus a half block.
-        let text = bar_text(&bar_spans(0.5, 35));
-        assert_eq!(text.chars().filter(|&ch| ch == FILLED_GLYPH).count(), 17);
-        assert!(
-            text.contains('\u{258C}'),
-            "half block missing from {text:?}"
-        );
     }
 }

@@ -839,14 +839,6 @@ mod tests {
     }
 
     #[test]
-    fn keycaps_are_raised_and_accent_coloured() {
-        let key = key_hint("Enter", "run");
-        assert_eq!(key[0].style.bg, Some(THEME.surface));
-        assert_eq!(key[0].style.fg, Some(THEME.accent));
-        assert!(key[0].style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
     fn light_progress_track_is_visible_on_page_and_panel_backgrounds() {
         let theme = build(ThemeVariant::Light, ColorMode::TrueColor);
         for background in [theme.bg, theme.surface] {

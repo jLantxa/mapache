@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Weak,
         atomic::{AtomicU64, Ordering},
@@ -528,8 +529,16 @@ pub(crate) enum PackSaverRequest {
         data: Vec<u8>,
         raw_length: u64,
         compressed: bool,
+        /// Monotonic sequence assigned by GC repack, starting at 0 with no
+        /// gaps. Requests with a sequence are appended in that order regardless
+        /// of which blocking worker finished first; `None` keeps the immediate
+        /// behaviour used by backup and zero-blob re-emission.
+        seq: Option<u64>,
     },
 }
+
+/// The blob fields of a `SaveBlob` request, used while reordering.
+type SaveBlobFields = (ID, BlobType, Vec<u8>, u64, bool);
 
 impl PackSaver {
     /// Creates a new `PackSaver` and initializes the background worker pool.
@@ -736,6 +745,15 @@ impl PackSaver {
     /// encryption or I/O happens here.
     pub fn run(mut self) -> Result<()> {
         tracing::info!(target: "packer", "Pack saver loop started");
+
+        // GC repack assigns a sequence to every blob. Encoding happens in
+        // blocking workers, whose completion order is not stable, so hold
+        // out-of-order arrivals until their predecessor is available. The
+        // buffer is bounded by the in-flight worker count, not by the number
+        // of blobs in the repository.
+        let mut pending: BTreeMap<u64, SaveBlobFields> = BTreeMap::new();
+        let mut next_seq = 0u64;
+
         while let Ok(request) = self.rx.recv() {
             match request {
                 PackSaverRequest::SaveBlob {
@@ -744,36 +762,31 @@ impl PackSaver {
                     data,
                     raw_length,
                     compressed,
+                    seq: Some(seq),
                 } => {
-                    let max_size = self.max_packer_size;
-                    let blob_len = data.len() as u64;
-
-                    // A blob larger than the whole addressable data section can
-                    // never be stored, not even in a fresh pack.
-                    if blob_len > MAX_PACK_DATA_SIZE {
-                        return Err(MapacheError::Internal(format!(
-                            "blob {} of type {:?} is {blob_len} bytes, exceeding the maximum pack data size ({MAX_PACK_DATA_SIZE})",
-                            id.to_short_hex(8),
-                            blob_type
-                        )));
-                    }
-
-                    // If the new blob would exceed the maximum addressable pack size,
-                    // dispatch the current packer first.
-                    let mut packer = self.packer_for(blob_type)?;
-                    if packer.size() + blob_len > MAX_PACK_DATA_SIZE {
-                        self.dispatch_packer(blob_type)?;
-                        packer = self.packer_for(blob_type)?;
-                    }
-
-                    packer.add_blob(id, blob_type, &data, raw_length, compressed)?;
-
-                    if packer.size() >= max_size || packer.num_objects() >= MAX_DESCRIPTORS_PER_PACK
+                    pending.insert(seq, (id, blob_type, data, raw_length, compressed));
+                    while let Some((id, blob_type, data, raw_length, compressed)) =
+                        pending.remove(&next_seq)
                     {
-                        self.dispatch_packer(blob_type)?;
+                        self.append_blob(id, blob_type, &data, raw_length, compressed)?;
+                        next_seq += 1;
                     }
                 }
+                PackSaverRequest::SaveBlob {
+                    id,
+                    blob_type,
+                    data,
+                    raw_length,
+                    compressed,
+                    seq: None,
+                } => self.append_blob(id, blob_type, &data, raw_length, compressed)?,
             }
+        }
+
+        // A failed/aborted repack can leave gaps; flush whatever arrived in
+        // sequence order instead of dropping it.
+        for (_, (id, blob_type, data, raw_length, compressed)) in pending {
+            self.append_blob(id, blob_type, &data, raw_length, compressed)?;
         }
 
         // Final flushes
@@ -790,6 +803,45 @@ impl PackSaver {
             .map_err(|_| MapacheError::Internal("worker panicked".to_string()));
         tracing::info!(target: "packer", "Pack saver loop finished");
         res?
+    }
+
+    /// Appends one encoded blob to its packer, dispatching a full packer first
+    /// when required.
+    fn append_blob(
+        &mut self,
+        id: ID,
+        blob_type: BlobType,
+        data: &[u8],
+        raw_length: u64,
+        compressed: bool,
+    ) -> Result<()> {
+        let max_size = self.max_packer_size;
+        let blob_len = data.len() as u64;
+
+        // A blob larger than the whole addressable data section can never be
+        // stored, not even in a fresh pack.
+        if blob_len > MAX_PACK_DATA_SIZE {
+            return Err(MapacheError::Internal(format!(
+                "blob {} of type {:?} is {blob_len} bytes, exceeding the maximum pack data size ({MAX_PACK_DATA_SIZE})",
+                id.to_short_hex(8),
+                blob_type
+            )));
+        }
+
+        // If the new blob would exceed the maximum addressable pack size,
+        // dispatch the current packer first.
+        let mut packer = self.packer_for(blob_type)?;
+        if packer.size() + blob_len > MAX_PACK_DATA_SIZE {
+            self.dispatch_packer(blob_type)?;
+            packer = self.packer_for(blob_type)?;
+        }
+
+        packer.add_blob(id, blob_type, data, raw_length, compressed)?;
+
+        if packer.size() >= max_size || packer.num_objects() >= MAX_DESCRIPTORS_PER_PACK {
+            self.dispatch_packer(blob_type)?;
+        }
+        Ok(())
     }
 
     /// Swaps the current packer with a fresh one from the recycle pool

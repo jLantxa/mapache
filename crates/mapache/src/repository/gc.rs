@@ -19,7 +19,7 @@ use crate::{
     },
     fs::tree::Tree,
     repository::{
-        loader,
+        loader::{self, RepackItem, RepackPayload},
         packer::Packer,
         repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
@@ -84,6 +84,10 @@ pub struct Plan {
     pub object_dropped: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
     /// Referenced zero blobs: ID -> (raw length, packs holding a footer entry).
     pub zero_blobs: IdMap<ID, (u32, Vec<ID>)>,
+    /// `true` for `repack`, whose contract is to re-encode with the current
+    /// settings. `false` for `clean`, which reuses the already-verified encoded
+    /// payload from the old pack to avoid recompression and re-encryption.
+    pub reencode: bool,
     /// Flag that signals GC to abort at the next safe checkpoint. Checked
     /// between phases only, so an interrupted GC leaves on-disk state intact.
     pub shutdown_signal: Arc<AtomicBool>,
@@ -182,6 +186,7 @@ pub async fn scan(
         small_tree_packs: IdSet::default(),
         object_dropped,
         zero_blobs: IdMap::default(),
+        reencode: false,
         shutdown_signal: shutdown_signal.clone(),
     };
 
@@ -429,6 +434,7 @@ pub async fn repack_all(
         index_ids: repo.index().ids(),
         object_dropped,
         zero_blobs,
+        reencode: true,
         shutdown_signal,
     }
     .execute(reporter.0)
@@ -773,10 +779,23 @@ impl Plan {
         );
         let repack_blob_packs = Arc::new(parking_lot::Mutex::new(repack_blob_packs));
 
+        // `repack` re-encodes with current settings by contract; `clean` reuses
+        // the already-verified encoded payload to skip zstd + encryption again.
+        let payload = if self.reencode {
+            RepackPayload::Decoded
+        } else {
+            RepackPayload::Encoded
+        };
+
         let loader = loader::BlobLoader::new(self.repo.clone());
 
         let repack_result = loader
-            .load_referenced_from_packs_streaming(pack_ids, repack_blob_packs, segment_window)
+            .load_referenced_from_packs_streaming(
+                pack_ids,
+                repack_blob_packs,
+                segment_window,
+                payload,
+            )
             .map(|item| {
                 let repo = self.repo.clone();
                 let r = r.clone();
@@ -790,8 +809,6 @@ impl Plan {
                     // become `unused_packs` on the next GC run.
                     check_shutdown(&shutdown_signal)?;
 
-                    let (id, blob_type, data) = item?;
-
                     // Process blobs with bounded concurrency via a stream pipeline,
                     // so only a handful of data Vecs are in memory at any time.
                     // The concurrency limit also prevents exhausting the blocking
@@ -801,12 +818,37 @@ impl Plan {
                         .await
                         .ok_or(MapacheError::Interrupted)?;
                     tokio::task::spawn_blocking(move || {
-                        let result = repo.encode_and_save_blob_with_hint(
-                            blob_type,
-                            WriteContents::Owned(data),
-                            SaveID::WithID(id),
-                            CompressionHint::Auto,
-                        );
+                        let result = match item? {
+                            RepackItem::Decoded {
+                                seq,
+                                id,
+                                blob_type,
+                                data,
+                            } => repo.encode_and_save_blob_with_hint_ordered(
+                                blob_type,
+                                WriteContents::Owned(data),
+                                SaveID::WithID(id),
+                                CompressionHint::Auto,
+                                seq,
+                            ),
+                            RepackItem::Encoded {
+                                seq,
+                                id,
+                                blob_type,
+                                encoded_data,
+                                raw_length,
+                                compressed,
+                            } => repo
+                                .save_encoded_blob(
+                                    id,
+                                    blob_type,
+                                    encoded_data,
+                                    raw_length,
+                                    compressed,
+                                    Some(seq),
+                                )
+                                .map(|_| id),
+                        };
                         let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         r.update_task(GcTaskKind::RepackingBlobs, current);
                         result
@@ -817,6 +859,9 @@ impl Plan {
                     Ok::<(), MapacheError>(())
                 }
             })
+            // Physical order is guaranteed by the sequence handed to PackSaver,
+            // not by completion order, so unordered consumption keeps full
+            // throughput without making pack IDs depend on worker timing.
             .buffer_unordered(encode_concurrency)
             .try_for_each(|_| async { Ok(()) })
             .await;

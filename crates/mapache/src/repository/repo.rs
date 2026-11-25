@@ -618,8 +618,37 @@ impl Repository {
             data: Vec::new(),
             raw_length: raw_length as u64,
             compressed: false,
+            seq: None,
         })
         .map_err(|e| MapacheError::Repo(format!("packer channel closed: {e}")))
+    }
+
+    /// Saves a blob whose encoded payload is already available, without
+    /// decoding, compressing or encrypting it again.
+    ///
+    /// Used by `clean`: the GC loader has already decoded the payload to verify
+    /// its content ID, so re-encoding it with unchanged settings would produce
+    /// byte-identical bytes and only waste CPU. Compressible blobs keep their
+    /// original `compressed` flag from the source pack descriptor.
+    pub fn save_encoded_blob(
+        &self,
+        id: ID,
+        blob_type: BlobType,
+        encoded_data: Vec<u8>,
+        raw_length: u64,
+        compressed: bool,
+        seq: Option<u64>,
+    ) -> Result<ID> {
+        if !self.master_index.add_pending_blob(id) {
+            return Ok(id);
+        }
+
+        let result =
+            self.enqueue_encoded_blob(id, blob_type, encoded_data, raw_length, compressed, seq);
+        if result.is_err() {
+            self.master_index.remove_pending_blob(&id);
+        }
+        result
     }
 
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in a pack file.
@@ -646,6 +675,30 @@ impl Repository {
         save_id: SaveID,
         hint: CompressionHint,
     ) -> Result<ID> {
+        self.save_encoded_blob_with_hint(blob_type, data, save_id, hint, None)
+    }
+
+    /// Like [`Self::encode_and_save_blob_with_hint`], but attaches the GC
+    /// repack sequence so `PackSaver` preserves physical blob order.
+    pub fn encode_and_save_blob_with_hint_ordered(
+        &self,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        save_id: SaveID,
+        hint: CompressionHint,
+        seq: u64,
+    ) -> Result<ID> {
+        self.save_encoded_blob_with_hint(blob_type, data, save_id, hint, Some(seq))
+    }
+
+    fn save_encoded_blob_with_hint(
+        &self,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        save_id: SaveID,
+        hint: CompressionHint,
+        seq: Option<u64>,
+    ) -> Result<ID> {
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
             SaveID::WithID(id) => id,
@@ -667,7 +720,7 @@ impl Repository {
         // release the claim, otherwise a retry of the same content would be
         // silently skipped (`add_pending_blob` returns false) and the blob would
         // never reach a pack even though callers got a success ID.
-        let result = self.encode_and_enqueue_blob(blob_type, data, id, hint);
+        let result = self.encode_and_enqueue_blob(blob_type, data, id, hint, seq);
         if result.is_err() {
             self.master_index.remove_pending_blob(&id);
         }
@@ -684,6 +737,7 @@ impl Repository {
         data: WriteContents<'_>,
         id: ID,
         hint: CompressionHint,
+        seq: Option<u64>,
     ) -> Result<ID> {
         // Zero blobs use a footer descriptor without occupying pack data bytes.
         if blob_type == BlobType::Zero {
@@ -710,6 +764,7 @@ impl Repository {
                 data: Vec::new(),
                 raw_length,
                 compressed: false,
+                seq,
             })
             .map_err(|e| MapacheError::Repo(format!("packer channel closed: {e}")))?;
 
@@ -737,6 +792,20 @@ impl Repository {
             compressed = false;
         }
 
+        self.enqueue_encoded_blob(id, blob_type, encoded_data, raw_length, compressed, seq)
+    }
+
+    /// Hands an already-encoded blob to the packer. The caller must have
+    /// claimed `id` via `add_pending_blob`.
+    fn enqueue_encoded_blob(
+        &self,
+        id: ID,
+        blob_type: BlobType,
+        encoded_data: Vec<u8>,
+        raw_length: u64,
+        compressed: bool,
+        seq: Option<u64>,
+    ) -> Result<ID> {
         let tx = {
             let tx_guard = self.pack_saver_tx.read();
             tx_guard
@@ -753,6 +822,7 @@ impl Repository {
             data: encoded_data,
             raw_length,
             compressed,
+            seq,
         })
         .map_err(|e| MapacheError::Repo(format!("packer channel closed: {e}")))?;
 

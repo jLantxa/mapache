@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use futures::stream::{self, StreamExt};
 use futures::{Stream, TryStreamExt};
@@ -15,6 +15,37 @@ use crate::{
     },
     utils::collections::IdMap,
 };
+
+/// Which representation of a blob the streaming repack loader should yield.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepackPayload {
+    /// Return the decoded (plaintext) blob. Used by `repack`, whose contract is
+    /// to re-encode everything with the current settings.
+    Decoded,
+    /// Return the encoded bytes already stored in the pack, after decoding
+    /// them only to verify the content ID. Used by `clean` to avoid paying for
+    /// compression and encryption twice.
+    Encoded,
+}
+
+/// One blob yielded by the streaming repack loader.
+#[derive(Debug)]
+pub enum RepackItem {
+    Decoded {
+        seq: u64,
+        id: ID,
+        blob_type: BlobType,
+        data: Vec<u8>,
+    },
+    Encoded {
+        seq: u64,
+        id: ID,
+        blob_type: BlobType,
+        encoded_data: Vec<u8>,
+        raw_length: u64,
+        compressed: bool,
+    },
+}
 
 /// A segment of a pack file to be downloaded.
 #[derive(Debug, Clone)]
@@ -307,7 +338,8 @@ impl BlobLoader {
         pack_ids: Vec<ID>,
         repack_blob_packs: Arc<parking_lot::Mutex<IdMap<ID, ID>>>,
         window: usize,
-    ) -> impl Stream<Item = Result<(ID, BlobType, Vec<u8>)>> + 'static {
+        payload: RepackPayload,
+    ) -> impl Stream<Item = Result<RepackItem>> + 'static {
         let window = window.max(1);
         let repo = self.repo.clone();
         let backend = repo.backend();
@@ -344,9 +376,14 @@ impl BlobLoader {
                     )
                 }
             })
-            .buffer_unordered(window)
+            // Ordered (not unordered) so segments reach the packer in
+            // (pack_id, offset) order and final packs are reproducible.
+            .buffered(window)
             .try_flatten();
 
+        // Segments are now emitted in (pack_id, offset) order; the counter
+        // gives PackSaver a stable sequence despite concurrent encoding.
+        let next_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let repo = self.repo.clone();
         segment_stream
             .map_ok(move |segment| {
@@ -376,21 +413,51 @@ impl BlobLoader {
                     Ok::<(PackedBlobSegment, Vec<u8>), MapacheError>((segment, data))
                 }
             })
-            .try_buffer_unordered(window)
+            .try_buffered(window)
             .map_ok(move |(segment, data)| {
                 let min_offset = segment.min_offset;
                 let secure_storage = decode_secure_storage.clone();
                 let blobs = segment.blobs;
                 let last_blob_index = segment.blob_range.end;
+                let next_seq = next_seq.clone();
                 let mut data = Some(data);
                 stream::iter(segment.blob_range).map(move |blob_index| {
+                    let seq = next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let result = match data.as_deref() {
-                        Some(segment_data) => decode_packed_blob_from_segment(
-                            secure_storage.clone(),
-                            min_offset,
-                            segment_data,
-                            &blobs[blob_index],
-                        ),
+                        Some(segment_data) => match payload {
+                            RepackPayload::Decoded => decode_packed_blob_from_segment(
+                                secure_storage.clone(),
+                                min_offset,
+                                segment_data,
+                                &blobs[blob_index],
+                            )
+                            .map(|(id, blob_type, data)| RepackItem::Decoded {
+                                seq,
+                                id,
+                                blob_type,
+                                data,
+                            }),
+                            RepackPayload::Encoded => {
+                                let blob = &blobs[blob_index];
+                                let range = packed_blob_range(min_offset, segment_data, blob)?;
+                                // Decode only to verify the content ID; the
+                                // plaintext is deliberately dropped here.
+                                let (id, blob_type, _) = decode_packed_blob_from_segment(
+                                    secure_storage.clone(),
+                                    min_offset,
+                                    segment_data,
+                                    blob,
+                                )?;
+                                Ok(RepackItem::Encoded {
+                                    seq,
+                                    id,
+                                    blob_type,
+                                    encoded_data: segment_data[range].to_vec(),
+                                    raw_length: blob.raw_length as u64,
+                                    compressed: blob.compressed,
+                                })
+                            }
+                        },
                         None => Err(MapacheError::Internal(
                             "pack segment data was released before its final blob".into(),
                         )),
@@ -479,12 +546,11 @@ fn packed_blob_segments(
     })
 }
 
-fn decode_packed_blob_from_segment(
-    secure_storage: Arc<SecureStorage>,
+fn packed_blob_range(
     segment_min_offset: u64,
     data: &[u8],
     blob: &PackedBlobDescriptor,
-) -> Result<(ID, BlobType, Vec<u8>)> {
+) -> Result<Range<usize>> {
     let blob_offset = blob.offset as u64;
     if blob_offset < segment_min_offset {
         return Err(MapacheError::Integrity(format!(
@@ -510,8 +576,17 @@ fn decode_packed_blob_from_segment(
             data.len()
         )));
     }
+    Ok(start..end)
+}
 
-    let blob_data = secure_storage.decode_blob(&data[start..end], blob.compressed)?;
+fn decode_packed_blob_from_segment(
+    secure_storage: Arc<SecureStorage>,
+    segment_min_offset: u64,
+    data: &[u8],
+    blob: &PackedBlobDescriptor,
+) -> Result<(ID, BlobType, Vec<u8>)> {
+    let range = packed_blob_range(segment_min_offset, data, blob)?;
+    let blob_data = secure_storage.decode_blob(&data[range], blob.compressed)?;
     if blob.blob_type != BlobType::Zero {
         blob.id.verify_content(&blob_data)?;
     }

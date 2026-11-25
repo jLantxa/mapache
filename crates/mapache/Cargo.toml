@@ -28,7 +28,7 @@ futures = "0.3"
 indicatif = "0.18"
 jiff = { version = "1.0", features = ["serde"] }
 libc = { version = "0.2" }
-mapache-chunker = { version = "0.3.1", path = "../chunker" }
+mapache-chunker = { version = "0.3.2", path = "../chunker" }
 parking_lot = "0.13"
 percent-encoding = "2.3"
 rand = "0.10"

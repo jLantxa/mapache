@@ -603,19 +603,29 @@ mod filesystem_boundary_tests {
     }
 }
 
-/// Rebuilds a filesystem path from a serialized node name.
-///
-/// Snapshots spanning several Windows drives have an empty root and store the
-/// top-level drives as logical names (`C`, `D`). Join them as real drive
-/// prefixes so the paths match the ones produced by `FSNodeStream`.
-fn join_serialized_path(parent: &Path, name: &str) -> PathBuf {
+/// How to interpret top-level names of a serialized tree on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SerializedPathMode {
+    /// Keep drive letters as logical names relative to the snapshot root.
+    /// This is what restore, filters and tree rewriting expect.
+    Relative,
+    /// Rebuild single-letter names as `X:\` so paths match the absolute ones
+    /// produced by `FSNodeStream` when diffing a parent snapshot.
+    Filesystem,
+}
+
+/// Rebuilds a path from a serialized node name.
+fn join_serialized_path(parent: &Path, name: &str, mode: SerializedPathMode) -> PathBuf {
     #[cfg(windows)]
-    if parent.as_os_str().is_empty()
+    if mode == SerializedPathMode::Filesystem
+        && parent.as_os_str().is_empty()
         && name.len() == 1
         && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
     {
         return PathBuf::from(format!("{}:\\", name));
     }
+    #[cfg(not(windows))]
+    let _ = mode;
     parent.join(name)
 }
 
@@ -629,6 +639,7 @@ struct SerializedNodeState {
     /// Stack stores (shared_parent_path, Node) to avoid duplicating parent PathBufs.
     stack: Vec<(Arc<PathBuf>, Node)>,
     filter: Arc<PathFilter>,
+    path_mode: SerializedPathMode,
 }
 
 impl SerializedNodeStream {
@@ -638,6 +649,27 @@ impl SerializedNodeStream {
         base_path: PathBuf,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
+    ) -> Result<Self> {
+        Self::new_with_mode(
+            repo,
+            root_id,
+            base_path,
+            include,
+            exclude,
+            SerializedPathMode::Relative,
+        )
+        .await
+    }
+
+    /// Builds a stream whose top-level Windows drive names are absolute paths.
+    /// Only callers diffing against `FSNodeStream` need this mode.
+    pub(crate) async fn new_with_mode(
+        repo: Arc<Repository>,
+        root_id: Option<ID>,
+        base_path: PathBuf,
+        include: Option<Vec<PathBuf>>,
+        exclude: Option<Vec<PathBuf>>,
+        path_mode: SerializedPathMode,
     ) -> Result<Self> {
         let filter = Arc::new(PathFilter::new(include, exclude));
         let mut stack: Vec<(Arc<PathBuf>, Node)> = Vec::new();
@@ -649,7 +681,7 @@ impl SerializedNodeStream {
 
             let parent = Arc::new(base_path);
             for node in tree.nodes.into_iter().rev() {
-                if filter.allow(&join_serialized_path(&parent, &node.name)) {
+                if filter.allow(&join_serialized_path(&parent, &node.name, path_mode)) {
                     stack.push((parent.clone(), node));
                 }
             }
@@ -659,6 +691,7 @@ impl SerializedNodeStream {
             repo,
             stack,
             filter,
+            path_mode,
         };
 
         Ok(Self {
@@ -671,7 +704,7 @@ impl SerializedNodeStream {
     ) -> Pin<Box<dyn Stream<Item = Result<StreamNodeInfo>> + Send>> {
         try_stream! {
             while let Some((parent, node)) = state.stack.pop() {
-                let path = join_serialized_path(&parent, &node.name);
+                let path = join_serialized_path(&parent, &node.name, state.path_mode);
                 if !state.filter.allow(&path) {
                     continue;
                 }
@@ -1264,25 +1297,30 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn serialized_drive_names_reconstruct_windows_drive_prefixes() {
+    fn serialized_drive_names_are_relative_unless_matching_filesystem_paths() {
         // Snapshots spanning several drives store the drive letters as
-        // single-component names under an empty root. Streaming them without
-        // restoring the `X:\` prefix makes every restored path miss its source.
+        // single-component names under an empty root. Restore keeps them
+        // relative to the target; only parent diffing needs `X:\` to match
+        // the absolute paths produced by FSNodeStream.
         assert_eq!(
-            join_serialized_path(Path::new(""), "C"),
+            join_serialized_path(Path::new(""), "C", SerializedPathMode::Relative),
+            PathBuf::from("C")
+        );
+        assert_eq!(
+            join_serialized_path(Path::new(""), "C", SerializedPathMode::Filesystem),
             PathBuf::from(r"C:\")
         );
         assert_eq!(
-            join_serialized_path(Path::new(""), "d"),
+            join_serialized_path(Path::new(""), "d", SerializedPathMode::Filesystem),
             PathBuf::from(r"d:\")
         );
         // Only single letters under the empty root are drive prefixes.
         assert_eq!(
-            join_serialized_path(Path::new(""), "CD"),
+            join_serialized_path(Path::new(""), "CD", SerializedPathMode::Filesystem),
             PathBuf::from("CD")
         );
         assert_eq!(
-            join_serialized_path(Path::new(r"C:\"), "Users"),
+            join_serialized_path(Path::new(r"C:\"), "Users", SerializedPathMode::Filesystem),
             PathBuf::from(r"C:\Users")
         );
     }

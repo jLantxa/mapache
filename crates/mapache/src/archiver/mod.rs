@@ -38,7 +38,10 @@ use crate::{
         filter::WalkOptions,
         node::{Metadata, Node, NodeType},
         scanner::spawn_background_scanner,
-        tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
+        tree::{
+            FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, SerializedPathMode,
+            StreamNode,
+        },
     },
     repository::{
         repo::Repository,
@@ -536,7 +539,7 @@ pub(crate) async fn snapshot(
         // with. Rebuilding them with the *current* root makes every path differ
         // whenever the source list changes (and therefore the LCP moves), so
         // use the parent's own root to recover the original absolute paths.
-        let previous_tree_stream = SerializedNodeStream::new(
+        let previous_tree_stream = SerializedNodeStream::new_with_mode(
             repo.clone(),
             snapshot_options.parent_snapshot.map(|p| p.snapshot.tree),
             snapshot_options
@@ -545,6 +548,7 @@ pub(crate) async fn snapshot(
                 .unwrap_or_else(|| snapshot_options.snapshot_root_path.clone()),
             None,
             None,
+            SerializedPathMode::Filesystem,
         )
         .await?;
 

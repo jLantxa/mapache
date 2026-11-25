@@ -809,6 +809,16 @@ mod tests {
         assert!(filter.allow(Path::new("/a/other.txt")));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn drive_letter_exclude_matches_relative_snapshot_paths() {
+        // Restore filters use names relative to the snapshot root, where a
+        // multi-drive snapshot exposes drives as `C` and `D` directories.
+        let filter = PathFilter::new(None, Some(vec![PathBuf::from("D/")]));
+        assert!(!filter.allow(Path::new(r"D\prj\file")));
+        assert!(filter.allow(Path::new(r"C\prj\file")));
+    }
+
     #[test]
     fn test_glob_exclude_prefix_semantics() {
         // Exclude: /a/*/c (and descendants)

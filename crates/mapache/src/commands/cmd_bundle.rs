@@ -188,10 +188,10 @@ pub struct CmdArgs {
     #[arg(short, long, group = "mode")]
     pub mount: bool,
 
-    /// Input: source paths (-a), bundle file (-x), or bundle + mountpoint (-m)
+    /// Input: source paths (-b), bundle file (-x), or bundle + mountpoint (-m)
     pub input: Vec<PathBuf>,
 
-    /// Output: bundle file (-a) or destination directory (-x). Not used with -m.
+    /// Output: bundle file (-b) or destination directory (-x). Not used with -m.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 

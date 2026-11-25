@@ -142,6 +142,12 @@ fn test_chunking_reconstructs_input_with_contiguous_offsets() -> Result<()> {
     for (index, chunk) in chunks.iter().enumerate() {
         assert_eq!(chunk.offset, expected_offset);
         assert_eq!(chunk.length, chunk.data.len());
+
+        // Streaming must choose the same boundaries as cutting the complete
+        // input directly, even when it buffers more or less than `max_size`.
+        let (_, expected_cut) = chunker.cut(&data[expected_offset..]);
+        assert_eq!(chunk.length, expected_cut);
+
         if index + 1 < chunks.len() {
             assert!(chunk.length >= chunker.min_size);
             assert!(chunk.length <= chunker.max_size);
@@ -315,5 +321,46 @@ fn test_chunk_slow_reader() {
         reconstructed.extend_from_slice(&chunk.data);
     }
 
+    assert_eq!(reconstructed, data);
+}
+
+/// A `Read` implementation that inspects the whole buffer before writing to
+/// it, which arbitrary readers are allowed to do. The chunker must therefore
+/// hand it initialized memory only; Miri flags a violation of that contract.
+/// It also returns `Interrupted` a few times to exercise the retry path.
+struct InspectingReader<R: std::io::Read> {
+    inner: R,
+    interruptions: usize,
+}
+
+impl<R: std::io::Read> std::io::Read for InspectingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let checksum = buf.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        std::hint::black_box(checksum);
+
+        if self.interruptions > 0 {
+            self.interruptions -= 1;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "retry",
+            ));
+        }
+
+        self.inner.read(buf)
+    }
+}
+
+#[test]
+fn test_stream_gives_readers_initialized_buffer() {
+    let data: Vec<u8> = (0..500).map(|index| (index % 251) as u8).collect();
+    let chunker = Chunker::new(64, 128, 256, Normalization::None);
+
+    let reader = InspectingReader {
+        inner: Cursor::new(data.clone()),
+        interruptions: 2,
+    };
+    let chunks: Vec<_> = chunker.stream(reader).collect::<Result<_>>().unwrap();
+
+    let reconstructed: Vec<u8> = chunks.into_iter().flat_map(|chunk| chunk.data).collect();
     assert_eq!(reconstructed, data);
 }

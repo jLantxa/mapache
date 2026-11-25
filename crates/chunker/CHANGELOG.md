@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `ChunkStream` now cuts the data already buffered before asking the source for
+  more input, instead of refilling to `max_size` and compacting on every chunk.
+  The rolling hash depends only on the bytes up to the cut, so boundaries are
+  unchanged. Throughput improved by 30–35% on random, text and mixed 64 MiB
+  inputs.
+
+### Fixed
+
+- The streaming read buffer is now always initialized before being handed to a
+  `Read` implementation. Passing uninitialized spare capacity as `&mut [u8]`
+  was undefined behavior because readers may inspect the whole slice.
+
 ## v0.3.1 (2026-09-19)
 
 ### Changed

@@ -17,6 +17,18 @@ designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
 their own validation before relying on it for primary backups.
 
+## Upgrading to v0.9.0
+
+- **Migrate v1 repositories first.** v0.9.0 removes repository and bundle
+  format v1 support, including the `migrate` command. Use mapache v0.8.0 to
+  migrate any remaining v1 repositories before upgrading.
+- **Regenerate out-of-range keyfiles first.** Keyfiles written by older
+  versions with Argon2 settings above 64 MiB, 64 iterations or 2 GiB of
+  memory-hard work are rejected. Regenerate them with mapache v0.8.0 without
+  `--calibrate-kdf` before upgrading.
+- The `verify --parallel` option and the TUI log overlay (`Ctrl+L`) are gone.
+  Use the adaptive runtime settings and `MAPACHE_DEBUG_LEVEL` instead.
+
 ## Documentation
 
 Full documentation is available at **[jlantxa.github.io/mapache](https://jlantxa.github.io/mapache/)**.

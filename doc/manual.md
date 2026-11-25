@@ -1693,11 +1693,11 @@ the root; each snapshot directory contains the backed-up files.
 ### Mount a Bundle
 
 ```bash
-mapache mount bundle.mapache /mnt/bundle
-mapache mount bundle.mapache /mnt/bundle -b    # Force bundle mode
+mapache mount /mnt/bundle -r bundle.mapache
+mapache mount /mnt/bundle -r bundle.mapache -b  # Force bundle mode
 ```
 
-If the path has a `.mapache` extension, mapache auto-detects it as a bundle.
+If the repository path has a `.mapache` extension, mapache auto-detects it as a bundle.
 
 ### Mount Options
 
@@ -2277,12 +2277,12 @@ mapache bundle --export-snapshot <SNAPSHOT> -o <OUTPUT.mapache> -r <URL>
 mapache bundle -i <INPUT.mapache...> -r <URL>
 mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
 
-  -a, --bundle            Create mode
+  -b, --bundle            Create mode
   -x, --extract           Extract mode
   -i, --import            Import mode: one or more bundle files (requires -r)
   --export-snapshot <SNAPSHOT>  Export mode: export snapshot (latest, prefix, or ID; requires -r)
   -m, --mount             Mount mode (FUSE, Unix only)
-  -o, --output <PATH>     Bundle file (-a, --export-snapshot) or destination (-x)
+  -o, --output <PATH>     Bundle file (-b, --export-snapshot) or destination (-x)
   -e, --exclude <GLOB>    Exclude patterns (bundle mode; **/ spans directories)
   --as-root               Use a single directory as the bundle root (bundle mode)
   --readers <N>           Parallel readers (default: adaptive)

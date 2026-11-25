@@ -55,6 +55,13 @@
 
 ### Fixed
 
+- The chunker's streaming API now keeps its read buffer initialized instead
+  of handing arbitrary `Read` implementations uninitialized spare capacity,
+  which was undefined behavior because readers may inspect the whole slice.
+  The buffer is initialized only as it grows, and the stream now cuts the
+  already-buffered data before asking for more input. Benchmarked throughput
+  improved by 30–35% on random, text and mixed 64 MiB inputs, with no change
+  in chunk boundaries.
 - `/proc/meminfo` parsing now ignores malformed lines instead of discarding the
   whole memory snapshot, and size options reject per-second suffixes.
 - `rechunk` and bundle import now flush all rewritten blobs before publishing

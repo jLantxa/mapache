@@ -52,6 +52,11 @@
   count and caps the blocking pool at twice the detected CPUs (16–128) instead
   of Tokio's default maximum of 512. Override it with
   `MAPACHE_MAX_BLOCKING_THREADS`.
+- **Faster GC repack**: `mapache clean` now reuses each surviving blob's encoded
+  payload after verifying its content ID, instead of compressing and encrypting
+  it a second time. Repacked blobs are written in a stable `(pack ID, offset)`
+  order, so the resulting packs are reproducible across runs. `mapache repack`
+  still re-encodes everything with the current settings.
 
 ### Fixed
 

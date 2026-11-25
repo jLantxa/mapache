@@ -14,10 +14,11 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // Use the first 4 bytes to vary chunker parameters
-    let min_size = (data[0] as usize % 1024).max(64);
-    let normal_size = (data[1] as usize % 8192).max(min_size);
-    let max_size = (data[2] as usize % 32768).max(normal_size);
+    // Use the first 4 bytes to vary chunker parameters. Sizes must be even
+    // (Chunker::new asserts this), so round each one down before use.
+    let min_size = ((data[0] as usize % 1024).max(64)) & !1;
+    let normal_size = ((data[1] as usize % 8192).max(min_size)) & !1;
+    let max_size = ((data[2] as usize % 32768).max(normal_size)) & !1;
     let norm = match data[3] % 4 {
         0 => Normalization::None,
         1 => Normalization::L1,
@@ -40,6 +41,14 @@ fuzz_target!(|data: &[u8]| {
                     chunk.length,
                     chunk.data.len(),
                     "Chunk length field mismatch"
+                );
+
+                // Streaming must agree with cutting the remaining input
+                // directly, regardless of how the source chunks its reads.
+                let (_, expected_cut) = chunker.cut(&rest[chunk.offset..]);
+                assert_eq!(
+                    chunk.length, expected_cut,
+                    "Streaming boundary differs from cut()"
                 );
 
                 reconstructed.extend_from_slice(&chunk.data);

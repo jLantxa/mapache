@@ -13,16 +13,14 @@ categories = ["algorithms", "filesystem"]
 [lints]
 workspace = true
 
-[[bin]]
+[[example]]
 name = "chunker-lookup"
-path = "src/bin/lookup_gen.rs"
-
-[dependencies]
-blake3 = "1.8"
-rand = "0.10"
+path = "examples/lookup_gen.rs"
 
 [dev-dependencies]
+blake3 = "1.8"
 criterion = { version = "0.8", features = ["html_reports"] }
+rand = "0.10"
 rstest = "0.29"
 
 [[bench]]

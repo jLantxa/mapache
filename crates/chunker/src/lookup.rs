@@ -3,7 +3,7 @@
 //! The tables and masks can be regenerated with the `chunker-lookup` binary:
 //!
 //! ```bash
-//! cargo run --bin chunker-lookup
+//! cargo run --example chunker-lookup
 //! ```
 //!
 //! The Gear tables are deterministic — derived from BLAKE3 hashes of each

@@ -26,7 +26,7 @@ five optimizations described in the paper are included:
 ## Usage
 
 ```rust
-use chunker::{Chunker, Normalization};
+use mapache_chunker::{Chunker, Normalization};
 
 let chunker = Chunker::new(
     512 * 1024,       // min_size:      512 KiB
@@ -55,7 +55,7 @@ The Gear hash tables and masks are precomputed in `src/lookup.rs`. To regenerate
 them:
 
 ```bash
-cargo run --bin chunker-lookup
+cargo run --example chunker-lookup
 ```
 
 ## Fuzzing

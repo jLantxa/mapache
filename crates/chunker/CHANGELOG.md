@@ -7,14 +7,17 @@
 - `ChunkStream` now cuts the data already buffered before asking the source for
   more input, instead of refilling to `max_size` and compacting on every chunk.
   The rolling hash depends only on the bytes up to the cut, so boundaries are
-  unchanged. Throughput improved by 30–35% on random, text and mixed 64 MiB
-  inputs.
+  unchanged.
+- The lookup-table generator is now an example instead of a binary, so `blake3`
+  and `rand` are dev-only dependencies and are not built by crate consumers.
 
 ### Fixed
 
 - The streaming read buffer is now always initialized before being handed to a
   `Read` implementation. Passing uninitialized spare capacity as `&mut [u8]`
   was undefined behavior because readers may inspect the whole slice.
+- `ChunkStream` now stops after reporting an I/O error instead of resuming and
+  yielding chunks from data read afterwards.
 
 ## v0.3.1 (2026-09-19)
 

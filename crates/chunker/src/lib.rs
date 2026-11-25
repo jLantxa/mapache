@@ -311,7 +311,9 @@ pub struct Chunk {
 ///
 /// Yields exactly-once reconstruction: concatenating all chunk data in order
 /// reproduces the original source bytes. Each chunk (except possibly the last)
-/// respects the chunker's min/max size constraints.
+/// respects the chunker's min/max size constraints. After an I/O error the
+/// stream is exhausted: it yields the error once, then [`None`] forever, so
+/// bytes read after the error can never be mistaken for a valid continuation.
 pub struct ChunkStream<'a, R: Read> {
     chunker: &'a Chunker,
     source: R,
@@ -326,6 +328,7 @@ pub struct ChunkStream<'a, R: Read> {
     end: usize,
     global_offset: usize,
     eof: bool,
+    failed: bool,
 }
 
 impl<'a, R: Read> ChunkStream<'a, R> {
@@ -342,6 +345,7 @@ impl<'a, R: Read> ChunkStream<'a, R> {
             end: 0,
             global_offset: 0,
             eof: false,
+            failed: false,
         }
     }
 
@@ -385,6 +389,10 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
     /// Reads more input only when the current buffer cannot yet decide a
     /// boundary, and flushes any remaining data as the final chunk on EOF.
     fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+
         loop {
             let available = self.end - self.start;
 
@@ -429,6 +437,7 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
             }
 
             if let Err(e) = self.fill() {
+                self.failed = true;
                 return Some(Err(ChunkerError::Io(e)));
             }
         }

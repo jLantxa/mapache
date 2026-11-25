@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use rstest::rstest;
 
-use crate::{Chunker, Normalization, Result, lookup::MASKS};
+use crate::{Chunker, ChunkerError, Normalization, Result, lookup::MASKS};
 
 #[allow(non_upper_case_globals)]
 const kiB: usize = 1024;
@@ -363,4 +363,44 @@ fn test_stream_gives_readers_initialized_buffer() {
 
     let reconstructed: Vec<u8> = chunks.into_iter().flat_map(|chunk| chunk.data).collect();
     assert_eq!(reconstructed, data);
+}
+
+/// Fails once after some bytes have already been buffered, then would happily
+/// continue serving data. The stream must not resume after reporting the error.
+struct ErrorOnceReader<R: std::io::Read> {
+    inner: R,
+    bytes_before_error: usize,
+    failed: bool,
+}
+
+impl<R: std::io::Read> std::io::Read for ErrorOnceReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if !self.failed && self.bytes_before_error == 0 {
+            self.failed = true;
+            return Err(std::io::Error::other("test error"));
+        }
+        if self.bytes_before_error > 0 {
+            let n = buf.len().min(self.bytes_before_error);
+            self.bytes_before_error -= n;
+            return self.inner.read(&mut buf[..n]);
+        }
+        self.inner.read(buf)
+    }
+}
+
+#[test]
+fn test_stream_stops_after_io_error() {
+    let data: Vec<u8> = (0..500).map(|index| (index % 251) as u8).collect();
+    let chunker = Chunker::new(64, 128, 256, Normalization::None);
+    let reader = ErrorOnceReader {
+        inner: Cursor::new(data),
+        bytes_before_error: 200,
+        failed: false,
+    };
+
+    let mut stream = chunker.stream(reader);
+    let first = stream.next().expect("the I/O error must be reported");
+    assert!(matches!(first, Err(ChunkerError::Io(_))));
+    assert!(stream.next().is_none(), "the stream must stay exhausted");
+    assert!(stream.next().is_none(), "the stream must stay exhausted");
 }

@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "mapache"
-version = "0.8.0"
+version = "0.9.0-rc.1"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",

@@ -177,8 +177,8 @@ impl VerifyReporter for CliVerifyReporter {
                     with_custom_elapsed(
                         default_progress_style()
                             .template(
-                                "[{custom_elapsed}] [{bar:25.cyan/white}] [ETA: {custom_eta}] \
-                                 {pos}/{len} packs ({msg})",
+                                "[{percent} %] [{bar:25.cyan/white}] [{custom_elapsed}] \
+                                 [ETA: {custom_eta}] {pos}/{len} packs ({msg})",
                             )
                             .expect("invalid progress bar template for verify pack integrity"),
                     ),
@@ -212,7 +212,9 @@ impl VerifyReporter for CliVerifyReporter {
             if cancelled {
                 bar.abandon();
             } else {
-                bar.finish();
+                // The following "phase passed" lines are printed via `message`,
+                // so leaving the completed bar on screen just adds a dead row.
+                bar.finish_and_clear();
             }
         }
     }

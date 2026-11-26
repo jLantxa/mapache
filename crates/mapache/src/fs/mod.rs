@@ -295,6 +295,19 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
         let mut direct_root_child_name: Option<OsString> = None;
 
         while let Some(parent) = cur.parent() {
+            // With a virtual (empty) root, relative paths such as `C\prj\file`
+            // reach the empty parent at their top-level component. That
+            // component is a direct child of the root, not an intermediate
+            // directory, so do not register an intermediate for `""`.
+            if root.as_os_str().is_empty() && parent.as_os_str().is_empty() {
+                if let Some(name) = cur.file_name() {
+                    direct_root_child_name = Some(name.to_os_string());
+                } else if let Some(comp) = cur.components().next() {
+                    direct_root_child_name = Some(comp.as_os_str().to_os_string());
+                }
+                break;
+            }
+
             // Stop when we reached (or crossed) root.
             if !root.as_os_str().is_empty() && parent <= root {
                 if parent == root
@@ -515,6 +528,15 @@ mod tests {
         expected.insert(PathBuf::from("/a"), 2); // children of /a: b and c
         assert_eq!(root_children_count, 1); // the root children is just "/"
         assert_eq!(intermediate_paths, expected);
+
+        // Relative paths under a virtual root (as produced by multi-drive
+        // snapshot rewrites) must count their top-level names as root children.
+        let root = PathBuf::new();
+        let paths = vec![PathBuf::from("C/prj/file"), PathBuf::from("D/data")];
+        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
+        assert_eq!(root_children_count, 2); // C and D
+        assert_eq!(intermediate_paths.get(&PathBuf::from("C")), Some(&1));
+        assert!(!intermediate_paths.contains_key(&PathBuf::from("")));
     }
 
     #[cfg(unix)]

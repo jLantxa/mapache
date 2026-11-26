@@ -60,6 +60,10 @@
 
 ### Fixed
 
+- `amend --exclude` and `rechunk` now work on snapshots spanning several Windows
+  drives. Excludes given as `D:\` or `D` are matched against the logical drive
+  names stored in the tree, the amended snapshot's path list is updated, and the
+  rewrite no longer fails with `Path traversal or invalid tree node name: ""`.
 - The chunker's streaming API now keeps its read buffer initialized instead
   of handing arbitrary `Read` implementations uninitialized spare capacity,
   which was undefined behavior because readers may inspect the whole slice.

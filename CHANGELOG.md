@@ -57,6 +57,11 @@
   it a second time. Repacked blobs are written in a stable `(pack ID, offset)`
   order, so the resulting packs are reproducible across runs. `mapache repack`
   still re-encodes everything with the current settings.
+- **Local backend path validation**: the canonical repository base is now
+  resolved once and symlink checks use async metadata instead of blocking calls.
+  Directory listings also reuse the metadata they already fetch instead of
+  stat-ing every entry twice. This removes the `stats --full` slowdown introduced
+  by the v0.9.0 symlink hardening without weakening its containment checks.
 
 ### Fixed
 

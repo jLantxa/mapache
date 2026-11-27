@@ -11,7 +11,7 @@
 
 //! # mapache
 //!
-//! A fast, encrypted, deduplicating backup tool inspired by [restic](https://restic.net/).
+//! A secure, reliable, efficient backup tool.
 //!
 //! ## Architecture
 //!
